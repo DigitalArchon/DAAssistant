@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=DA Assistant
+Comment=Translate and query screen regions and clipboard text
+Exec=@LAUNCHER@
+Icon=@ICON@
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true

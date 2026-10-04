@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DA Assistant
+Comment=Translate and query screen regions and clipboard text
+Exec=AppRun
+Icon=da-assistant
+Terminal=false
+Categories=Utility;
+Keywords=translate;ocr;llm;clipboard;screenshot;
+StartupNotify=false

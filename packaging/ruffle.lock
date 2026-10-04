@@ -1,0 +1,8 @@
+# Ruffle, the Flash Player emulator that plays the encyclopedia DVD's animations.
+# MIT OR Apache-2.0. https://ruffle.rs - https://www.npmjs.com/package/@ruffle-rs/ruffle
+#
+# tools/install-ruffle.sh and packaging/appimage/build.sh download exactly this file,
+# and use it only if its SHA-512 is the one npm publishes for it (dist.integrity).
+version=0.6.0
+url=https://registry.npmjs.org/@ruffle-rs/ruffle/-/ruffle-0.6.0.tgz
+sha512=P2X1zDENBoiLt2ZjPcsUzaDxoR7fVF2e1U/bi7hbIAQEjkykxljSoG8AgbywHvlVVzL9Y5tIZMRqDwIm31jgPA==

@@ -1,0 +1,5 @@
+# Privacy Mode's end-to-end encryption client (assistant/sealed.py): Tinfoil's own
+# attestation and EHBP SDK. It holds the plaintext, so it is pinned exactly, and
+# everything it pulls in is pinned by hash in private-mode.lock.
+# Bump deliberately, then run packaging/lock-private-mode.sh and commit both files.
+tinfoil==0.14.0

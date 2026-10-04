@@ -1,0 +1,121 @@
+/* Shared GTK styling. Kept deliberately light so it inherits the user's GTK theme
+   (including dark mode) instead of imposing colours that fight it. */
+
+.dim-label { opacity: 0.66; }
+
+.status-heading {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.capture-meta {
+  font-family: monospace;
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.error-banner {
+  background: alpha(#e01b24, 0.12);
+  border: 1px solid alpha(#e01b24, 0.35);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.prompt-entry {
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.preview-frame {
+  background: @theme_base_color;
+  border: 1px solid alpha(@borders, 0.8);
+  border-radius: 8px;
+}
+
+.toolbar-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  padding: 0 4px;
+}
+
+/* The chat transcript when WebKit is unavailable: see ui/bubbles.py. Colours are the
+   theme's own, mixed here rather than chosen by us, so the bubbles follow whatever
+   theme and accent colour the desktop has. */
+.turn-role {
+  font-size: 9.5px;
+  font-weight: bold;
+  opacity: 0.5;
+}
+
+.chat-bubble {
+  border-radius: 12px;
+  padding: 10px 14px;
+  background-color: mix(@theme_base_color, @theme_fg_color, 0.045);
+  border: 1px solid alpha(@borders, 0.55);
+}
+
+.chat-bubble.chat-user {
+  background-color: mix(@theme_base_color, @theme_selected_bg_color, 0.2);
+  border-color: alpha(@theme_selected_bg_color, 0.4);
+}
+
+.chat-bubble textview,
+.chat-bubble textview text {
+  background-color: transparent;
+}
+
+/* Privacy Mode: see assistant/privacy.py. One colour per tone, the same in both chat
+   views and on the banner above them - green once an enclave has proved itself, amber
+   where it proved less than it could, red where a check failed. Fixed colours rather
+   than theme ones: they are status, and a theme's accent can be anything. */
+.privacy-badge {
+  font-size: 9.5px;
+  font-weight: bold;
+  border-radius: 8px;
+  padding: 0 7px;
+  border: 1px solid currentColor;
+}
+.privacy-ok { color: #2a9d5c; }
+.privacy-warn { color: #c08a12; }
+.privacy-bad { color: #d23a31; }
+.privacy-pending { opacity: 0.7; }
+
+.chat-bubble.chat-private {
+  border-left: 3px solid #2a9d5c;
+}
+
+.privacy-banner {
+  padding: 8px 14px;
+  border-bottom: 1px solid alpha(@borders, 0.8);
+  background-color: alpha(#2a9d5c, 0.10);
+}
+.privacy-banner.pending { background-color: alpha(@theme_fg_color, 0.05); }
+.privacy-banner.warn { background-color: alpha(#c08a12, 0.14); }
+.privacy-banner.bad { background-color: alpha(#d23a31, 0.14); }
+.privacy-banner .privacy-title { font-weight: bold; }
+
+/* The compose dialogs' note that this request will go only to attested models. */
+.privacy-compose {
+  border-radius: 8px;
+  padding: 8px 12px;
+  background-color: alpha(#2a9d5c, 0.10);
+  border: 1px solid alpha(#2a9d5c, 0.45);
+}
+.privacy-compose.bad {
+  background-color: alpha(#d23a31, 0.12);
+  border-color: alpha(#d23a31, 0.45);
+}
+
+/* The dictionary window's bar: one button per dictionary, pressed while it is shown. */
+.dictionary-toggle { padding: 2px 4px; min-height: 0; min-width: 0; }
+.dictionary-toggle:not(:checked) { opacity: 0.35; }
+.dictionary-initials { font-size: 10px; font-weight: bold; min-width: 18px; }
+
+/* A pressed toggle in the header - the web search magnifier - marked whatever the theme:
+   some draw it barely different from one that is not. */
+headerbar button.toggle:checked, headerbar togglebutton:checked > button,
+headerbar button:checked {
+  background-image: none;
+  background-color: alpha(@theme_selected_bg_color, 0.35);
+  box-shadow: inset 0 0 0 1px alpha(@theme_selected_bg_color, 0.8);
+}

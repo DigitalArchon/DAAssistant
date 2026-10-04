@@ -1,0 +1,27 @@
+# The AppImage build environment: Ubuntu 24.04 pinned by digest, packages from a dated archive
+# snapshot. The host's CA bundle is mounted at /hostca.crt only so apt can reach the snapshot
+# over HTTPS until ca-certificates is installed; packages are verified by apt's signatures.
+#
+# Beyond the build tools: the libraries and typelibs the AppImage carries as fallbacks, for
+# hosts that lack them (see assistant/bundle.py) - the tray indicator, libnotify, and the
+# typelibs of GTK and what it refers to.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG APT_SNAPSHOT
+ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 TZ=UTC
+RUN rm -f /etc/apt/sources.list && printf '%s\n' \
+      'Types: deb' \
+      "URIs: https://snapshot.ubuntu.com/ubuntu/${APT_SNAPSHOT}/" \
+      'Suites: noble noble-updates noble-security' \
+      'Components: main universe' \
+      'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' > /etc/apt/sources.list.d/ubuntu.sources \
+ && echo 'Acquire::https::CaInfo "/hostca.crt";' > /etc/apt/apt.conf.d/99hostca \
+ && apt-get update -o Acquire::Retries=3 \
+ && apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
+      ca-certificates curl openssl gcc libc6-dev pkg-config \
+      libgirepository-2.0-dev libcairo2-dev libffi-dev gir1.2-freedesktop \
+      squashfs-tools desktop-file-utils \
+      gir1.2-gtk-3.0 gir1.2-ayatanaappindicator3-0.1 libayatana-appindicator3-1 \
+      gir1.2-notify-0.7 libnotify4 \
+ && rm /etc/apt/apt.conf.d/99hostca \
+ && rm -rf /var/lib/apt/lists/*

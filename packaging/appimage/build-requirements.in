@@ -1,0 +1,6 @@
+# Tools that build PyGObject and pycairo (locked in build-requirements.lock)
+meson-python
+meson
+ninja
+setuptools>=77
+packaging

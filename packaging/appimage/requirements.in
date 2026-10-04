@@ -1,0 +1,11 @@
+# What the app imports, besides PyGObject and pycairo (sdists.in) and Privacy Mode's
+# end-to-end encryption client (packaging/private-mode.lock, installed apart: see
+# assistant/vendored.py). Locked with hashes in requirements.lock.
+requests
+markdown
+pygments
+pillow
+python-xlib
+cryptography
+# the API key's keyring (assistant/keychain.py): the Secret Service, over D-Bus, in Python
+keyring

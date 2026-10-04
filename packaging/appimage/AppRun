@@ -1,0 +1,58 @@
+#!/bin/sh
+#
+# Entry point for the DA Assistant AppImage.
+#
+# The bundled Python runs isolated (-I: no PYTHONPATH or user site-packages from the host);
+# GTK and WebKitGTK are the host's, and anything the host lacks of what the app needs from
+# it is filled in by assistant/bundle.py (see packaging/README.md). What AppRun sets is
+# stashed first, so that the host programs the app runs - grim, spectacle, xclip, gdbus -
+# get the environment they were started with back (assistant/hostenv.py).
+#
+#   DA_Assistant.AppImage                      start the tray app
+#   DA_Assistant.AppImage --action=ocr_only    hand an action to the running instance
+#   DA_Assistant.AppImage --probe              report what this machine supports
+#   DA_Assistant.AppImage --install-hotkeys    register desktop keybindings
+#
+set -u
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# Runs before anything is set below, because it drives host tools exclusively
+# (gsettings, kwriteconfig6) and wants the environment it was invoked with. The script
+# reads $APPIMAGE to learn how to spell the launcher in the bindings it writes.
+if [ "${1-}" = "--install-hotkeys" ]; then
+  shift
+  exec "$HERE/usr/share/da-assistant/install-hotkeys.sh" "$@"
+fi
+
+# Stashed for assistant/hostenv.py. Only variables that get set below belong here: a name
+# with no APPIMAGE_HOST_ counterpart means "was unset, leave unset".
+export APPIMAGE_HOST_ENV_KEYS="SSL_CERT_FILE"
+if [ -n "${SSL_CERT_FILE+set}" ]; then
+  export APPIMAGE_HOST_SSL_CERT_FILE="$SSL_CERT_FILE"
+fi
+
+# Certificate authorities, for anything that asks OpenSSL for its defaults. requests and
+# httpx pass certifi's bundle themselves; Sigstore's TUF client, which fetches the trust
+# root that Private Mode attestation checks releases against, does not - and the bundled
+# OpenSSL's default directory is not where every distribution keeps its bundle. The host's
+# own bundle comes first, so the system's trust decisions stand; the bundled certifi is the
+# fallback. A value the user set is left alone.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+  for _bundle in \
+      /etc/ssl/certs/ca-certificates.crt \
+      /etc/pki/tls/certs/ca-bundle.crt \
+      /etc/ssl/ca-bundle.pem \
+      /etc/pki/tls/cert.pem \
+      /etc/ssl/cert.pem \
+      "$HERE/usr/lib/da-assistant/private-mode/certifi/cacert.pem" \
+      "$HERE"/usr/python/lib/python3.*/site-packages/certifi/cacert.pem; do
+    if [ -r "$_bundle" ]; then
+      export SSL_CERT_FILE="$_bundle"
+      break
+    fi
+  done
+  unset _bundle
+fi
+
+exec "$HERE/usr/python/bin/python3" -I "$HERE/usr/lib/da-assistant/run-assistant" "$@"

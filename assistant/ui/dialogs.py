@@ -107,6 +107,10 @@ class CaptureReviewDialog(Gtk.Window):
     on_confirm(image, image_base64, info, prompt_or_None, web_search_bool)
     on_recrop(image) - optional; lets the user re-select from the same capture without
     taking a new screenshot.
+
+    Black out... paints over parts of the capture (ui/redact.py). The blacked-out image
+    replaces the capture outright: it is what is sent, what the chat window shows and
+    saves, and what a re-crop starts from.
     """
 
     def __init__(self, image, operation, config, on_confirm,
@@ -118,6 +122,7 @@ class CaptureReviewDialog(Gtk.Window):
         self.on_confirm = on_confirm
         self.on_recrop = on_recrop
         self._done = False
+        self._blacked_out = 0
 
         # Prepare once, here, so the dialog can report the true payload and the caller
         # does not repeat the work.
@@ -141,6 +146,12 @@ class CaptureReviewDialog(Gtk.Window):
             recrop.connect("clicked", self._on_recrop)
             header.pack_start(recrop)
 
+        self.redact_button = Gtk.Button.new_with_label("Black out…")
+        self.redact_button.set_tooltip_text(
+            "Paint over anything that should not be sent - names, addresses, keys")
+        self.redact_button.connect("clicked", lambda _w: self._on_redact())
+        header.pack_start(self.redact_button)
+
         self.send = Gtk.Button.new_with_label("Send privately" if privacy else "Send")
         self.send.get_style_context().add_class("suggested-action")
         self.send.connect("clicked", lambda _w: self._confirm())
@@ -162,14 +173,15 @@ class CaptureReviewDialog(Gtk.Window):
         scrolled.get_style_context().add_class("preview-frame")
         scrolled.set_hexpand(True)
         scrolled.set_vexpand(True)
-        preview = Gtk.Image.new_from_pixbuf(_scaled_pixbuf(image, 1400, 900))
+        self.preview = preview = Gtk.Image.new_from_pixbuf(
+            _scaled_pixbuf(image, 1400, 900))
         preview.set_margin_top(6)
         preview.set_margin_bottom(6)
         scrolled.add(preview)
         box.pack_start(scrolled, True, True, 0)
 
         meta_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        meta = Gtk.Label(label=imaging.describe(self.info), xalign=0)
+        self.meta = meta = Gtk.Label(label=imaging.describe(self.info), xalign=0)
         meta.get_style_context().add_class("capture-meta")
         meta_row.pack_start(meta, False, False, 0)
         meta_row.pack_start(Gtk.Box(), True, True, 0)
@@ -220,6 +232,27 @@ class CaptureReviewDialog(Gtk.Window):
             self.destroy()
             return True
         return False
+
+    def _on_redact(self):
+        from .redact import RedactDialog
+        if self._done:
+            return
+        self.redact_button.set_sensitive(False)
+
+        def done(image, boxes):
+            if self._done or not self.get_realized():
+                return
+            self.redact_button.set_sensitive(True)
+            if image is None or not boxes:
+                return
+            self.image = image
+            self._blacked_out += len(boxes)
+            self.image_base64, self.info = imaging.prepare_for_vision(image, self.config)
+            self.preview.set_from_pixbuf(_scaled_pixbuf(image, 1400, 900))
+            self.meta.set_text(f"{imaging.describe(self.info)} · {self._blacked_out} "
+                               f"area{'s' if self._blacked_out != 1 else ''} blacked out")
+
+        RedactDialog(self, self.image, done, apply_label="Apply")
 
     def _on_recrop(self, _widget):
         if self._done:

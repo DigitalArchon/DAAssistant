@@ -18,7 +18,8 @@ from .hotkeys import action_names
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="run-assistant", description=f"{APP_NAME} {__version__}")
-    parser.add_argument("--action", choices=action_names() + ["settings", "diagnostics"],
+    parser.add_argument("--action", choices=["ask_anything"] + action_names()
+                        + ["settings", "diagnostics"],
                         help="perform an action in the running instance, then exit")
     parser.add_argument("--probe", action="store_true",
                         help="report display server, capture and hotkey support")

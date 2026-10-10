@@ -133,6 +133,9 @@ class BubbleView(Gtk.ScrolledWindow):
                     " · earlier answer" if turn.get("superseded") else "")
             privacy = turn.get("privacy") or None
             text = turn.get("display", turn.get("content", "")) or ""
+            attached = [f"📎 {a['label']}" for a in turn.get("attachments") or ()]
+            if attached:
+                text = "\n\n".join(part for part in (text, "  \n".join(attached)) if part)
             if turn.get("_streaming"):
                 text += " ▍"
 

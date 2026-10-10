@@ -305,6 +305,16 @@ img {{ max-width: 100%; }}
   border: 1px solid {border}; border-radius: 9px;
 }}
 .shot-actions {{ margin-top: 7px; }}
+.attachments {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }}
+.attached {{ margin: 0; font-size: .82em; color: {muted}; }}
+.attached img {{
+  display: block; max-width: 160px; max-height: 120px;
+  border: 1px solid {border}; border-radius: 6px; margin-bottom: 3px;
+}}
+.attached figcaption {{ max-width: 160px; overflow-wrap: anywhere; }}
+.attached.file {{
+  padding: 4px 9px; border: 1px solid {border}; border-radius: 6px; align-self: flex-start;
+}}
 .shot-actions button {{
   font: 12px system-ui, sans-serif; padding: 3px 11px; margin-right: 6px;
   border-radius: 6px; border: 1px solid {border}; background: {bot_bg}; color: {fg};
@@ -379,7 +389,7 @@ def model_badge(model, is_premium=False, superseded=False):
 
 
 def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
-              model=None, superseded=False, links=None):
+              model=None, superseded=False, links=None, attachments=None):
     label = "You" if role == "user" else "Assistant"
     badge = model_badge(model, is_premium, superseded)
     badge += privacy_html(privacy)
@@ -387,7 +397,9 @@ def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
     if streaming:
         body += '<span class="cursor"></span>'
     if not content and not streaming:
-        body = '<p class="empty">(empty response)</p>'
+        body = '' if attachments else '<p class="empty">(empty response)</p>'
+    if attachments:
+        body += attachments_html(attachments)
     classes = html.escape(role)
     if superseded:
         classes += " superseded"
@@ -396,6 +408,23 @@ def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
     return (f'<div class="turn {classes}">'
             f'<div class="role">{label}{badge}</div>'
             f'<div class="bubble">{body}</div></div>')
+
+
+def attachments_html(attached):
+    """What was attached to a message: a thumbnail of each picture, the name of each
+    text file. Built here, not rendered from Markdown, for the same reason as the
+    screenshot: these are the user's own files, and the thumbnails are data: URIs."""
+    items = []
+    for attachment in attached:
+        label = html.escape(attachment.get("label") or attachment.get("name") or "")
+        if attachment.get("thumb"):
+            src = "data:image/png;base64," + base64.b64encode(
+                attachment["thumb"]).decode("ascii")
+            items.append(f'<figure class="attached"><img src="{src}" alt="{label}">'
+                         f'<figcaption>{label}</figcaption></figure>')
+        else:
+            items.append(f'<span class="attached file">📄 {label}</span>')
+    return f'<div class="attachments">{"".join(items)}</div>'
 
 
 def screenshot_html(png):

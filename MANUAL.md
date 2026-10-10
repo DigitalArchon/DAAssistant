@@ -33,6 +33,12 @@ them on (see [Search Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and
 | Search Encyclopedia | `Ctrl+Shift+7` | Reads your encyclopedia DVD's articles, and answers questions about the ones you tag |
 | Ask Encyclopedia | `Ctrl+Shift+8` | Answers a question from the encyclopedia alone, quoted, every quotation checked |
 
+**Ask anything**, at the top of the tray menu, opens a chat window with nothing captured:
+type a question, attach files if you like (see [Attachments](#attachments)), and it is
+answered by your answering model, privately in Privacy Mode. It has no hotkey of its own;
+bind `run-assistant --action=ask_anything` to a key in your desktop's settings if you
+want one.
+
 Answers open in a chat window that streams as it generates, renders Markdown properly
 (tables, code blocks with syntax highlighting, URLs as links that open in your browser)
 and accepts follow-up questions. The header's buttons copy the whole conversation as
@@ -99,6 +105,48 @@ models of your choosing that run in an attested trusted execution environment in
 nano-gpt's `TEE/` models, or its end-to-end encrypted `private/` ones. Each enclave proves
 itself before anything is sent to it, and every conversation shows what was proved. See
 [Privacy Mode](#privacy-mode).
+
+### Blacking out part of a capture
+
+The send dialog for a screen region has **Black out…** beside Re-crop. Drag rectangles
+over anything that should not be sent - names, addresses, keys, tokens - then **Apply**.
+Undo (or Ctrl+Z) takes back the last one, Clear all of them, and **Actual size** / **Fit
+to window** switches the zoom. The black is painted into the capture's own pixels, its
+edges snapped outwards to whole pixels so no blended border is left, and the blacked-out
+capture replaces the original outright: it is what is sent, what the chat window shows
+and saves, and what a re-crop starts from. Nothing of the original goes anywhere.
+
+Every capture is also rebuilt from its pixels alone before it is sent or shown, so
+whatever the screenshot tool attached to it - an ICC profile, text chunks, EXIF - is
+dropped.
+
+### Attachments
+
+Every chat window - Ask anything, a conversation about a capture or the clipboard, Look
+up word, the encyclopedia windows - has a paperclip beside the message box. Attach
+pictures and text files to your next message with it, or drop files on the message box
+or the conversation. Each shows as a chip above the message box until you send, with ×
+to take it off again. A message can be pictures alone.
+
+- **Pictures** (PNG, JPEG, WebP, GIF, BMP) open in the same black-out editor first;
+  **Attach** sends the picture as it looks there. It is then decoded to pixels and
+  re-encoded from those pixels alone: no EXIF (location, camera, timestamps, the
+  embedded thumbnail), XMP, ICC profile, text chunks or comments, only the first frame
+  of an animation, and nothing appended after the image. A photo is turned upright from
+  its EXIF orientation first. Photos that were JPEG are sent as JPEG, everything else
+  as PNG, scaled down to 3000 pixels on the long side (`capture_max_long_edge` in
+  `config.json`) if larger.
+- **Text files** are anything that reads as UTF-8 (or UTF-16 with a byte-order mark),
+  up to 512 KB: Markdown, JSON, CSV, YAML, logs, source code. The text goes into your
+  message in a fenced block under the file's name; nothing else of the file is sent.
+  Files that are neither text nor a supported picture are refused, and the status line
+  says why.
+
+Attached pictures go with the conversation the way a capture does: a model that accepts
+images is given each picture, and for one that cannot, the vision model reads each
+picture once - its text verbatim and a description - and that reading is sent in its
+place. The transcript shows a thumbnail of each picture and the name of each file;
+Markdown exports list them by name.
 
 ## Choosing models
 
@@ -651,7 +699,8 @@ assistant/
   config.py                settings, stored 0600; the API key goes to keychain.py
   keychain.py              the desktop's keyring (Secret Service), for the API key
   session.py               display server / desktop / portal probing
-  imaging.py               upscale, flatten, encode before sending
+  imaging.py               upscale, flatten, black out, encode before sending
+  attachments.py           pictures and text files attached to a message
   llm.py                   OpenAI-compatible client, streaming, vision, web search
   privacy.py               Privacy Mode: TEE attestation, reply signatures, the session
   sealed.py                end-to-end encrypted Private Mode, via Tinfoil's SDK
@@ -686,6 +735,7 @@ assistant/
     encscheme.py           enc://, which serves the DVD's pictures and animations
     encyclopedia_windows.py  Search Encyclopedia, the reader, and Ask Encyclopedia
     bubbles.py             the transcript as widgets, when WebKit is unavailable
+    redact.py              the black-out editor, for captures and attached pictures
 tools/install-hotkeys.sh   desktop keybinding installer
 tools/install-private-mode.sh  installs the end-to-end encryption client from the lock
 tools/install-ruffle.sh    installs Ruffle from packaging/ruffle.lock

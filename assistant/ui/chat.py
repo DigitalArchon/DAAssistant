@@ -14,7 +14,7 @@ from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
 from . import bubbles, markdown_html, markdown_text, screenshot as screenshot_view
-from .. import models as catalogue, privacy as privacy_module, prompts
+from .. import attachments, models as catalogue, privacy as privacy_module, prompts
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -99,12 +99,19 @@ def history_for(conversation):
             continue
         entry = {key: turn[key] for key in ("role", "content", "search_query")
                  if key in turn}
+        # Pictures attached to the turn, copied: the worker notes their readings on
+        # these, and the window's own turns hear of them by way of the main loop.
+        if turn.get("images"):
+            entry["images"] = [dict(image) for image in turn["images"]]
         previous = history[-1] if history else None
         if previous and previous["role"] == "user" and entry["role"] == "user":
             parts = [previous.get("content") or "", entry.get("content") or ""]
             entry["content"] = "\n\n".join(part for part in parts if part)
             if "search_query" not in entry and "search_query" in previous:
                 entry["search_query"] = previous["search_query"]
+            images = (previous.get("images") or []) + (entry.get("images") or [])
+            if images:
+                entry["images"] = images
             history[-1] = entry
             continue
         history.append(entry)
@@ -246,6 +253,8 @@ class ChatWindow(Gtk.Window):
         self._pages, self._page = [self.conversation], 0
         self._undo = None                       # what Clear removed, while undoable
         self._undo_timer = None
+        # Files attached to the next message (attachments.py), until it is sent.
+        self._attachments = []
 
         self.set_default_size(880, 720)
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -744,6 +753,13 @@ class ChatWindow(Gtk.Window):
         box.set_margin_top(10)
         box.set_margin_bottom(10)
 
+        # What is attached to the next message, a chip each; hidden while there is none.
+        self.attachment_bar = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE,
+                                          column_spacing=6, row_spacing=4,
+                                          max_children_per_line=6, homogeneous=False)
+        self.attachment_bar.set_no_show_all(True)
+        box.pack_start(self.attachment_bar, False, False, 0)
+
         frame = Gtk.ScrolledWindow()
         frame.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         frame.set_min_content_height(54)
@@ -756,10 +772,21 @@ class ChatWindow(Gtk.Window):
         self.entry.set_margin_top(6)
         self.entry.set_margin_bottom(6)
         self.entry.connect("key-press-event", self._on_entry_key)
+        # Files dropped on the message box are attached, not pasted in as their paths.
+        self.entry.drag_dest_add_uri_targets()
+        self.entry.connect("drag-data-received", self._on_entry_drop)
         frame.add(self.entry)
         box.pack_start(frame, False, False, 0)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        attach = Gtk.Button.new_from_icon_name("mail-attachment-symbolic",
+                                               Gtk.IconSize.BUTTON)
+        attach.set_tooltip_text(
+            "Attach pictures or text files (Markdown, JSON, logs, code…) to your next "
+            "message. Pictures open in an editor to black out anything sensitive, and "
+            "are re-encoded with no metadata before they are sent.")
+        attach.connect("clicked", lambda _w: self._choose_attachments())
+        row.pack_start(attach, False, False, 0)
         hint = Gtk.Label(label="Enter to send  ·  Shift+Enter for a new line", xalign=0)
         hint.get_style_context().add_class("toolbar-hint")
         row.pack_start(hint, False, False, 0)
@@ -812,6 +839,13 @@ class ChatWindow(Gtk.Window):
         if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
             nav = decision.get_navigation_action()
             uri = nav.get_request().get_uri()
+            if uri.startswith("file://") and \
+                    nav.get_navigation_type() != WebKit2.NavigationType.LINK_CLICKED:
+                # A file dropped on the conversation: attached, never opened in it. Only
+                # a drop - a link in an answer must never pick a file of yours to send.
+                decision.ignore()
+                self.attach_files([GLib.filename_from_uri(uri)[0]])
+                return True
             if nav.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED:
                 decision.ignore()
                 word = reference_markup.word_of(uri)
@@ -862,7 +896,8 @@ class ChatWindow(Gtk.Window):
                                        turn.get("is_premium", False),
                                        turn.get("_streaming", False), turn.get("privacy"),
                                        turn.get("model"), turn.get("superseded", False),
-                                       links=turn.get("links"))
+                                       links=turn.get("links"),
+                                       attachments=turn.get("attachments"))
 
     def _render(self, full=False):
         if self._destroyed:
@@ -971,13 +1006,160 @@ class ChatWindow(Gtk.Window):
     def _send(self):
         buf = self.entry.get_buffer()
         text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
-        if not text or self._cancel is not None or not self._can_send(text):
+        attached = list(self._attachments)
+        if (not text and not attached) or self._cancel is not None or \
+                not self._can_send(text):
             return
         buf.set_text("")
         self._forget_undo()
+        self._attachments.clear()
+        self._sync_attachment_bar()
 
-        self._append_turn({"role": "user", "content": text})
+        self._append_turn(attachments.compose(text, attached) if attached
+                          else {"role": "user", "content": text})
         self._start_stream()
+
+    # ---- attachments ------------------------------------------------------
+
+    def _choose_attachments(self):
+        dialog = Gtk.FileChooserNative.new("Attach pictures or text files", self,
+                                           Gtk.FileChooserAction.OPEN, "_Attach",
+                                           "_Cancel")
+        dialog.set_select_multiple(True)
+        both = Gtk.FileFilter()
+        both.set_name("Pictures and text files")
+        pictures = Gtk.FileFilter()
+        pictures.set_name("Pictures")
+        texts = Gtk.FileFilter()
+        texts.set_name("Text files")
+        for pattern in attachments.IMAGE_PATTERNS:
+            for chosen in (both, pictures):
+                chosen.add_pattern(pattern)
+                chosen.add_pattern(pattern.upper())
+        for pattern in attachments.TEXT_PATTERNS:
+            for chosen in (both, texts):
+                chosen.add_pattern(pattern)
+        for chosen in (both, texts):
+            chosen.add_mime_type("text/*")
+        everything = Gtk.FileFilter()
+        everything.set_name("All files")
+        everything.add_pattern("*")
+        for chosen in (both, pictures, texts, everything):
+            dialog.add_filter(chosen)
+        accepted = dialog.run() == Gtk.ResponseType.ACCEPT
+        paths = dialog.get_filenames() if accepted else []
+        dialog.destroy()
+        self.attach_files(paths)
+
+    def _on_entry_drop(self, widget, context, _x, _y, data, _info, time_):
+        uris = data.get_uris()
+        if not uris:
+            return False                    # text: the message box takes it as usual
+        widget.stop_emission_by_name("drag-data-received")
+        Gtk.drag_finish(context, True, False, time_)
+        paths = [GLib.filename_from_uri(uri)[0] for uri in uris
+                 if uri.startswith("file://")]
+        self.attach_files(paths)
+        return True
+
+    def attach_files(self, paths):
+        """Attach these files to the next message, one at a time: each picture opens in
+        the black-out editor and is attached only when the user says so. A file that
+        cannot be attached is named on the status line, and the rest go ahead."""
+        queue = [path for path in paths if path]
+
+        def next_file():
+            while queue and not self._destroyed:
+                path = queue.pop(0)
+                name = os.path.basename(path)
+                try:
+                    raw = attachments.read_file(path)
+                    picture = attachments.sniff_image(raw)
+                    if picture is None:
+                        self._add_attachment(attachments.text_attachment(
+                            name, attachments.decode_text(raw, name)))
+                        continue
+                except attachments.AttachmentError as e:
+                    message = str(e)
+                    self.status.set_text(f"Not attached: {message}" if name in message
+                                         else f"Not attached: {name}: {message}")
+                    continue
+                image, photo = picture
+
+                def done(result, _boxes, name=name, photo=photo):
+                    if self._destroyed:
+                        return
+                    if result is None:
+                        self.status.set_text(f"{name} not attached")
+                    else:
+                        self._add_attachment(attachments.image_attachment(
+                            name, result, photo, self.config))
+                    next_file()
+
+                self._redact(image, done, name)
+                return
+
+        next_file()
+
+    def _redact(self, image, on_done, name):
+        """The black-out editor, for a picture about to be attached."""
+        from .redact import RedactDialog
+        RedactDialog(self, image, on_done, title=f"Attach {name}",
+                     apply_label="Attach")
+
+    def _add_attachment(self, attachment):
+        self._attachments.append(attachment)
+        self._sync_attachment_bar()
+        self.status.set_text(f"Attached {attachment['name']}")
+        self.entry.grab_focus()
+
+    def _remove_attachment(self, attachment):
+        self._attachments = [a for a in self._attachments if a is not attachment]
+        self._sync_attachment_bar()
+
+    def _sync_attachment_bar(self):
+        if self._destroyed:
+            return
+        from gi.repository import GdkPixbuf
+        bar = self.attachment_bar
+        for child in bar.get_children():
+            child.destroy()
+        for attachment in self._attachments:
+            chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            chip.get_style_context().add_class("attachment-chip")
+            picture = None
+            if attachment.get("thumb"):
+                try:
+                    loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+                    loader.write(attachment["thumb"])
+                    loader.close()
+                    pixbuf = loader.get_pixbuf()
+                    side = 28
+                    scale = side / max(pixbuf.get_width(), pixbuf.get_height())
+                    picture = Gtk.Image.new_from_pixbuf(pixbuf.scale_simple(
+                        max(1, round(pixbuf.get_width() * scale)),
+                        max(1, round(pixbuf.get_height() * scale)),
+                        GdkPixbuf.InterpType.BILINEAR))
+                except Exception:
+                    picture = None
+            if picture is None:
+                picture = Gtk.Image.new_from_icon_name(
+                    "image-x-generic-symbolic" if attachment["kind"] == "image"
+                    else "text-x-generic-symbolic", Gtk.IconSize.BUTTON)
+            chip.pack_start(picture, False, False, 0)
+            chip.pack_start(Gtk.Label(label=attachments.describe(attachment)),
+                            False, False, 0)
+            remove = Gtk.Button.new_from_icon_name("window-close-symbolic",
+                                                   Gtk.IconSize.MENU)
+            remove.set_relief(Gtk.ReliefStyle.NONE)
+            remove.set_tooltip_text("Don't attach this")
+            remove.connect("clicked", lambda _w, a=attachment: self._remove_attachment(a))
+            chip.pack_start(remove, False, False, 0)
+            child = Gtk.FlowBoxChild()
+            child.add(chip)
+            child.show_all()            # the bar is no_show_all, so show_all stops at it
+            bar.add(child)
+        bar.set_visible(bool(self._attachments))
 
     def _set_status(self, message):
         if not self._destroyed:
@@ -1051,6 +1233,10 @@ class ChatWindow(Gtk.Window):
                 need_reading = self.reading is None
                 reading_in_system = not self._reading_in_history
         reader = self._vision_reader()
+        # Pictures attached to messages: as images to a model that can see, and to one
+        # that cannot, as the vision model's reading of each - made once per picture.
+        sees = any(turn.get("images") for turn in self.conversation) and \
+            bool(catalogue.accepts_images(self.config, model))
 
         if privacy is not None:
             # No search: the query would carry the conversation out in the clear.
@@ -1147,6 +1333,30 @@ class ChatWindow(Gtk.Window):
                         raise LLMError("The vision model returned nothing about the image",
                                        model=reader)
                     GLib.idle_add(self._keep_reading, reading)
+                unread = [] if sees else attachments.unread(history)
+                if unread:
+                    stage = "read"
+                    if privacy is not None:
+                        privacy.enlist(reader)
+                    readings = {}
+                    for picture in unread:
+                        GLib.idle_add(self._set_status,
+                                      f"Reading {picture['name']} for "
+                                      f"{model.rsplit('/', 1)[-1]}…")
+                        text = (self.app.client.complete(
+                            reader, attachments.reading_request(picture),
+                            cancel=cancel, **private_kwargs) or "").strip()
+                        if cancel.is_set():
+                            GLib.idle_add(self._on_stream_done, None, cancel)
+                            return
+                        if privacy is not None:
+                            privacy.pop_receipt()
+                        if not text:
+                            raise LLMError(f"The vision model returned nothing about "
+                                           f"{picture['name']}", model=reader)
+                        picture["reading"] = readings[picture["id"]] = text
+                    GLib.idle_add(self._keep_image_readings, readings)
+                messages = attachments.to_messages(history, sees)
                 request_system = system
                 if reading_in_system and reading:
                     request_system = ((system + "\n\n") if system else "") + (
@@ -1164,7 +1374,7 @@ class ChatWindow(Gtk.Window):
                         request_system = ((request_system + "\n\n") if request_system
                                           else "") + addition
                 stage = "answer"
-                result = self.app.client.stream(model, history, image, cancel, on_delta,
+                result = self.app.client.stream(model, messages, image, cancel, on_delta,
                                                 web_search=web_search,
                                                 system=request_system, **private_kwargs)
             except LLMError as e:
@@ -1430,6 +1640,19 @@ class ChatWindow(Gtk.Window):
             self._render(full=True)
         return False                    # one-shot idle callback
 
+    def _keep_image_readings(self, readings):
+        """Note the vision model's readings of attached pictures on the turns they came
+        with - every page's - so no picture is read twice."""
+        if self._destroyed:
+            return False
+        pages = self._pages + (self._undo["pages"] if self._undo else [])
+        for conversation in pages:
+            for turn in conversation:
+                for image in turn.get("images") or ():
+                    if image["id"] in readings:
+                        image["reading"] = readings[image["id"]]
+        return False
+
     def _keep_reading(self, reading):
         if not self._destroyed and self.reading is None:
             self.reading = reading
@@ -1573,6 +1796,9 @@ class ChatWindow(Gtk.Window):
                 who += f" [{turn['privacy']['label']}]"
             # "export": what an answer says without the links into this window.
             text = turn.get("export", turn.get("display", turn["content"]))
+            attached = [f"- 📎 {a['label']}" for a in turn.get("attachments") or ()]
+            if attached:
+                text = "\n\n".join(part for part in (text, "\n".join(attached)) if part)
             parts.append(f"## {who}\n\n{text}")
         return "\n\n".join(parts)
 

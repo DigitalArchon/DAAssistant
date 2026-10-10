@@ -14,6 +14,12 @@ ways.
 Note upscaling adds no real detail - it only stops the model's own downsampling from
 destroying detail that is already there, and gives the patch grid more pixels per glyph.
 Past roughly 3x it is pure token cost, so it is capped.
+
+And nothing but pixels leaves. Every image that is sent or shown is rebuilt from its raw
+pixel bytes first (pixels_only), so whatever the source carried - an ICC profile, EXIF,
+PNG text chunks, a portal's own annotations - has nowhere to ride along. Pillow copies
+an image's .info through convert() and resize(), and its PNG writer embeds .info's ICC
+profile unasked, so encoding the same Image object would not be enough.
 """
 
 import base64
@@ -38,6 +44,29 @@ def flatten(img):
         canvas.paste(rgba, mask=rgba.split()[-1])
         return canvas
     return img.convert("RGB")
+
+
+def pixels_only(img):
+    """A brand-new image made from `img`'s pixel bytes alone: no .info, so no metadata of
+    any kind can be carried over into what is encoded from it."""
+    return Image.frombytes(img.mode, img.size, img.tobytes())
+
+
+def black_out(img, boxes):
+    """`img` flattened to RGB with each (x, y, w, h) box painted solid black.
+
+    The black is written into the one bitmap, with whole-pixel edges - no layer to
+    remove, and no anti-aliased border left partly showing what was under it. Boxes are
+    clipped to the image; an empty list still returns a fresh RGB copy.
+    """
+    out = flatten(img).copy()
+    width, height = out.size
+    for x, y, w, h in boxes:
+        x0, y0 = max(0, int(x)), max(0, int(y))
+        x1, y1 = min(width, int(x + w)), min(height, int(y + h))
+        if x1 > x0 and y1 > y0:
+            out.paste((0, 0, 0), (x0, y0, x1, y1))
+    return out
 
 
 def rescale(img, target_long_edge=1600, max_long_edge=2000, upscale=True):
@@ -70,8 +99,9 @@ def to_png_bytes(img, optimize=True):
 def screenshot_png(img):
     """The capture as the user took it, for them to view and save: no flattening or
     scaling, which are for the model. Not optimised - a full-screen grab would take
-    seconds, and this runs as the chat window opens."""
-    return to_png_bytes(img, optimize=False)
+    seconds, and this runs as the chat window opens. Still pixels only: it is shown, and
+    saved wherever the user saves it."""
+    return to_png_bytes(pixels_only(img), optimize=False)
 
 
 def prepare_for_vision(img, config=None, save_debug_copy=False):
@@ -89,7 +119,7 @@ def prepare_for_vision(img, config=None, save_debug_copy=False):
     upscale = getattr(config, "upscale_small_captures", True) if config else True
 
     original_size = img.size
-    out = rescale(flatten(img), target, cap, upscale)
+    out = pixels_only(rescale(flatten(img), target, cap, upscale))
     png = to_png_bytes(out)
 
     info = {

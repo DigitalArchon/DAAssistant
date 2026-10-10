@@ -153,6 +153,29 @@ READING_CONTEXT = (
 )
 
 
+# Sent as the message when the user sends pictures and nothing else.
+PICTURES_ONLY = "Look at the attached picture(s)."
+
+
+def attached_reading(name, reading):
+    """A picture attached to a message, for a model that cannot see it: what the vision
+    model read from it, in the message the picture came with."""
+    return (
+        "---\n"
+        f"Attached picture {name}, which you cannot see, as read by a vision model:\n\n"
+        f"{excerpt(reading, TRANSCRIPTION_CHARS)}"
+    )
+
+
+def ask_anything_system(language):
+    return (
+        "You are a helpful assistant. The user may attach pictures and text files to "
+        "their messages; text files arrive in fenced blocks under their file names. "
+        "If you do not know something, say so plainly instead of guessing. "
+        f"Reply in {language}, formatted as Markdown."
+    )
+
+
 def query_described_system(language):
     return (
         "Answer the user's question about an image they captured. You cannot see the "

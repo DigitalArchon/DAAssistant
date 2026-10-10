@@ -124,6 +124,12 @@ class Assistant:
         menu = Gtk.Menu()
         show_keys = self.hotkeys.mode in ("x11", "portal")
 
+        # First: a conversation with nothing captured, to type into straight away.
+        ask = Gtk.MenuItem(label="Ask anything")
+        ask.connect("activate", lambda _w: self.dispatch("ask_anything"))
+        menu.append(ask)
+        menu.append(Gtk.SeparatorMenuItem())
+
         self._encyclopedia_items = []
         for name, label, trigger in ACTIONS:
             text = label
@@ -250,6 +256,7 @@ class Assistant:
 
     def dispatch(self, action):
         handler = {
+            "ask_anything": self.ask_anything,
             "translate_text": self.translate_text,
             "ocr_translate": self.ocr_translate,
             "query_text": self.query_text,
@@ -560,6 +567,19 @@ class Assistant:
                          privacy=privacy)
 
     # ---- the five operations ---------------------------------------------
+
+    def ask_anything(self):
+        """A conversation with nothing captured: the user types, and can attach pictures
+        and text files as they go. Answered like any other - by the answering model,
+        privately in Privacy Mode - and searched only if web search is on by default."""
+        if not self._require_api_key():
+            return
+        privacy = self._start_privacy((self._answer_role(),))
+        if privacy is False:
+            return
+        ChatWindow(self, "Ask anything", [],
+                   system=prompts.ask_anything_system(self.config.default_language),
+                   privacy=privacy)
 
     def ocr_only(self):
         # Same reasoning as translation: transcription reads the image in front of it,

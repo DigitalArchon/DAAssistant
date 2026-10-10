@@ -25,8 +25,14 @@ Eight operations, from the tray menu or a global hotkey:
 | Search Encyclopedia | `Ctrl+Shift+7` | Read your encyclopedia DVD - [off by default](#the-encyclopedia) |
 | Ask Encyclopedia | `Ctrl+Shift+8` | Answers from the encyclopedia alone, every quotation checked - [off by default](#the-encyclopedia) |
 
+**Ask anything**, at the top of the tray menu, opens a chat with nothing captured, to
+type into straight away.
+
 Answers open in a chat window that streams as it writes, renders Markdown, and takes
-follow-up questions. You choose which model does each job, and can switch models
+follow-up questions. Any chat can take attached pictures and text files (Markdown, JSON,
+logs, code). Pictures, and screen regions you ask about, can have anything sensitive
+blacked out first, and are re-encoded from their pixels alone, so no metadata goes with
+them. You choose which model does each job, and can switch models
 mid-conversation. Web search is optional, per request. **Privacy Mode** sends everything
 only to models running in an attested trusted execution environment, proving each one
 before anything is sent.

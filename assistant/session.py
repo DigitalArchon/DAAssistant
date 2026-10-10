@@ -139,7 +139,9 @@ def summary():
         f"Desktop        : {de}",
         f"Portal ifaces  : {', '.join(sorted(i.split('.')[-1] for i in portal_interfaces())) or 'none (portal not running?)'}",
         f"  Screenshot   : {'yes, version ' + str(portal_version('Screenshot')) if portal_has('Screenshot') else 'NO'}",
-        f"  GlobalShortcuts: {'yes' if portal_has('GlobalShortcuts') else 'NO (shortcuts go into the desktop instead)'}",
+        # Whether the portal is there, not what binds the shortcuts: on X11 the app grabs
+        # them itself either way. --probe and Diagnostics name the mechanism after this.
+        f"  GlobalShortcuts: {'yes, version ' + str(portal_version('GlobalShortcuts')) if portal_has('GlobalShortcuts') else 'no'}",
         f"Cinnamon D-Bus : {'yes' if has_cinnamon_screenshot() else 'no'}",
     ]
     tools = available_tools()

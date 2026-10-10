@@ -551,6 +551,13 @@ force one if the automatic choice is wrong.
 Hyprland has a portal too, but it binds nothing until you write `global` binds into its
 config by hand, so the app writes ordinary binds there instead.
 
+On KDE and GNOME's portal the app has to tell the portal who it is, and the portal
+accepts that only from an app with a `.desktop` entry. So the app keeps a hidden one,
+`~/.local/share/applications/org.digitalarchon.DAAssistant.desktop`, which is also the
+name its shortcuts appear under in the desktop's shortcut settings. KDE names a key with
+Shift by the symbol it makes: Ctrl+Shift+9 shows as `Ctrl+(` on a US layout, in KDE's
+dialog, beside each action in Settings, and in the tray menu. It is the same key.
+
 Only the app's own entries are ever touched - those named `da-assistant-…`, or the block
 between the markers - and the rest of your shortcuts stay as they are. A binding names
 the `.AppImage` file itself when you run the AppImage, so move the file and the next
@@ -637,6 +644,7 @@ implicitly.
 | The API key | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant` |
 | Model list, dictionary index, error log | `~/.cache/da-assistant` |
 | The encyclopedia's database, the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` |
+| A hidden launcher entry, for the GlobalShortcuts portal (KDE, GNOME 48+) only | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
 
 The API key is never written to `config.json`. The keyring encrypts it and unlocks it
 with your login. A key that an older version left in `config.json` is moved into the

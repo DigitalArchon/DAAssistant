@@ -29,7 +29,7 @@ NumLock on.
 
 from gi.repository import GLib
 
-from . import keybindings, shortcuts
+from . import APP_ID, keybindings, shortcuts
 
 # (action, menu label, suggested key). The suggestions are what "Use suggested keys"
 # fills in; none is bound until the user says so.
@@ -248,6 +248,16 @@ class PortalHotkeys:
     and keeps whatever the user later changes in its own settings. So what it reports
     back - in BindShortcuts' response, and ShortcutsChanged after - is what the menu and
     Settings show, in `triggers`.
+
+    The portal must know which app this is. It names an unsandboxed app from its
+    systemd scope, which only a launch from a .desktop file gives it; started any other
+    way - autostart on some desktops, a terminal - it has none, and KDE refuses the
+    session outright: "An app id is required" (Plasma 6.7, xdg-desktop-portal 1.22). So
+    the app registers its id (org.freedesktop.host.portal.Registry), which the portal
+    accepts only for an id with a .desktop file installed: keybindings.app_entry writes
+    a hidden one. Registering has to come before the connection's first portal request,
+    so the session gets a connection of its own rather than the one GTK and the
+    screenshot portal share.
     """
 
     # Restarting reuses the process id, and the portal will not export a second session
@@ -299,10 +309,33 @@ class PortalHotkeys:
             handler)
         self._subs.append(sub)
 
+    def _connect(self):
+        """A session bus connection of this session's own, registered as APP_ID."""
+        from gi.repository import Gio
+        address = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None)
+        bus = Gio.DBusConnection.new_for_address_sync(
+            address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+            | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+        try:
+            keybindings.app_entry()
+        except OSError as e:
+            print(f"[hotkeys] no .desktop entry for the portal: {e}")
+        try:
+            bus.call_sync("org.freedesktop.portal.Desktop",
+                          "/org/freedesktop/portal/desktop",
+                          "org.freedesktop.host.portal.Registry", "Register",
+                          GLib.Variant("(sa{sv})", (APP_ID, {})), None,
+                          Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error as e:
+            # Known already by its scope, or a portal from before the call (1.19):
+            # CreateSession says whether that is enough.
+            print(f"[hotkeys] portal registration as {APP_ID}: {e.message}")
+        return bus
+
     def start(self):
         from gi.repository import Gio
 
-        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.bus = self._connect()
         token = self._token()
 
         def created(code, results):
@@ -410,6 +443,10 @@ class PortalHotkeys:
                     "org.freedesktop.portal.Session", "Close", None, None,
                     Gio.DBusCallFlags.NONE, -1, None, None)
                 self.session_handle = None
+            # Ours alone: the portal ends whatever is left on it when it goes.
+            self.bus.flush_sync(None)
+            self.bus.close(None, None, None)
+            self.bus = None
 
 
 class HotkeyManager:

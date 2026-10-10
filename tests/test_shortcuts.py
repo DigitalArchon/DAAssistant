@@ -108,10 +108,29 @@ class Spelling(unittest.TestCase):
         accel = "<Control><Shift>1"
         self.assertEqual(shortcuts.label(accel), "Ctrl+Shift+1")
         self.assertEqual(shortcuts.label("<Super>F5"), "Super+F5")
-        self.assertEqual(shortcuts.portal_trigger(accel), "CTRL+SHIFT+1")
+        self.assertEqual(shortcuts.portal_trigger("<Control><Shift>k"), "CTRL+SHIFT+k")
+        self.assertEqual(shortcuts.portal_trigger("<Control><Alt>3"), "CTRL+ALT+3")
         self.assertEqual(shortcuts.portal_trigger("<Super>space"), "LOGO+space")
         self.assertEqual(shortcuts.hyprland("<Control><Alt>t"), ("CTRL ALT", "t"))
         self.assertEqual(shortcuts.sway("<Alt><Super>t"), "Mod1+Mod4+t")
+
+    def test_the_portal_is_sent_the_symbol_shift_makes_of_a_digit(self):
+        # KDE matches Ctrl+Shift+9 as Ctrl+( (seen on Plasma 6.7): what the layout
+        # makes of Shift+9, here the test display's US one.
+        self.assertEqual(shortcuts.portal_trigger("<Control><Shift>9"), "CTRL+parenleft")
+        self.assertEqual(shortcuts.portal_trigger("<Control><Shift>1"), "CTRL+exclam")
+        self.assertEqual(shortcuts.portal_trigger("<Shift><Super>F5"), "SHIFT+LOGO+F5")
+
+    def test_another_layout_gives_its_own_symbol(self):
+        class German:
+            def get_entries_for_keyval(self, keyval):
+                return True, [type("Key", (), {"keycode": 18, "group": 0})()]
+
+            def translate_keyboard_state(self, keycode, state, group):
+                return True, Gdk.KEY_parenright, 0, 1, 0
+
+        self.assertEqual(shortcuts.portal_trigger("<Control><Shift>9", German()),
+                         "CTRL+parenright")
 
 
 # ---- what is bound, and how ------------------------------------------------------
@@ -351,6 +370,27 @@ class Launcher(unittest.TestCase):
             self.assertEqual(keybindings.launcher(), os.path.join(ROOT, "run-assistant"))
 
 
+class PortalAppEntry(TempDir):
+    """The portal accepts the app's id only with a .desktop entry for it (KDE, seen on
+    Plasma 6.7 with xdg-desktop-portal 1.22: "App info not found")."""
+
+    def test_written_hidden_quoted_and_only_when_it_changes(self):
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/My Apps/DA.AppImage"}):
+            path = keybindings.app_entry(self.dir)
+            self.assertEqual(os.path.basename(path), "org.digitalarchon.DAAssistant.desktop")
+            with open(path) as f:
+                text = f.read()
+            self.assertIn('Exec="/home/u/My Apps/DA.AppImage"\n', text)
+            self.assertIn("NoDisplay=true\n", text)
+            os.utime(path, (1, 1))
+            keybindings.app_entry(self.dir)
+            self.assertEqual(os.stat(path).st_mtime, 1)                 # unchanged
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/opt/DA.AppImage"}):
+            keybindings.app_entry(self.dir)                             # moved: rewritten
+            with open(path) as f:
+                self.assertIn("Exec=/opt/DA.AppImage\n", f.read())
+
+
 # ---- the manager -------------------------------------------------------------------
 
 class Manager(TempDir):
@@ -426,6 +466,11 @@ class X11Grabs(TempDir):
     def setUpClass(cls):
         if not os.environ.get("DISPLAY") or not hotkeys.X11Hotkeys.available():
             raise unittest.SkipTest("needs an X display and python-xlib")
+        # XWayland, inside a Wayland session, does not route XTEST input like an X
+        # server (seen on KDE Plasma 6.7), and the app never grabs there anyway:
+        # choose() picks X11 grabs for X11 sessions only.
+        if os.environ.get("WAYLAND_DISPLAY"):
+            raise unittest.SkipTest("an X server, not XWayland in a Wayland session")
 
     def press(self, *keys):
         from Xlib import X, XK, display

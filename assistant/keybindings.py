@@ -64,6 +64,47 @@ def command(action):
     return f"{shlex.quote(launcher())} --action={action}"
 
 
+def _desktop_exec(path):
+    """`path` as one argument of a .desktop Exec line (Desktop Entry spec, "Exec key")."""
+    if not any(c in path for c in ' \t\n"\'\\><~|&;$*?#()`'):
+        return path
+    escaped = "".join("\\" + c if c in '"`$\\' else c for c in path)
+    return f'"{escaped}"'
+
+
+def app_entry(data_home=None):
+    """Install the hidden .desktop entry the GlobalShortcuts portal needs to accept the
+    app's id (see hotkeys.PortalHotkeys); its path. Rewritten only when it would change
+    - an AppImage moved elsewhere - and it also gives the desktop's shortcut settings a
+    name to show the shortcuts under."""
+    from . import APP_ID, APP_NAME
+    data_home = data_home or os.environ.get("XDG_DATA_HOME") or \
+        os.path.expanduser("~/.local/share")
+    folder = os.path.join(data_home, "applications")
+    path = os.path.join(folder, f"{APP_ID}.desktop")
+    text = ("[Desktop Entry]\n"
+            f"# Written by {APP_NAME}, so that the desktop's portal knows it by its app\n"
+            "# id and can bind its shortcuts. Hidden from menus.\n"
+            "Type=Application\n"
+            f"Name={APP_NAME}\n"
+            f"Exec={_desktop_exec(launcher())}\n"
+            "Icon=da-assistant\n"
+            "Terminal=false\n"
+            "NoDisplay=true\n")
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return path
+    except OSError:
+        pass
+    os.makedirs(folder, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+    return path
+
+
 # ---- GNOME and Cinnamon ------------------------------------------------------------
 
 class GSettingsKeybindings:

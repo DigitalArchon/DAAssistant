@@ -100,9 +100,42 @@ def label(accel):
     return "+".join([_LABEL[m] for m in MODIFIERS if m in mods] + [shown or key])
 
 
-def portal_trigger(accel):
-    """The GlobalShortcuts portal's preferred_trigger: "CTRL+SHIFT+1"."""
+def shifted(key, keymap=None):
+    """The symbol Shift makes of `key` on this keyboard's layout - "parenleft" for "9"
+    on a US layout, "parenright" on a German one - or None for a key Shift only
+    capitalises (a letter), or that the layout does not have."""
+    keyval = Gdk.keyval_from_name(key)
+    if not keyval or Gdk.keyval_to_upper(keyval) != Gdk.keyval_to_lower(keyval):
+        return None
+    if keymap is None:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        keymap = Gdk.Keymap.get_for_display(display)
+    found, entries = keymap.get_entries_for_keyval(keyval)
+    if not found or not entries:
+        return None
+    entry = entries[0]
+    ok, symbol, *_rest = keymap.translate_keyboard_state(
+        entry.keycode, Gdk.ModifierType.SHIFT_MASK, entry.group)
+    if not ok or symbol in (0, keyval):
+        return None
+    return Gdk.keyval_name(symbol)
+
+
+def portal_trigger(accel, keymap=None):
+    """The GlobalShortcuts portal's preferred_trigger: "CTRL+SHIFT+k", "LOGO+F5".
+
+    Shift with a key it does not just capitalise is sent as the symbol it makes, with
+    no SHIFT: "CTRL+parenleft" for Ctrl+Shift+9 on a US layout. KDE matches a key press
+    by the symbol it produced, so a stored Ctrl+Shift+9 never fired - a real Ctrl+Shift+9
+    arrives as Ctrl+( - while Ctrl+( does (Plasma 6.7 on Wayland). Worked out from this
+    keyboard's own layout, which is what the desktop will see."""
     mods, key = parts(accel)
+    if "shift" in mods:
+        symbol = shifted(key, keymap)
+        if symbol:
+            mods, key = mods - {"shift"}, symbol
     return "+".join([_PORTAL[m] for m in MODIFIERS if m in mods] + [key])
 
 

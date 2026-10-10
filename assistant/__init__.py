@@ -1,6 +1,6 @@
 """DA Assistant - screen/clipboard queries against an OpenAI-compatible API."""
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"
 APP_ID = "org.digitalarchon.DAAssistant"
 APP_NAME = "DA Assistant"
 

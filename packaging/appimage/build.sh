@@ -93,9 +93,8 @@ PY="$W/AppDir/usr/python/bin/python3"
 
 # The app, as the source tree has it: run-assistant beside the package, which it puts on the path.
 A="$W/AppDir/usr/lib/da-assistant"
-mkdir -p "$A" "$W/AppDir/usr/share/da-assistant"
+mkdir -p "$A"
 cp -r "$W/src/assistant" "$W/src/run-assistant" "$A/"
-install -m 755 "$W/src/tools/install-hotkeys.sh" "$W/AppDir/usr/share/da-assistant/"
 # Privacy Mode's end-to-end encryption client, beside the package where assistant/vendored.py
 # looks first: wheels only, each checked against packaging/private-mode.lock. Its console
 # scripts would only name the build's Python.

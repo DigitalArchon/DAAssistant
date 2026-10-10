@@ -252,110 +252,14 @@ class HotkeyRestart(TempDir):
     def test_switching_hotkeys_off_stops_reporting_the_old_mechanism(self):
         from assistant.hotkeys import HotkeyManager
         config = Config(os.path.join(self.dir, "c.json"))
-        manager = HotkeyManager(config, lambda action: None)
-        manager.mode, manager.detail = "x11", "X11 grabs (5 actions, lock-modifier safe)"
+        manager = HotkeyManager(config, lambda action: None,
+                                run=lambda args: (0, ""))
+        manager.mode, manager.detail = "x11", "X11 key grabs"
         config.hotkey_mode = "off"
-        manager.start()
+        with mock.patch.object(session, "desktop", return_value="cinnamon"):
+            manager.start()
         self.assertEqual(manager.mode, "off")
-        self.assertEqual(manager.detail, "disabled in settings")
-
-
-FAKE_GSETTINGS = """#!/bin/sh
-# Stands in for gsettings: answers `get` with a list the user already had, and writes
-# down what it is told to `set` instead of doing it.
-[ "$1" = get ] && echo "$FAKE_LIST"
-[ "$1" = set ] && echo "gsettings $*" >> "$FAKE_LOG"
-exit 0
-"""
-
-
-class HotkeyInstallerLeavesOtherShortcutsAlone(TempDir):
-    """Against a stub gsettings; nothing on this machine is read or written.
-
-    --remove has no dry run of its own, so the stub records the calls. The memory backend
-    is a second line of defence: were the real binary ever reached, it would have
-    nowhere to write.
-    """
-
-    def _dry_run(self, desktop, existing, *args, encyclopedia=True):
-        # A home of its own, holding a config with the encyclopedia on or off.
-        config = os.path.join(self.dir, ".config", "da-assistant")
-        os.makedirs(config, exist_ok=True)
-        with open(os.path.join(config, "config.json"), "w") as f:
-            json.dump({"encyclopedia_enabled": encyclopedia}, f, indent=2)
-        stub = os.path.join(self.dir, "gsettings")
-        with open(stub, "w") as f:
-            f.write(FAKE_GSETTINGS)
-        os.chmod(stub, 0o755)
-        log = os.path.join(self.dir, "set.log")
-        env = dict(os.environ, PATH=self.dir + os.pathsep + os.environ["PATH"],
-                   FAKE_LIST=existing, FAKE_LOG=log, GSETTINGS_BACKEND="memory",
-                   HOME=self.dir)
-        env.pop("APPIMAGE", None)
-        result = subprocess.run(
-            ["bash", str(ROOT / "tools" / "install-hotkeys.sh"),
-             f"--desktop={desktop}", *args],
-            capture_output=True, text=True, env=env, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        output = result.stdout
-        if os.path.exists(log):
-            with open(log) as f:
-                output += f.read()
-            os.unlink(log)
-        return next(line for line in output.splitlines()
-                    if "gsettings set" in line and "custom-" in line
-                    and "custom-keybinding:" not in line)
-
-    def test_cinnamon_install_appends_names_to_what_is_there(self):
-        line = self._dry_run("cinnamon", "['custom0', '__dummy__']")
-        self.assertIn("['custom0', '__dummy__', 'da-assistant-translate_text',", line)
-        self.assertIn("'da-assistant-search_encyclopedia', "
-                      "'da-assistant-ask_encyclopedia']", line)
-        # Cinnamon builds base/<entry>/ itself; a path here resolves to nothing.
-        self.assertNotIn("/org/cinnamon", line.split("custom-list", 1)[1])
-
-    def test_the_encyclopedias_keys_only_when_it_is_on(self):
-        line = self._dry_run("cinnamon", "['custom0']", encyclopedia=False)
-        self.assertTrue(line.rstrip().endswith("'da-assistant-look_up_word']"), line)
-        self.assertNotIn("encyclopedia", line)
-        # And taken back if they were there from before.
-        line = self._dry_run("cinnamon", "['da-assistant-ask_encyclopedia']",
-                             encyclopedia=False)
-        self.assertNotIn("encyclopedia", line)
-
-    def test_installing_twice_lists_them_once(self):
-        line = self._dry_run(
-            "cinnamon", "['da-assistant-ocr_only', 'custom0', 'da-assistant-query_text']")
-        self.assertEqual(line.count("da-assistant-ocr_only"), 1)
-        self.assertIn("'custom0'", line)
-
-    def test_cinnamon_remove_keeps_the_users_own(self):
-        line = self._dry_run("cinnamon", "['custom0', 'da-assistant-ocr_only']",
-                             "--remove")
-        self.assertTrue(line.rstrip().endswith("custom-list ['custom0']"), line)
-
-    def test_gnome_keeps_the_users_own_and_uses_paths(self):
-        mine = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
-        line = self._dry_run("gnome", f"['{mine}']")
-        self.assertIn(f"['{mine}', ", line)
-        self.assertIn("custom-keybindings/da-assistant-ask_encyclopedia/']", line)
-        line = self._dry_run("gnome", f"['{mine}']", "--remove")
-        self.assertTrue(line.rstrip().endswith(f"['{mine}']"), line)
-
-    def test_an_empty_list_prints_the_way_gsettings_prints_it(self):
-        line = self._dry_run("cinnamon", "@as []")
-        self.assertIn("custom-list ['da-assistant-translate_text',", line)
-        line = self._dry_run("cinnamon", "@as []", "--remove")
-        self.assertTrue(line.rstrip().endswith("custom-list []"), line)
-
-    def test_mate_is_not_sent_to_the_cinnamon_installer(self):
-        env = dict(os.environ)
-        env.pop("APPIMAGE", None)
-        result = subprocess.run(
-            ["bash", str(ROOT / "tools" / "install-hotkeys.sh"), "--desktop=mate"],
-            capture_output=True, text=True, env=env, timeout=30)
-        self.assertNotIn("org.cinnamon", result.stdout)
-        self.assertIn("--action=ocr_only", result.stdout)
+        self.assertEqual(manager.detail, "switched off in Settings > Advanced")
 
 
 if __name__ == "__main__":

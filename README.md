@@ -12,9 +12,9 @@ on your screen or in your clipboard, using any OpenAI-compatible chat API.
 
 ## What it does
 
-Eight operations, from the tray menu or a global hotkey:
+Eight operations, from the tray menu or a global shortcut you choose:
 
-| Action | Default key | What it does |
+| Action | Suggested key | What it does |
 |---|---|---|
 | Translate clipboard text | `Ctrl+Shift+1` | Translates the clipboard into your language |
 | Translate image selection | `Ctrl+Shift+2` | Reads the text in a screen region, then translates it |
@@ -26,7 +26,9 @@ Eight operations, from the tray menu or a global hotkey:
 | Ask Encyclopedia | `Ctrl+Shift+8` | Answers from the encyclopedia alone, every quotation checked - [off by default](#the-encyclopedia) |
 
 **Ask anything**, at the top of the tray menu, opens a chat with nothing captured, to
-type into straight away.
+type into straight away (suggested key `Ctrl+Shift+9`).
+
+No shortcut is set until you choose one - see [Shortcuts](#shortcuts).
 
 Answers open in a chat window that streams as it writes, renders Markdown, and takes
 follow-up questions. Any chat can take attached pictures and text files (Markdown, JSON,
@@ -115,25 +117,30 @@ goes into your desktop's keyring (GNOME Keyring, or KWallet on Plasma), which en
 it. Without a keyring, a key typed into Settings works until the app quits, and Settings
 says why it cannot be kept.
 
-## Hotkeys
+## Shortcuts
 
-On KDE Plasma 6 and Hyprland the hotkeys work as soon as the app starts. Everywhere else,
-including Cinnamon and GNOME, register them with your desktop once:
+Open **Settings > Shortcuts**, click an action's button and press the keys you want, or
+press **Use suggested keys** for `Ctrl+Shift+1` to `9`. Nothing is bound until you do.
+How they are bound depends on your session, and the page says which:
 
-```bash
-./DA_Assistant-*-x86_64.AppImage --install-hotkeys --apply    # the AppImage
-./tools/install-hotkeys.sh --apply                            # from source
-```
+- **X11** (Cinnamon, MATE, XFCE, or KDE and GNOME on Xorg): the app listens for the keys
+  itself, and tells you if another program already has one.
+- **KDE Plasma 6, GNOME 48 and later** on Wayland: your desktop binds them, through the
+  GlobalShortcuts portal, and may ask you to confirm them. Change them later in its own
+  shortcut settings.
+- **GNOME before 48, Cinnamon, Hyprland and Sway** on Wayland: the app writes them into
+  the desktop's own keybindings when you press Save, and leaves everything else there as
+  it was.
+- **Anything else**: the page lists the commands to bind by hand.
 
-Then set **Settings > Advanced > Hotkey mode** to `static`. See
-[Global hotkeys](MANUAL.md#global-hotkeys) for more.
+See [Global shortcuts](MANUAL.md#global-shortcuts) for more.
 
 ## The encyclopedia
 
 If you have a purchased copy of the **Britannica Ultimate Reference Suite 2015** DVD,
 copy its `data` folder to your computer and turn on **Settings > Reference > Search
 Encyclopedia and Ask Encyclopedia**. Both are off by default: until then they are not in
-the tray menu, and `Ctrl+Shift+7` and `8` are left to other programs. Earlier editions of
+the tray menu, and no shortcut is bound to them. Earlier editions of
 the DVD may work too, but only the 2015 edition has been tested.
 
 DA Assistant is not affiliated with Britannica in any way. The purpose of these two

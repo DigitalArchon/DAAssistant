@@ -18,8 +18,7 @@ from .hotkeys import action_names
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="run-assistant", description=f"{APP_NAME} {__version__}")
-    parser.add_argument("--action", choices=["ask_anything"] + action_names()
-                        + ["settings", "diagnostics"],
+    parser.add_argument("--action", choices=action_names() + ["settings", "diagnostics"],
                         help="perform an action in the running instance, then exit")
     parser.add_argument("--probe", action="store_true",
                         help="report display server, capture and hotkey support")
@@ -56,7 +55,7 @@ def probe():
         print(line)
 
     from .config import Config
-    from .hotkeys import PortalHotkeys, X11Hotkeys
+    from .hotkeys import bindings, choose
     config = Config()
     print(f"Config file    : {config.config_file}")
     print(f"API key set    : {'yes' if config.api_key else 'NO - set one in Settings'}")
@@ -64,11 +63,9 @@ def probe():
     from .app import privacy_lines
     for line in privacy_lines(config):
         print(line.replace(" : ", "  : ", 1))
-    print(f"Hotkey mode    : {config.hotkey_mode}")
-    print(f"  portal path  : {'available' if PortalHotkeys.available() else 'unavailable'}")
-    print(f"  x11 path     : {'available' if X11Hotkeys.available() else 'unavailable'}")
-    if not PortalHotkeys.available() and session.session_type() != "x11":
-        print("  -> no in-process hotkeys here; run tools/install-hotkeys.sh --print")
+    mechanism, why = choose(config)
+    print(f"Shortcuts      : {mechanism} ({why}); setting {config.hotkey_mode}")
+    print(f"  chosen       : {len(bindings(config))} - set them in Settings > Shortcuts")
     from . import errors, ipc
     print(f"Error log      : {errors.log_path()}")
     print(f"Running already: {'yes' if ipc.is_running() else 'no'}")

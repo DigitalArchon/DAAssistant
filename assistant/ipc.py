@@ -1,11 +1,13 @@
 """Single-instance D-Bus service.
 
-The static-hotkey path needs a way for a freshly spawned `run-assistant --action=ocr_only`
-to reach the already-running tray app instead of starting a second copy. Owning a
-well-known bus name gives us both the uniqueness check and the message channel.
+Shortcuts kept by the desktop (keybindings.py) need a way for a freshly spawned
+`run-assistant --action=ocr_only` to reach the already-running tray app instead of
+starting a second copy. Owning a well-known bus name gives us both the uniqueness check
+and the message channel.
 
-This is what makes hotkeys work on Wayland at all: the desktop's own keyboard settings
-invoke a short-lived process, which hands the action to the running instance and exits.
+This is what makes shortcuts work on Wayland without a GlobalShortcuts portal: the
+desktop's own keyboard settings invoke a short-lived process, which hands the action to
+the running instance and exits.
 """
 
 from gi.repository import Gio, GLib

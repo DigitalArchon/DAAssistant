@@ -10,7 +10,7 @@ Everything DA Assistant does, and how. For installing it and a first run, see th
 - [Web search](#web-search)
 - [Look up word](#look-up-word)
 - [Search Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)
-- [Global hotkeys](#global-hotkeys)
+- [Global shortcuts](#global-shortcuts)
 - [Starting automatically](#starting-automatically)
 - [What it uses from the system](#what-it-uses-from-the-system)
 - [Where things are kept](#where-things-are-kept)
@@ -19,10 +19,12 @@ Everything DA Assistant does, and how. For installing it and a first run, see th
 
 ## The operations
 
-Eight operations, from the tray menu or a global hotkey - the last two only once you turn
-them on (see [Search Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)):
+Eight operations, from the tray menu or a global shortcut you choose (see [Global
+shortcuts](#global-shortcuts)) - the last two only once you turn them on (see [Search
+Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)). No
+shortcut is set until you choose one; these are the suggested keys:
 
-| Action | Default key | What it does |
+| Action | Suggested key | What it does |
 |---|---|---|
 | Translate clipboard text | `Ctrl+Shift+1` | Translates the clipboard into your target language |
 | Translate image selection | `Ctrl+Shift+2` | Transcribes a screen region, then translates it |
@@ -35,9 +37,8 @@ them on (see [Search Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and
 
 **Ask anything**, at the top of the tray menu, opens a chat window with nothing captured:
 type a question, attach files if you like (see [Attachments](#attachments)), and it is
-answered by your answering model, privately in Privacy Mode. It has no hotkey of its own;
-bind `run-assistant --action=ask_anything` to a key in your desktop's settings if you
-want one.
+answered by your answering model, privately in Privacy Mode. Its suggested key is
+`Ctrl+Shift+9`.
 
 Answers open in a chat window that streams as it generates, renders Markdown properly
 (tables, code blocks with syntax highlighting, URLs as links that open in your browser)
@@ -442,10 +443,10 @@ worth, to answer from and quote.
 
 For owners of the 2015 encyclopedia DVD the [README](README.md#the-encyclopedia) describes.
 Both are off until you turn on **Settings > Reference > Search Encyclopedia and Ask
-Encyclopedia**; until then they are not in the tray menu, and `Ctrl+Shift+7` and `8` are
-left to other programs.
+Encyclopedia**; until then they are not in the tray menu, and their shortcuts, if you set
+any, are not bound.
 
-**Search Encyclopedia** (`Ctrl+Shift+7`) is for reading. The article fills the window as
+**Search Encyclopedia** is for reading. The article fills the window as
 the DVD presented it - every picture with its caption, each section's contributors,
 films and sounds playable in place, the page's own "To cite this page" box at the end
 (a picture's page carries its credit), links to other articles followed with **Back**
@@ -462,7 +463,7 @@ it - each whole, or for a very long one, the sections that best match the questi
 and nothing else you have read does. With nothing tagged, the question is not sent.
 **Hide answers** gives the reading the room.
 
-**Ask Encyclopedia** (`Ctrl+Shift+8`) is for an answer that rests on the encyclopedia, not on
+**Ask Encyclopedia** is for an answer that rests on the encyclopedia, not on
 whatever else the model learned. Each question goes through four steps:
 
 1. **Plan**: the model turns the question into what an answer would contain - names,
@@ -499,8 +500,7 @@ Setting it up, once:
 2. Tick **Settings > Reference > Search Encyclopedia and Ask Encyclopedia**, point
    **Encyclopedia DVD folder** at the copy and press **Import**. Or from a terminal:
    `./run-assistant --import-encyclopedia /path/to/data`, then tick the box.
-3. If your hotkeys come from `tools/install-hotkeys.sh`, run it again to add
-   `Ctrl+Shift+7` and `8`.
+3. Give them shortcuts in **Settings > Shortcuts** if you want them.
 4. For the animations, run `./tools/install-ruffle.sh` (the AppImage carries it already).
 
 The import reads all three encyclopedias - the main one (103,092 articles), the Student (18,934) and the Elementary (3,874) - into a searchable database
@@ -526,28 +526,43 @@ What it takes:
 None of the encyclopedia's content is part of this app, and nothing it writes holds any:
 the database is built on your machine from your copy.
 
-## Global hotkeys
+## Global shortcuts
 
-A Wayland client cannot grab global keys for itself. There are two mechanisms:
+Set them in **Settings > Shortcuts**: click an action's button and press the combination,
+Escape to cancel, Backspace (or the clear button) for none. **Use suggested keys** fills
+in `Ctrl+Shift+1` to `9`; **Clear all** empties the list. A combination needs Ctrl, Alt
+or Super, or must be a function key, so that a shortcut never takes a plain key from
+every program; `Ctrl+Alt+F1` to `F12` are refused, since they switch to a text console
+and never reach any program. Giving a key to a second action takes it from the first.
+Nothing is bound until you press Save, and a new install has none.
 
-- **`org.freedesktop.portal.GlobalShortcuts`** — used automatically where a backend
-  exists (KDE Plasma 6, Hyprland). Nothing to do.
-- **Desktop keybindings** — everywhere else, including Cinnamon and GNOME. Register them
-  with your desktop, pointing at `run-assistant --action=NAME`:
+A Wayland program cannot listen for keys on its own, so how they are bound depends on
+the session. The page says which applies; **Settings > Advanced > Shortcuts by** can
+force one if the automatic choice is wrong.
 
-```bash
-./tools/install-hotkeys.sh            # show what it would do; changes nothing
-./tools/install-hotkeys.sh --apply    # install them
-./tools/install-hotkeys.sh --remove   # take them back out
-```
+| Session | How | What you see |
+|---|---|---|
+| X11 - Cinnamon, MATE, XFCE, KDE or GNOME on Xorg | The app grabs the keys itself while it runs | A key another program holds is marked "taken by another program" |
+| Wayland with a GlobalShortcuts portal - KDE Plasma 6, GNOME 48 and later | The desktop binds them. The keys you choose are suggestions; it may ask you to confirm them, and keeps them until you change them in its own shortcut settings | The key the desktop actually bound, beside each action and in the tray menu. **Change in system settings…** opens its dialog where the portal supports that |
+| Wayland on GNOME before 48 or Cinnamon | Written into the desktop's custom keyboard shortcuts as `DA Assistant: …`, each running `run-assistant --action=NAME` | They appear in the desktop's own keyboard settings too |
+| Hyprland, Sway | Written into `~/.config/hypr/hyprland.conf` or `~/.config/sway/config`, between `# --- DA Assistant hotkeys` marker lines, and the compositor reloaded. A backup of the file is kept beside it as `.da-assistant.bak`; a config that does not exist is not created | |
+| Anything else | Nothing is written | The commands to bind by hand, with a Copy button |
 
-Supports Cinnamon, GNOME, KDE Plasma 5/6, Hyprland and Sway; on MATE, XFCE and anything
-else it prints the commands to bind by hand. The encyclopedia's two keys are included
-only while it is turned on in Settings; run it again after turning it on or off. Your existing custom shortcuts are left
-alone, by `--apply` and `--remove` both. After `--apply`, set **Hotkey mode** to `static`
-in Settings so the app does not also grab the same keys.
+Hyprland has a portal too, but it binds nothing until you write `global` binds into its
+config by hand, so the app writes ordinary binds there instead.
 
-Run `--probe` any time to see which mechanism is active.
+Only the app's own entries are ever touched - those named `da-assistant-…`, or the block
+between the markers - and the rest of your shortcuts stay as they are. A binding names
+the `.AppImage` file itself when you run the AppImage, so move the file and the next
+start rewrites them. When something else takes over - you switch shortcuts off, or log
+into an X11 session after a Wayland one - what was written into the desktop is taken back
+out.
+
+Upgrading from 3.0: the keys you had working stay, and anything `install-hotkeys.sh`
+wrote is taken over or, on KDE, removed in favour of the portal. The script itself is
+gone, and so is `--install-hotkeys`.
+
+Run `--probe` any time to see which mechanism is in use.
 
 ## Starting automatically
 
@@ -572,7 +587,8 @@ from source, every package the [README](README.md#from-source) lists is optional
 - Without WebKitGTK the chat window falls back to plain text.
 - Without an indicator library the tray falls back to `XApp.StatusIcon` or
   `Gtk.StatusIcon`.
-- Without `python3-xlib` X11 hotkeys are unavailable, but the setup script still works.
+- Without `python3-xlib` the app cannot listen for shortcuts on X11; it writes them into
+  the desktop's keybindings instead where it can (Settings > Advanced > Shortcuts by).
 - Without `python3-keyring`, or a keyring for it to use (GNOME Keyring, KWallet), the API
   key is not remembered between runs.
 - End-to-end encrypted Privacy Mode needs one more thing that no distribution packages;
@@ -649,9 +665,10 @@ transmitted. Check the capture is not dimmed or clipped, and that the region is 
 around the text. Small captures are upscaled automatically (up to 3x); the confirm dialog
 shows the dimensions actually sent.
 
-**Hotkeys do nothing.** Confirm the app is running (`--probe` reports it), then check
-`Hotkey mode`. On KDE, global shortcuts are cached by a daemon — log out and back in, or
-restart `kglobalaccel`, after installing them.
+**Shortcuts do nothing.** Confirm the app is running (`--probe` reports it and how
+shortcuts are bound), then open **Settings > Shortcuts**: a key another program holds,
+or one the desktop did not assign, is marked there. On KDE and GNOME's portal, the key
+the desktop actually bound is shown beside each action, and is the one to press.
 
 **It does not follow the desktop's theme.** `--probe` prints the GTK theme name, where
 the theme was looked for, and whether it was found. GTK is the system's, the AppImage's
@@ -710,7 +727,9 @@ assistant/
   vendored.py              puts the Private Mode client ahead of system packages
   models.py                model catalogue: fetch, cache, search
   prompts.py               all prompt text
-  hotkeys.py               GlobalShortcuts portal + X11 grabber
+  hotkeys.py               shortcuts: which mechanism, X11 grabs, the portal, migration
+  shortcuts.py             key combinations, and each desktop's spelling of them
+  keybindings.py           shortcuts written into GNOME, Cinnamon, Hyprland and Sway
   ipc.py                   single-instance D-Bus service
   clipboard.py             clipboard reads with CLI fallbacks
   hostenv.py               hands spawned host binaries their original environment
@@ -736,7 +755,7 @@ assistant/
     encyclopedia_windows.py  Search Encyclopedia, the reader, and Ask Encyclopedia
     bubbles.py             the transcript as widgets, when WebKit is unavailable
     redact.py              the black-out editor, for captures and attached pictures
-tools/install-hotkeys.sh   desktop keybinding installer
+    shortcuts.py           Settings > Shortcuts, and its key-capture button
 tools/install-private-mode.sh  installs the end-to-end encryption client from the lock
 tools/install-ruffle.sh    installs Ruffle from packaging/ruffle.lock
 packaging/                 the reproducible AppImage build (see packaging/README.md), the

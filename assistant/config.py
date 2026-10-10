@@ -39,10 +39,16 @@ DEFAULTS = {
     # premium_text_model does outside Privacy Mode.
     "private_premium_model": "TEE/glm-5.3",
     "private_vision_model": "TEE/qwen3.6-27b",
-    # auto: use the GlobalShortcuts portal when a backend provides it (KDE, Hyprland).
-    # static: bindings were installed by tools/install-hotkeys.sh; do not also use the portal.
-    # portal: force the portal. off: no hotkeys.
+    # Global shortcuts, set in Settings > Shortcuts: {action: "<Control><Shift>1"}. None
+    # are bound on a new install. See assistant/hotkeys.py.
+    "hotkeys": {},
+    # How they are bound: auto picks for the session (X11 grabs, the GlobalShortcuts
+    # portal, or the desktop's own keybindings); x11, portal and desktop force one;
+    # off binds none.
     "hotkey_mode": "auto",
+    # What the app last wrote into the desktop's own keybindings, so that it can be
+    # rewritten when it changes and taken out when something else takes over.
+    "hotkeys_installed": {},
     # Image pipeline. See assistant/imaging.py for what these do.
     "upscale_small_captures": True,
     "capture_target_long_edge": 1600,
@@ -170,6 +176,11 @@ class Config:
         # A key written into the file by an older version, to be moved to the keychain.
         loose = {key: on_disk.pop(key) for key in SECRETS if on_disk.get(key)}
         values.update(on_disk)
+        if on_disk and "hotkeys" not in on_disk:
+            # Written before shortcuts could be chosen: hotkeys.migrate decides what it
+            # keeps, from what worked in this session. Until then it is undecided, and
+            # stays out of the file.
+            values["hotkeys"] = None
         # Surfaced in the UI; we still start with defaults rather than dying.
         self.load_error = error
 
@@ -228,6 +239,12 @@ class Config:
         merged.update(on_disk)
         for key in dirty:
             merged[key] = getattr(self, key)
+        # Undecided (None, see load) and not on disk: written once it is decided, not
+        # as the default in the meantime, which would read as decided.
+        pending = [key for key in DEFAULTS if key not in on_disk and key not in dirty
+                   and getattr(self, key, 0) is None]
+        for key in pending:
+            merged.pop(key, None)
         # Secrets go to the keychain, and only the ones changed here. A copy in the file
         # goes too - unless the keychain could not take it at load (see load) and
         # nothing has replaced it since.
@@ -253,7 +270,7 @@ class Config:
         object.__setattr__(self, "_loading", True)
         try:
             for key, value in merged.items():
-                if key not in SECRETS:
+                if key not in SECRETS and key not in pending:
                     setattr(self, key, value)
         finally:
             object.__setattr__(self, "_loading", False)

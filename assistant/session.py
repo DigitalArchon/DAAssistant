@@ -84,7 +84,7 @@ def portal_interfaces():
 
     Probed rather than assumed: on this Cinnamon box Screenshot is present (v2, so it
     supports the interactive region picker) but GlobalShortcuts is not, which is exactly
-    the split that decides whether hotkeys need the setup script.
+    the split that decides whether shortcuts are written into the desktop instead.
     """
     global _portal_cache
     if _portal_cache is None:
@@ -139,7 +139,7 @@ def summary():
         f"Desktop        : {de}",
         f"Portal ifaces  : {', '.join(sorted(i.split('.')[-1] for i in portal_interfaces())) or 'none (portal not running?)'}",
         f"  Screenshot   : {'yes, version ' + str(portal_version('Screenshot')) if portal_has('Screenshot') else 'NO'}",
-        f"  GlobalShortcuts: {'yes' if portal_has('GlobalShortcuts') else 'NO (use tools/install-hotkeys.sh)'}",
+        f"  GlobalShortcuts: {'yes' if portal_has('GlobalShortcuts') else 'NO (shortcuts go into the desktop instead)'}",
         f"Cinnamon D-Bus : {'yes' if has_cinnamon_screenshot() else 'no'}",
     ]
     tools = available_tools()

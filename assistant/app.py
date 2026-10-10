@@ -10,7 +10,7 @@ from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, i
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
-from .hotkeys import ACTIONS, ENCYCLOPEDIA_ACTIONS, HotkeyManager
+from .hotkeys import ACTIONS, ENCYCLOPEDIA_ACTIONS, HotkeyManager, migrate as migrate_hotkeys
 from .llm import LLMClient, LLMError
 from .reference.encyclopedia import Encyclopedia
 from .reference.dictionaries import Library
@@ -50,7 +50,9 @@ class Assistant:
         self.dictionaries = Library(self.config)
         self.encyclopedia = Encyclopedia(self.config)
         self._reader = None                 # the Search Encyclopedia window, while open
-        self.hotkeys = HotkeyManager(self.config, self.dispatch)
+        self.hotkeys = HotkeyManager(self.config, self.dispatch,
+                                     on_change=self._refresh_menu_keys)
+        self._action_items = {}
         self._notification = None
         self._settings_dialog = None
 
@@ -66,10 +68,16 @@ class Assistant:
         self.service = ipc.Service(self.dispatch)
         self.is_primary = self.service.acquire()
 
-        # Start hotkeys before building the menu: the menu shows key hints only when
-        # a hotkey mechanism is actually active.
-        self.hotkeys.start()
+        # Before the shortcuts start: a config from before they could be chosen keeps
+        # the keys it had working.
+        if self.is_primary:
+            migrate_hotkeys(self.config)
         self.menu = self._build_menu()
+        # After the menu: it shows each action's key as soon as it is bound. Only in
+        # the instance that stays: a second one exits, and must not grab keys or
+        # rewrite the desktop's keybindings on its way out.
+        if self.is_primary:
+            self.hotkeys.start()
         # Applies to every window the app opens: chat, settings, the selector.
         Gtk.Window.set_default_icon_name(app_icon.name())
         self.tray = Tray(APP_ID, APP_NAME, self.menu)
@@ -122,24 +130,18 @@ class Assistant:
 
     def _build_menu(self):
         menu = Gtk.Menu()
-        show_keys = self.hotkeys.mode in ("x11", "portal")
-
-        # First: a conversation with nothing captured, to type into straight away.
-        ask = Gtk.MenuItem(label="Ask anything")
-        ask.connect("activate", lambda _w: self.dispatch("ask_anything"))
-        menu.append(ask)
-        menu.append(Gtk.SeparatorMenuItem())
-
+        self._action_items = {}
         self._encyclopedia_items = []
-        for name, label, trigger in ACTIONS:
-            text = label
-            if show_keys:
-                text = f"{label}\t{trigger.replace('<Control>', 'Ctrl+').replace('<Shift>', 'Shift+')}"
-            item = Gtk.MenuItem(label=text)
+        for name, label, _suggested in ACTIONS:
+            item = Gtk.MenuItem(label=label)
             item.connect("activate", lambda _w, n=name: self.dispatch(n))
             menu.append(item)
+            self._action_items[name] = item
             if name in ENCYCLOPEDIA_ACTIONS:
                 self._encyclopedia_items.append(item)
+            if name == "ask_anything":
+                # First, and on its own: a conversation with nothing captured.
+                menu.append(Gtk.SeparatorMenuItem())
 
         menu.append(Gtk.SeparatorMenuItem())
 
@@ -171,6 +173,16 @@ class Assistant:
         menu.show_all()
         self._sync_encyclopedia_items()
         return menu
+
+    def _refresh_menu_keys(self):
+        """Each action's key beside it in the menu, as bound now - in the portal's
+        case, as the desktop says it bound it."""
+        for name, label, _suggested in ACTIONS:
+            item = self._action_items.get(name)
+            if item is None:
+                continue
+            key = self.hotkeys.trigger_label(name)
+            item.set_label(f"{label}\t{key}" if key else label)
 
     def _sync_encyclopedia_items(self):
         for item in self._encyclopedia_items:
@@ -730,11 +742,11 @@ class Assistant:
             return
         dialog = self._settings_dialog = SettingsDialog(
             None, self.config, self.client, encyclopedia=self.encyclopedia,
-            notify=self.notify)
+            notify=self.notify, hotkeys=self.hotkeys)
         try:
             if dialog.run() == Gtk.ResponseType.OK:
-                hotkey_mode = self.config.hotkey_mode
-                encyclopedia = self.config.encyclopedia_enabled
+                before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
+                          self.config.encyclopedia_enabled)
                 for key, value in dialog.values().items():
                     setattr(self.config, key, value)
                 try:
@@ -750,23 +762,31 @@ class Assistant:
                     self.notify("Settings saved")
                 self._sync_privacy_item()
                 self._sync_encyclopedia_items()
-                # Only when it changed: tearing the grabs down and asking the
-                # portal for a new session is not free, and most saves are about
-                # something else entirely. The encyclopedia's two keys come and go
-                # with it.
-                if (self.config.hotkey_mode != hotkey_mode
-                        or self.config.encyclopedia_enabled != encyclopedia):
+                # Only when they changed: tearing the grabs down, asking the portal
+                # for a new session or rewriting the desktop's keybindings is not
+                # free, and most saves are about something else entirely. The
+                # encyclopedia's two keys come and go with it.
+                after = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
+                         self.config.encyclopedia_enabled)
+                if after != before:
                     self.hotkeys.stop()
                     self.hotkeys.start()
-                if (self.config.encyclopedia_enabled != encyclopedia
-                        and self.hotkeys.mode == "static"):
-                    # The desktop holds these bindings, not us.
-                    change = "add" if self.config.encyclopedia_enabled else "remove"
-                    self.notify(f"Run install-hotkeys again to {change} the "
-                                "encyclopedia's keys", urgency="normal")
+                    self._report_hotkeys()
         finally:
             self._settings_dialog = None
             dialog.destroy()
+
+    def _report_hotkeys(self):
+        """Say which shortcuts could not be bound as asked, if any."""
+        from . import shortcuts
+        if self.hotkeys.error:
+            self.notify(f"Shortcuts not saved: {self.hotkeys.error}", urgency="normal")
+            return
+        problems = [f"{shortcuts.label(self.hotkeys.wanted[name])} "
+                    f"({problem})" for name, problem in self.hotkeys.problems.items()
+                    if name in self.hotkeys.wanted]
+        if problems:
+            self.notify("Not bound: " + "; ".join(problems), urgency="normal")
 
     def show_diagnostics(self):
         from . import session, theming
@@ -837,7 +857,8 @@ class Assistant:
             advice = gtkcompat.webkit_advice()
             if advice:
                 print(advice)
-        print(f"  hotkeys       : {self.hotkeys.mode} ({self.hotkeys.detail})")
-        if self.hotkeys.mode not in ("x11", "portal"):
-            print("  for global hotkeys run: tools/install-hotkeys.sh --print")
+        print(f"  hotkeys       : {self.hotkeys.mode} ({self.hotkeys.detail}), "
+              f"{len(self.hotkeys.wanted)} bound")
+        if self.hotkeys.problems or self.hotkeys.error:
+            print(f"  not bound     : {self.hotkeys.error or self.hotkeys.problems}")
         Gtk.main()

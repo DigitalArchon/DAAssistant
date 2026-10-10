@@ -137,12 +137,14 @@ class AppRunStashesWhatItOverrides(unittest.TestCase):
         env = {"PATH": os.environ.get("PATH", ""), "SSL_CERT_FILE": "/my/bundle.pem"}
         self.assertEqual(self._cert_file(env), "/my/bundle.pem")
 
-    def test_hotkey_install_runs_before_the_environment_is_touched(self):
-        # install-hotkeys.sh drives gsettings and kwriteconfig6, which are host binaries
-        # and get no hostenv treatment of their own.
-        install = self.text.index("--install-hotkeys")
-        first_export = self.text.index("export APPIMAGE_HOST_ENV_KEYS")
-        self.assertLess(install, first_export)
+    def test_the_retired_hotkey_installer_says_where_shortcuts_went(self):
+        # Shortcuts are set in the app (Settings > Shortcuts); a binding or a habit that
+        # still asks for the old installer is told so, rather than starting the app.
+        start = self.text.index('if [ "${1-}" = "--install-hotkeys" ]; then')
+        block = self.text[start:self.text.index("fi", start)]
+        self.assertIn("Settings > Shortcuts", block)
+        self.assertIn("exit 2", block)
+        self.assertNotIn("install-hotkeys.sh", self.text)
 
     def test_it_is_valid_shell(self):
         self.assertEqual(subprocess.run(["sh", "-n", str(APPRUN)]).returncode, 0)
@@ -152,14 +154,12 @@ class AppRunStashesWhatItOverrides(unittest.TestCase):
         self.assertRegex(self.text, r'exec "\$HERE/usr/python/bin/python3" -I ')
 
 
-class HotkeyBindingsPointAtSomethingPermanent(unittest.TestCase):
-    def test_installer_prefers_the_appimage_path_over_its_own_location(self):
-        # Inside the image the script lives on a mount that is gone by the time the user
-        # presses the key; $APPIMAGE is the file itself.
-        text = (ROOT / "tools" / "install-hotkeys.sh").read_text()
-        self.assertIn('LAUNCHER="$APPIMAGE"', text)
-        self.assertLess(text.index('if [ -n "${APPIMAGE:-}" ]'),
-                        text.index('LAUNCHER="$(cd "$SCRIPT_DIR/.." && pwd)/run-assistant"'))
+class TheOldHotkeyInstallerIsGone(unittest.TestCase):
+    def test_not_in_the_tree_or_the_image(self):
+        # Replaced by assistant/keybindings.py; see test_shortcuts.Launcher for where
+        # bindings now point.
+        self.assertFalse((ROOT / "tools" / "install-hotkeys.sh").exists())
+        self.assertNotIn("install-hotkeys", (PACKAGING / "build.sh").read_text())
 
 
 class AppImageCarriesItsVersion(unittest.TestCase):

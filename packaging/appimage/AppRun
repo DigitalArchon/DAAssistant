@@ -11,18 +11,15 @@
 #   DA_Assistant.AppImage                      start the tray app
 #   DA_Assistant.AppImage --action=ocr_only    hand an action to the running instance
 #   DA_Assistant.AppImage --probe              report what this machine supports
-#   DA_Assistant.AppImage --install-hotkeys    register desktop keybindings
 #
 set -u
 
 HERE="$(dirname "$(readlink -f "$0")")"
 
-# Runs before anything is set below, because it drives host tools exclusively
-# (gsettings, kwriteconfig6) and wants the environment it was invoked with. The script
-# reads $APPIMAGE to learn how to spell the launcher in the bindings it writes.
+# Shortcuts are set in the app now, Settings > Shortcuts; the old installer is gone.
 if [ "${1-}" = "--install-hotkeys" ]; then
-  shift
-  exec "$HERE/usr/share/da-assistant/install-hotkeys.sh" "$@"
+  echo "Shortcuts are set in DA Assistant itself now: tray menu > Settings > Shortcuts." >&2
+  exit 2
 fi
 
 # Stashed for assistant/hostenv.py. Only variables that get set below belong here: a name

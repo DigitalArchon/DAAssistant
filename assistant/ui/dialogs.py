@@ -435,9 +435,13 @@ class SettingsDialog(Gtk.Dialog):
                          "see images answers from. Wants a cheap, literal reader."),
     }
 
-    def __init__(self, parent, config, client, encyclopedia=None, notify=None):
+    def __init__(self, parent, config, client, encyclopedia=None, notify=None,
+                 hotkeys=None):
         super().__init__(title="Settings", transient_for=parent, modal=True)
         self.config = config
+        # The running HotkeyManager, for Settings > Shortcuts to say how keys are bound
+        # here and which could not be.
+        self.hotkeys = hotkeys
         self.client = client
         # The app's own encyclopedia, so that an import started here replaces the one
         # every window is reading, and `notify` says when it is done - it can take a
@@ -464,6 +468,9 @@ class SettingsDialog(Gtk.Dialog):
         notebook.append_page(self._build_privacy(), Gtk.Label(label="Privacy"))
         notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
         notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
+        from .shortcuts import ShortcutsPage
+        self.shortcuts_page = ShortcutsPage(config, hotkeys)
+        notebook.append_page(self.shortcuts_page, Gtk.Label(label="Shortcuts"))
         notebook.append_page(self._build_advanced(), Gtk.Label(label="Advanced"))
 
         self.show_all()
@@ -1159,14 +1166,21 @@ class SettingsDialog(Gtk.Dialog):
         page.pack_start(grid, False, False, 0)
 
         self.hotkey_mode = self._combo()
-        for value in ("auto", "portal", "static", "off"):
-            self.hotkey_mode.append(value, value)
+        for value, text in (("auto", "automatic — best for this session"),
+                            ("x11", "X11 key grabs"),
+                            ("portal", "GlobalShortcuts portal"),
+                            ("desktop", "the desktop's own keybindings"),
+                            ("off", "off — no global shortcuts")):
+            self.hotkey_mode.append(value, text)
         self.hotkey_mode.set_active_id(self.config.hotkey_mode or "auto")
+        if self.hotkey_mode.get_active_id() is None:
+            self.hotkey_mode.set_active_id("auto")
         self.hotkey_mode.set_tooltip_text(
-            "auto: use the GlobalShortcuts portal when available.\n"
-            "static: bindings installed by tools/install-hotkeys.sh.\n"
-            "off: no global hotkeys.")
-        grid.attach(self._label("Hotkey mode"), 0, 0, 1, 1)
+            "How the keys in Settings > Shortcuts are bound. Automatic grabs them itself "
+            "on X11, asks the GlobalShortcuts portal on KDE Plasma and GNOME, and "
+            "otherwise writes them into the desktop's own keybindings. Choose another "
+            "only if automatic gets it wrong.")
+        grid.attach(self._label("Shortcuts by"), 0, 0, 1, 1)
         grid.attach(self.hotkey_mode, 1, 0, 1, 1)
 
         self.max_tokens = Gtk.SpinButton.new_with_range(256, 32768, 256)
@@ -1230,6 +1244,7 @@ class SettingsDialog(Gtk.Dialog):
         out["upscale_small_captures"] = self.upscale.get_active()
         out["debug_save_captures"] = self.debug_captures.get_active()
         out["hotkey_mode"] = self.hotkey_mode.get_active_id() or "auto"
+        out.update(self.shortcuts_page.values())
         out["max_tokens"] = int(self.max_tokens.get_value())
         out["reasoning_effort"] = self.reasoning_effort.get_active_id() or "low"
         out["web_search_enabled"] = self.search_enabled.get_active()

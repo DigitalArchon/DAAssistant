@@ -19,7 +19,7 @@ import time
 import requests
 
 from . import models as catalogue, privacy as privacy_module, prompts, websearch
-from .privacy import PrivacyError
+from .privacy import ModelRetired, PrivacyError
 
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
 MAX_RETRIES = 3
@@ -600,6 +600,10 @@ class LLMClient:
                 if result is None:
                     return None
                 client.finish(result["finish_reason"], result["done"])
+            except ModelRetired as e:
+                # Gone since it was attested: the window offers what is listed instead.
+                privacy.note_retired(e)
+                raise LLMError(str(e), model=model)
             except PrivacyError as e:
                 raise LLMError(f"{e}. Private Mode: nothing was sent in the clear",
                                model=model)

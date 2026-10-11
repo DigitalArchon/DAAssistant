@@ -44,7 +44,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from .privacy import E2EE, Attestation, PrivacyError, offers_private_mode
+from . import models
+from .privacy import E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode
 
 RELAY_PATH = "/api/v1/private/tinfoil"
 ROUTER_REPO = "tinfoilsh/confidential-model-router"
@@ -244,6 +245,30 @@ class PrivateModeClient:
     def attest(self, model):
         return attestation_for(model, self.enclave.current())
 
+    def private_ids(self):
+        """nano-gpt's list of Private Mode models - public, no key is sent - read on the
+        preflight's client. [] when it cannot be read."""
+        import httpx
+        client = self._preflight_client or httpx.Client(follow_redirects=False)
+        try:
+            response = client.get(models.private_list_url(self.api_url),
+                                  timeout=PREFLIGHT_TIMEOUT_SECONDS)
+            return models.private_ids_in(response.json()
+                                         if response.status_code < 400 else {})
+        except (httpx.HTTPError, ValueError):
+            return []
+        finally:
+            if self._preflight_client is None:
+                client.close()
+
+    def check_offered(self, model):
+        """Raise ModelRetired, with what is offered instead, if nano-gpt has retired
+        `model`. A list that cannot be read claims nothing: the preflight still refuses
+        a model that is gone."""
+        ids = self.private_ids()
+        if models.offered(model, ids) is False:
+            raise ModelRetired(model, ids)
+
     def _headers(self):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -279,6 +304,9 @@ class PrivateModeClient:
             if self._preflight_client is None:
                 client.close()
         if response.status_code >= 400:
+            # Every path's backstop - a model retired mid-conversation, the connection
+            # test: say why, not just that it was refused.
+            self.check_offered(model)
             raise PrivacyError(f"nano-gpt refused the Private Mode request "
                                f"(HTTP {response.status_code}: {_error_text(response)})")
         try:

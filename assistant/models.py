@@ -153,20 +153,41 @@ def private_entries(private_ids, entries):
     return made
 
 
-def fetch_private_ids(api_url, timeout=30):
-    """The Private Mode relay's model ids (a public list; no key is sent). [] on failure:
-    the rest of the catalogue is still worth showing."""
+def private_list_url(api_url):
+    """Where the Private Mode relay lists its models: public, no key is sent."""
     parsed = urlparse(api_url)
-    url = f"{parsed.scheme}://{parsed.netloc}{RELAY_MODELS_PATH}"
-    try:
-        response = requests.get(url, timeout=timeout)
-        body = response.json() if response.status_code < 400 else {}
-    except (requests.exceptions.RequestException, ValueError):
-        return []
+    return f"{parsed.scheme}://{parsed.netloc}{RELAY_MODELS_PATH}"
+
+
+def private_ids_in(body):
+    """The private/ model ids in the relay's list, as JSON."""
     items = body.get("data") if isinstance(body, dict) else None
     return [item["id"] for item in items or []
             if isinstance(item, dict) and isinstance(item.get("id"), str)
             and item["id"].startswith("private/")]
+
+
+def fetch_private_ids(api_url, timeout=30):
+    """The Private Mode relay's model ids (a public list; no key is sent). [] on failure:
+    the rest of the catalogue is still worth showing."""
+    try:
+        response = requests.get(private_list_url(api_url), timeout=timeout)
+        body = response.json() if response.status_code < 400 else {}
+    except (requests.exceptions.RequestException, ValueError):
+        return []
+    return private_ids_in(body)
+
+
+def offered(model_id, private_ids):
+    """Whether the relay's list still has `model_id`: nano-gpt retires Private Mode
+    models (private/glm-5-3-flash, Oct 2026). Its dotted alias is the same model, a
+    :thinking one is not. None when the list is empty - one that could not be read -
+    which says nothing either way. From StoryLoom's private_catalog.py."""
+    private_ids = list(private_ids)
+    if not private_ids:
+        return None
+    key = _twin_key(model_id)
+    return any(_twin_key(i) == key for i in private_ids)
 
 
 def load_cache(max_age=CACHE_TTL, url=None):

@@ -71,6 +71,19 @@ class PrivacyError(Exception):
     """A private request was refused before anything was sent."""
 
 
+class ModelRetired(PrivacyError):
+    """nano-gpt no longer offers this Private Mode model. Attesting says nothing about
+    it - the enclave is Tinfoil's router whatever the model - so without this a retired
+    model attested fine and its first message came back as a bare preflight refusal.
+    `offered`: the private/ models the relay's list does have, to choose from instead."""
+
+    def __init__(self, model, offered=()):
+        super().__init__(f"{model} is no longer offered by nano-gpt's Private Mode, so "
+                         f"nothing was sent to it; choose another private model")
+        self.model = model
+        self.offered = [m for m in offered if m != model]
+
+
 # ---- which models qualify -------------------------------------------------------------
 
 def is_tee(model):
@@ -689,8 +702,10 @@ class PrivacySession:
         self._receipts = []
         # Called with (event, model, detail) from whichever thread is working:
         # "attesting", "attested" (detail: Attestation), "refused" (detail: message),
-        # "sent", "receipt" (detail: Receipt). The chat window marshals to GTK.
+        # "retired" (detail: ModelRetired), "sent", "receipt" (detail: Receipt). The
+        # chat window marshals to GTK.
         self.listener = None
+        self._listed = set()            # private/ models the relay's list was read for
 
     @classmethod
     def start(cls, config, uses=("text", "vision")):
@@ -766,6 +781,12 @@ class PrivacySession:
     def note_sent(self, model):
         self._emit("sent", model)
 
+    def note_retired(self, retired):
+        """nano-gpt has retired a model of this conversation (ModelRetired): said, as
+        refused, and to the window, which offers the models listed instead."""
+        self._emit("refused", retired.model, str(retired))
+        self._emit("retired", retired.model, retired)
+
     # ---- attestation ----------------------------------------------------------------
 
     def sealed_client(self):
@@ -803,13 +824,23 @@ class PrivacySession:
                 self._emit("attesting", model)
             try:
                 if kind == E2EE:
-                    attestation = self.sealed_client().attest(model)
+                    client = self.sealed_client()
+                    if model not in self._listed:
+                        # The enclave is Tinfoil's router whatever the model, so a
+                        # model nano-gpt has retired would attest: ask its list first,
+                        # once - the preflight says so too if it goes later.
+                        client.check_offered(model)
+                        self._listed.add(model)
+                    attestation = client.attest(model)
                 else:
                     client = self._tee.get(model)
                     if client is None:
                         client = self._tee[model] = self._tee_factory(
                             self.api_url, self.api_key, model)
                     attestation = client.attest()
+            except ModelRetired as e:
+                self.note_retired(e)
+                raise
             except PrivacyError as e:
                 self._emit("refused", model, str(e))
                 raise PrivacyError(f"{e}; nothing was sent") from e

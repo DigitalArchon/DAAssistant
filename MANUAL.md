@@ -271,6 +271,16 @@ Intel has revoked its TCB or lists none it meets, or if NVIDIA's verdict is unsi
 another nonce, out of date or negative. So is an operation started with a non-TEE model
 configured. It never falls back to the ordinary models.
 
+nano-gpt retires Private Mode models from time to time, and the enclave - Tinfoil's
+router, whatever the model - would still attest. So before a `private/` model is first
+used in a conversation, it is looked up in nano-gpt's public list of them (no key is
+sent). If it is gone, nothing is sent: the banner reads **No longer offered**, the model
+button says so, and a dialog offers the end-to-end encrypted models the list still has -
+**Ask again with it** asks your question again with the one you pick, and the
+conversation carries on with it. **Check attestation** in Settings shows such a model as
+*no longer offered*; new conversations use the models under **Settings > Privacy**, so
+choose another there too. A list that cannot be read says nothing either way.
+
 `TEE/` models come from several providers, which attest differently. Checked across
 nano-gpt's list (Sept 2026):
 

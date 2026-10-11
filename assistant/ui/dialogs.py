@@ -713,6 +713,9 @@ class SettingsDialog(Gtk.Dialog):
             for model in session.models():
                 try:
                     attestation = session.ensure(model)
+                except privacy_module.ModelRetired:
+                    lines.append(f"✗ {model}: no longer offered by nano-gpt's Private "
+                                 f"Mode — choose another private model")
                 except privacy_module.PrivacyError as e:
                     lines.append(f"✗ {model}: {e}")
                 else:

@@ -31,7 +31,7 @@ from assistant.config import Config
 from assistant.ethsig import (address_of, keccak256, personal_hash, recover,
                               recover_personal, sign)
 from assistant.llm import LLMClient, LLMError
-from assistant.privacy import PrivacyError, PrivacySession, TeeClient
+from assistant.privacy import ModelRetired, PrivacyError, PrivacySession, TeeClient
 from assistant.ui.markdown_html import turn_html
 
 KEY = 0xB25C7DB31FEED9122727BF0939DC769A96564B2DE4C4726D035B36ECF1E5B364
@@ -836,6 +836,18 @@ class Catalogue(unittest.TestCase):
         bare = models.normalise(made[1])
         self.assertIsNone(bare["prompt_price"])
 
+    def test_a_model_off_the_relays_list_is_known_to_be_retired(self):
+        listed = ["private/glm-5-3", "private/gemma4-31b:thinking"]
+        self.assertIs(models.offered("private/glm-5-3", listed), True)
+        self.assertIs(models.offered("private/glm-5.3", listed), True, "its dotted alias")
+        self.assertIs(models.offered("private/glm-5-3-flash", listed), False)
+        self.assertIs(models.offered("private/gemma4-31b", listed), False,
+                      ":thinking is a model of its own")
+        self.assertIsNone(models.offered("private/glm-5-3-flash", []),
+                          "a list that could not be read says nothing")
+        self.assertEqual(models.private_list_url(API_URL),
+                         "https://nano-gpt.com/api/v1/private/tinfoil/models")
+
     def test_search_can_keep_to_tee_models(self):
         listing = [models.normalise(e) for e in (
             {"id": "TEE/a"}, {"id": "private/b"}, {"id": "openai/c"})]
@@ -1031,6 +1043,96 @@ class ChatStaysPrivate(TempConfig):
             window.destroy()
 
 
+class RetiredClient(RecordingClient):
+    """A model nano-gpt has retired fails as LLMClient's would, having told the
+    session; any other answers."""
+
+    RETIRED = "private/glm-5-3-flash"
+    OFFERED = ["private/glm-5-3", "private/kimi-k3"]
+
+    def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
+               web_search=None, system=None, privacy=None, status=None):
+        if model == self.RETIRED:
+            self.calls.append({"model": model})
+            retired = ModelRetired(model, self.OFFERED + [model])
+            privacy.note_retired(retired)
+            raise LLMError(str(retired), model=model)
+        return super().stream(model, messages, image_base64, cancel, on_delta,
+                              web_search, system, privacy, status)
+
+
+class ARetiredModelInAChat(TempConfig):
+    setUpClass = ChatStaysPrivate.setUpClass
+    _run_until = ChatStaysPrivate._run_until
+
+    def window(self):
+        from unittest import mock
+        from assistant.ui.chat import ChatWindow
+        patch = mock.patch.object(sealed, "available", return_value=(True, ""))
+        patch.start()
+        self.addCleanup(patch.stop)
+        session = PrivacySession(API_URL, "k", RetiredClient.RETIRED, VISION,
+                                 uses=("text",))
+        self.client = RetiredClient()
+        window = ChatWindow(StubApp(self.config, self.client), "Query text",
+                            [{"role": "user", "content": "p", "display": "Q"}],
+                            privacy=session)
+        self.addCleanup(window.destroy)
+        return window
+
+    def answer(self, window, response):
+        """Start the request; the dialog that follows answers `response` with the
+        first model it offers chosen. What it offered, or None if it never showed."""
+        from unittest import mock
+        from gi.repository import Gtk
+        shown = {}
+
+        def run(dialog):
+            for child in dialog.get_message_area().get_children():
+                if isinstance(child, Gtk.ComboBoxText):
+                    shown["picker"] = child
+                    shown["offered"] = [row[0] for row in child.get_model()]
+                elif isinstance(child, Gtk.Label) and child.get_text():
+                    shown.setdefault("text", []).append(child.get_text())
+            return response
+
+        with mock.patch.object(Gtk.Dialog, "run", run):
+            window._start_stream()
+            self.assertTrue(self._run_until(lambda: "text" in shown
+                                            or window._cancel is None and len(
+                                                window.conversation) >= 2))
+            if "text" in shown:
+                self.assertTrue(self._run_until(
+                    lambda: window._cancel is None
+                    and not window.conversation[-1].get("error")
+                    or response != Gtk.ResponseType.ACCEPT))
+        return shown
+
+    def test_it_is_said_and_another_model_carries_the_conversation_on(self):
+        from gi.repository import Gtk
+        window = self.window()
+        shown = self.answer(window, Gtk.ResponseType.ACCEPT)
+        self.assertEqual(shown["offered"], RetiredClient.OFFERED)
+        self.assertIn("no longer offered", " ".join(shown["text"]))
+        self.assertIn("Settings → Privacy", " ".join(shown["text"]))
+        self.assertEqual([c["model"] for c in self.client.calls],
+                         [RetiredClient.RETIRED, "private/glm-5-3"])
+        self.assertEqual(window.current_model, "private/glm-5-3")
+        self.assertEqual(window.conversation[-1]["content"], "ok")
+        self.assertTrue(window.privacy.allows("private/glm-5-3"))
+
+    def test_closing_it_leaves_the_model_marked_and_sends_nothing_more(self):
+        from gi.repository import Gtk
+        window = self.window()
+        self.answer(window, Gtk.ResponseType.CLOSE)
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertIn("no longer offered", window._model_label.get_text())
+        self.assertIn("nothing was sent", window.conversation[-1]["content"])
+        self.assertEqual(window._privacy_title.get_text(),
+                         "No longer offered — nothing was sent")
+        self.assertIn("nothing was sent", window._privacy_detail.get_text())
+
+
 class AppUpgradesButNeverDowngrades(TempConfig):
     def app(self):
         from assistant.app import Assistant
@@ -1182,6 +1284,105 @@ class Sealed(unittest.TestCase):
         with self.assertRaisesRegex(PrivacyError, "could not be attested"):
             with client.request(self.MODEL, {"messages": []}):
                 pass
+
+    def relay(self, listed, preflight_status=400):
+        """A client whose relay lists `listed` and whose preflight answers
+        `preflight_status`; [] for a list that cannot be read. Attesting fails the
+        test: a retired model is never attested."""
+        import httpx
+        seen = []
+
+        def relay(request):
+            seen.append(f"{request.method} {request.url.path}")
+            if request.url.path.endswith("/models"):
+                if not listed:
+                    return httpx.Response(503)
+                return httpx.Response(200, json={"data": [{"id": i} for i in listed]})
+            if preflight_status >= 400:
+                return httpx.Response(preflight_status, json={"error": "nope"})
+            return httpx.Response(200, json={"cacheScope": "c" * 64,
+                                             "upstreamModel": "glm-5.3"})
+
+        def verify(relay_url, secret):
+            seen.append("attest")
+            return self.verified()
+
+        client = sealed.PrivateModeClient(
+            API_URL, "k", enclave=sealed.Enclave(sealed.relay_url(API_URL), verifier=verify),
+            transport_factory=lambda key: httpx.MockTransport(
+                lambda r: self.fail("sent to a retired model")),
+            preflight_client=httpx.Client(transport=httpx.MockTransport(relay)))
+        return client, seen
+
+    def test_a_model_off_the_list_is_retired_and_named_with_what_is_offered(self):
+        client, seen = self.relay(["private/glm-5-3", "private/kimi-k3"])
+        with self.assertRaisesRegex(ModelRetired, "no longer offered.*nothing was sent.*"
+                                                  "choose another private model") as caught:
+            client.check_offered("private/glm-5-3-flash")
+        self.assertEqual(caught.exception.model, "private/glm-5-3-flash")
+        self.assertEqual(caught.exception.offered, ["private/glm-5-3", "private/kimi-k3"])
+        client.check_offered(self.MODEL)
+        self.assertEqual(seen, ["GET /api/v1/private/tinfoil/models"] * 2,
+                         "the public list, on the relay, and nothing attested")
+        unread, _ = self.relay([])
+        unread.check_offered("private/glm-5-3-flash")      # nothing known, nothing said
+
+    def test_a_preflight_refusal_for_a_retired_model_says_so(self):
+        client, _ = self.relay([self.MODEL])
+        with self.assertRaises(ModelRetired):
+            client._preflight("private/glm-5-3-flash", 10)
+        # Still listed: the refusal is nano-gpt's own, said as before.
+        with self.assertRaisesRegex(PrivacyError, r"refused the Private Mode request "
+                                                  r"\(HTTP 400") as plain:
+            client._preflight(self.MODEL, 10)
+        self.assertNotIsInstance(plain.exception, ModelRetired)
+        unread, _ = self.relay([])
+        with self.assertRaises(PrivacyError) as unknown:
+            unread._preflight("private/glm-5-3-flash", 10)
+        self.assertNotIsInstance(unknown.exception, ModelRetired)
+
+    def test_a_conversation_checks_the_list_before_attesting_once_per_model(self):
+        client, seen = self.relay([self.MODEL], preflight_status=200)
+        retired = "private/glm-5-3-flash"
+        session = PrivacySession(API_URL, "k", retired, self.MODEL,
+                                 sealed_factory=lambda *a: client)
+        events = []
+        session.listener = lambda event, model, detail: events.append((event, model))
+        with self.assertRaises(ModelRetired):
+            session.ensure(retired)
+        self.assertEqual(events, [("attesting", retired), ("refused", retired),
+                                  ("retired", retired)])
+        self.assertNotIn("attest", seen)
+        self.assertNotIn(retired, session.attestations)
+        session.ensure(self.MODEL)
+        session.ensure(self.MODEL)
+        self.assertEqual(seen.count("GET /api/v1/private/tinfoil/models"), 2,
+                         "listed once for each model, not before every request")
+
+    def test_a_retired_models_request_sends_nothing_and_says_why(self):
+        client, _ = self.relay([self.MODEL])
+        retired = "private/glm-5-3-flash"
+        session = PrivacySession(API_URL, "k", retired, retired,
+                                 sealed_factory=lambda *a: client)
+        llm = LLMClient(Config(os.path.join(tempfile.mkdtemp(), "c.json")))
+        with self.assertRaisesRegex(LLMError, "no longer offered"):
+            llm.stream(retired, [{"role": "user", "content": "secret"}], privacy=session)
+
+    def test_one_retired_since_it_was_attested_is_said_at_the_preflight(self):
+        listed = [self.MODEL]
+        client, _ = self.relay(listed)
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client)
+        session.ensure(self.MODEL)
+        listed.clear()
+        listed.append("private/kimi-k3")                 # gone from the list since
+        events = []
+        session.listener = lambda event, model, detail: events.append((event, detail))
+        llm = LLMClient(Config(os.path.join(tempfile.mkdtemp(), "c.json")))
+        with self.assertRaisesRegex(LLMError, "no longer offered"):
+            llm.stream(self.MODEL, [{"role": "user", "content": "hi"}], privacy=session)
+        retired = [d for e, d in events if e == "retired"]
+        self.assertEqual(retired[0].offered, ["private/kimi-k3"])
 
     def test_bodies_are_shaped_per_family(self):
         body = sealed.shape_body({"model": "x", "messages": [], "temperature": 1,

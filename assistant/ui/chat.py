@@ -231,6 +231,11 @@ class ChatWindow(Gtk.Window):
         # models to the end, whatever the tray or Settings say in the meantime.
         self.privacy = privacy
         self._privacy_refused = None
+        # Private models nano-gpt no longer offers, found here, each with what its list
+        # offered instead; and the one whose refusal is still to be answered with that.
+        self._retired = {}
+        self._retired_pending = None
+        self._refused_retired = False       # the refusal shown is a retired model's
         self._sent_kinds = set()
         self._streaming_privacy = None
         if privacy is not None:
@@ -501,7 +506,8 @@ class ChatWindow(Gtk.Window):
         """The model menu under `widget`; picking an entry calls then(key)."""
         menu = Gtk.Menu()
         for key, label, model in self._choices():
-            item = Gtk.CheckMenuItem(label=f"{label} — {model}")
+            gone = " (no longer offered)" if model in self._retired else ""
+            item = Gtk.CheckMenuItem(label=f"{label} — {model}{gone}")
             item.set_draw_as_radio(True)
             item.set_active(key == self._choice)
             item.connect("activate", lambda _w, k=key: then(k))
@@ -520,7 +526,9 @@ class ChatWindow(Gtk.Window):
         """Name the model the next message goes to, in the header and on the menu."""
         model = self.current_model
         label = self._label_of(model)
-        self._model_label.set_text(label if label != "Chosen" else model.rsplit("/", 1)[-1])
+        self._model_label.set_text((label if label != "Chosen" else model.rsplit("/", 1)[-1])
+                                   + (" ⚠ no longer offered" if model in self._retired
+                                      else ""))
         if self.privacy is not None:
             self.header.set_subtitle(f"🔒 Privacy Mode · {model}")
         else:
@@ -564,7 +572,8 @@ class ChatWindow(Gtk.Window):
                     if m in session.attestations]
         if self._privacy_refused:
             tone, icon = "bad", "dialog-warning-symbolic"
-            title = "Not attested — nothing was sent"
+            title = ("No longer offered — nothing was sent" if self._refused_retired
+                     else "Not attested — nothing was sent")
             detail = self._privacy_refused
         elif not attested:
             tone, icon = "pending", "channel-secure-symbolic"
@@ -613,7 +622,14 @@ class ChatWindow(Gtk.Window):
             self._refresh_privacy_banner()
         elif event == "refused":
             self._privacy_refused = detail
+            self._refused_retired = False
             self._refresh_privacy_banner()
+        elif event == "retired":
+            self._retired[model] = detail.offered
+            self._retired_pending = model
+            self._refused_retired = True
+            self._refresh_privacy_banner()
+            self._sync_model_display()
         elif event == "sent":
             kind = privacy_module.kind_of(model)
             self._sent_kinds.add(kind)
@@ -623,6 +639,53 @@ class ChatWindow(Gtk.Window):
                 self._streaming_privacy = self._badge(privacy_module.receiving_badge(kind))
             self._badge_question(privacy_module.sent_badge(self._sent_kinds))
         return False
+
+    def _offer_another_model(self, retired):
+        """nano-gpt has retired `retired`: nothing was sent to it, and nothing can be.
+        Offer to ask the question again with an end-to-end encrypted model its list
+        still has - the list just read, nothing more is fetched - which the conversation
+        then carries on with. Settings are left alone."""
+        known = {model for _key, _label, model in self._choices()}
+        offered = [m for m in self._retired.get(retired, ())
+                   if m not in self._retired]
+        dialog = Gtk.MessageDialog(transient_for=self, modal=True,
+                                   message_type=Gtk.MessageType.WARNING,
+                                   text="Model no longer available")
+        dialog.format_secondary_text(
+            f"{retired} is no longer offered by nano-gpt's Private Mode, so nothing was "
+            f"sent to it.\n\n"
+            + ("Ask your question again with another end-to-end encrypted model, which "
+               "this conversation then carries on with - or choose any private model "
+               "with the model button." if offered else
+               "nano-gpt lists no other end-to-end encrypted model to carry it on; "
+               "choose a TEE model with the model button.")
+            + " New private conversations use the models under Settings → Privacy: "
+              "choose another there too.")
+        picker = None
+        if offered:
+            picker = Gtk.ComboBoxText()
+            for model in offered:
+                picker.append(model, model)
+            # One the conversation already knows, if it can: its own text model, say.
+            picker.set_active_id(next((m for m in offered if m in known), offered[0]))
+            picker.set_margin_start(12)
+            picker.set_margin_end(12)
+            dialog.get_message_area().pack_start(picker, False, False, 0)
+            picker.show()
+            dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+            dialog.add_button("Ask again with it", Gtk.ResponseType.ACCEPT)
+            dialog.set_default_response(Gtk.ResponseType.ACCEPT)
+        else:
+            dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+        response = dialog.run()
+        chosen = picker.get_active_id() if picker is not None else None
+        dialog.destroy()
+        if response != Gtk.ResponseType.ACCEPT or not chosen or self._destroyed:
+            return
+        keys = {model: key for key, _label, model in self._choices()}
+        if chosen not in keys:
+            self._chosen.append(chosen)
+        self._ask_again(keys.get(chosen, f"model:{chosen}"))
 
     @staticmethod
     def _badge(triple):
@@ -1769,6 +1832,9 @@ class ChatWindow(Gtk.Window):
         placeholder = self._streaming_text is not None
         self._finish_stream()
         self._show_error(message, placeholder)
+        retired, self._retired_pending = self._retired_pending, None
+        if retired is not None:
+            self._offer_another_model(retired)
 
     def _settle_question(self):
         """A question whose request never went out keeps no "Private" promise badge."""

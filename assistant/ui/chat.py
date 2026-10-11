@@ -13,7 +13,7 @@ from urllib.parse import quote
 from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
-from . import bubbles, markdown_html, markdown_text, screenshot as screenshot_view
+from . import bubbles, find, markdown_html, markdown_text, screenshot as screenshot_view
 from .. import attachments, models as catalogue, privacy as privacy_module, prompts
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
@@ -360,7 +360,14 @@ class ChatWindow(Gtk.Window):
 
         box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
         box.pack_start(self._build_input(), False, False, 0)
-        self.add(self._layout(box))
+        # Ctrl+F's bar, over the whole window: what it searches is whichever view the
+        # user was in (see _find_target).
+        self.find_bar = find.FindBar(on_close=lambda: self.entry.grab_focus())
+        self._finders = {}
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.pack_start(self.find_bar, False, False, 0)
+        outer.pack_start(self._layout(box), True, True, 0)
+        self.add(outer)
 
         self.connect("destroy", self._on_destroy)
         self.connect("key-press-event", self._on_window_key)
@@ -1515,13 +1522,50 @@ class ChatWindow(Gtk.Window):
     def _on_window_key(self, _widget, event):
         control = event.state & Gdk.ModifierType.CONTROL_MASK
         alt = event.state & Gdk.ModifierType.MOD1_MASK
+        shift = event.state & Gdk.ModifierType.SHIFT_MASK
         if control and event.keyval in (Gdk.KEY_l, Gdk.KEY_L):
             self._clear()
             return True
+        if control and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
+            self._find()
+            return True
+        if self.find_bar.is_open():
+            if event.keyval == Gdk.KEY_F3:
+                self.find_bar.step(-1 if shift else 1)
+                return True
+            if event.keyval == Gdk.KEY_Escape:
+                self.find_bar.close()
+                return True
         if alt and event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right) and self._lookup:
             self._turn_page(-1 if event.keyval == Gdk.KEY_Left else 1)
             return True
         return False
+
+    # ---- finding ----------------------------------------------------------
+
+    def _find(self):
+        """Ctrl+F: the find bar, on the view the user was in - or, from the bar
+        itself, on the one it is already searching."""
+        focus = self.get_focus()
+        if self.find_bar.finder is not None and focus is not None and \
+                focus.is_ancestor(self.find_bar):
+            self.find_bar.open(self.find_bar.finder)
+            return
+        key, view, placeholder = self._find_target(focus)
+        finder = self._finders.get(key)
+        if finder is None or finder.view is not view:
+            finder = (find.WebFinder(view, placeholder) if WebKit2 is not None
+                      and isinstance(view, WebKit2.WebView)
+                      else find.TextFinder(view.text_views, placeholder))
+            finder.view = view
+            self._finders[key] = finder
+        self.find_bar.open(finder)
+
+    def _find_target(self, focus):
+        """What Ctrl+F searches, given the widget that had focus: (key, view,
+        placeholder) - the view a WebKit one, or one with text_views(). A subclass with
+        more than the conversation to read chooses between them."""
+        return ("conversation", self.webview or self.bubbles, "Find in conversation")
 
     # ---- clearing ---------------------------------------------------------
 

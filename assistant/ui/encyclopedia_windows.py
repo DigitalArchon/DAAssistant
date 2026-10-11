@@ -219,6 +219,13 @@ class SearchEncyclopediaWindow(ChatWindow):
             return True
         return super()._on_window_key(widget, event)
 
+    def _find_target(self, focus):
+        # The article when the user was reading it - or when it is all there is to read.
+        if (focus is not None and focus.is_ancestor(self.pane)) \
+                or not self.view.get_visible():
+            return ("article", self.pane.webview or self.pane, "Find in article")
+        return super()._find_target(focus)
+
     # ---- searching ----------------------------------------------------------
 
     def _search(self, query):

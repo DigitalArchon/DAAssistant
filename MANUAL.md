@@ -45,7 +45,10 @@ Answers open in a chat window that streams as it generates, renders Markdown pro
 and accepts follow-up questions. The header's buttons copy the whole conversation as
 Markdown, save it to a `.md` file, or clear it to start over (Ctrl+L) - keeping the
 window's model, its settings and any capture, with **Undo** beside Send for a few
-seconds after. A conversation about a screen region shows the
+seconds after. **Ctrl+F** finds text in the conversation: every match is marked, Enter
+or F3 goes to the next and Shift+Enter to the one before, Escape closes it. In Search
+Encyclopedia it searches the article when that is where you were reading.
+A conversation about a screen region shows the
 capture above it, as you took it, to view full size or save as a PNG; saved as Markdown,
 the capture is written beside the `.md` under the same name and linked from it. Until you
 save it, the capture exists only in memory - in Privacy Mode too.

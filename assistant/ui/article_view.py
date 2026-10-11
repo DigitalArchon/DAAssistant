@@ -90,6 +90,10 @@ class ArticlePane(Gtk.Box):
         # Its web process goes with it, rather than at Python's next collection.
         self.webview = None
 
+    def text_views(self):
+        """The article's text, without WebKit - what Ctrl+F searches."""
+        return [self.textview]
+
     # ---- navigation -------------------------------------------------------
 
     def open(self, target, highlight=None):

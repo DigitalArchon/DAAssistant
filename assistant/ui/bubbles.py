@@ -175,6 +175,10 @@ class BubbleView(Gtk.ScrolledWindow):
         if adjustment is not None:
             adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
+    def text_views(self):
+        """Each turn's text view, in order - what Ctrl+F searches."""
+        return [row["view"] for row in self._rows]
+
     def transcript_text(self):
         """Everything on screen, in order - the labels included."""
         parts = []

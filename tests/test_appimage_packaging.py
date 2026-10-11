@@ -221,6 +221,19 @@ class ReproducibleBuild(unittest.TestCase):
             for package, version, hashes in entries:
                 self.assertIn("--hash=sha256:", hashes, f"{path.name}: {package}=={version}")
 
+    def test_the_encryption_stack_is_named_at_the_locks_versions(self):
+        """tinfoil accepts any tinfoil-ehbp>=0.3.0: named only by what it pulls in, a
+        relock would take a newer one - 0.4.0, a new request framing nobody here has
+        read - for the library that seals and opens every private request."""
+        root = ROOT / "packaging"
+        lock = (root / "private-mode.lock").read_text()
+        wanted = (root / "private-mode.in").read_text()
+        for name in ("tinfoil", "tinfoil-ehbp", "pyhpke"):
+            locked = re.search(rf"^{re.escape(name)}==(\S+)", lock, re.M)
+            self.assertTrue(locked, f"{name} is not in private-mode.lock")
+            self.assertRegex(wanted, rf"(?m)^{re.escape(name)}=={re.escape(locked[1])}$",
+                             f"private-mode.in must name {name}=={locked[1]}")
+
     def test_nothing_of_the_build_machine_gets_in(self):
         self.assertIn("-root-owned -no-xattrs", self.build)
         self.assertIn("--invalidation-mode unchecked-hash", self.build)

@@ -2,4 +2,9 @@
 # attestation and EHBP SDK. It holds the plaintext, so it is pinned exactly, and
 # everything it pulls in is pinned by hash in private-mode.lock.
 # Bump deliberately, then run packaging/lock-private-mode.sh and commit both files.
+# The EHBP library that seals and opens the bodies, and the HPKE under it, are named
+# too: tinfoil accepts any tinfoil-ehbp>=0.3.0, so a relock would otherwise take a newer
+# one nobody has read (0.4.0, Oct 6 2026: a new request framing).
 tinfoil==0.14.0
+tinfoil-ehbp==0.3.2
+pyhpke==0.6.5

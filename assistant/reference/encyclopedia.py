@@ -27,6 +27,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
+from collections import Counter
 from glob import glob
 
 from .axion import AxionError, Table, unpack  # noqa: F401  (AxionError: for callers)
@@ -100,13 +101,77 @@ def _contains(passage, quote):
     return True
 
 
+# A quotation not word for word in its passage is shown where the passage comes closest
+# to it - when some stretch of the passage has at least this share of its words.
+NEAREST_SHARE = 0.5
+
+
+def _words(text):
+    """[(word as quotations are compared, start, end)] of `text`."""
+    out = []
+    for match in re.finditer(r"\S+", text or ""):
+        word = _plain(match.group()).strip(".,;:!?'\"()[]-")
+        if word:
+            out.append((word, match.start(), match.end()))
+    return out
+
+
+def nearest(passage, quote):
+    """The words of `passage`, as it has them, that come closest to `quote`, and the
+    share of the quotation's words they hold - (None, 0.0) for none with NEAREST_SHARE.
+
+    What a model gets wrong in a quotation is mostly a word changed, added or left out,
+    or two sentences run together, so the stretch of the passage the length of the
+    quotation, with room for a few words more, that has the most of its words is where
+    it was quoting from. Words like "the" and "they" count for little: every stretch has
+    some. Found word for word, it is the quotation itself, as the passage writes it.
+    """
+    wanted = [w for part in _ELLIPSIS.split(quote or "") for w, _s, _e in _words(part)]
+    if not wanted:
+        return None, 0.0
+    need = Counter(wanted)
+
+    def weight(word):
+        return 1 if word in STOPWORDS else 10
+    total = sum(weight(w) for w in wanted)
+    words = _words(passage)
+    # Room for words left out, and where an ellipsis says so, for many.
+    width = len(wanted) + 3 + len(wanted) // 3
+    if _ELLIPSIS.search(quote):
+        width += 3 * len(wanted)
+    have, score, best, best_score = Counter(), 0, None, 0
+    for i, (word, _s, _e) in enumerate(words):
+        if have[word] < need[word]:
+            score += weight(word)
+        have[word] += 1
+        if i >= width:
+            gone = words[i - width][0]
+            have[gone] -= 1
+            if have[gone] < need[gone]:
+                score -= weight(gone)
+        if score > best_score:
+            best, best_score = max(0, i - width + 1), score
+    if best is None or best_score < NEAREST_SHARE * total:
+        return None, 0.0
+    # That stretch, less the words at either end it would hold as many without.
+    stretch = words[best:best + width]
+    have = Counter(word for word, _s, _e in stretch)
+    for end in (-1, 0):
+        while stretch and have[stretch[end][0]] > need[stretch[end][0]]:
+            have[stretch[end][0]] -= 1
+            stretch.pop(end)
+    return passage[stretch[0][1]:stretch[-1][2]].strip(".,;:!?"), best_score / total
+
+
 def check_quotes(answer, passages):
     """Every quotation in `answer`, checked against the passages it was given.
 
     [{quote, cited: [numbers after it], found: the passage it is in or None, ok,
-    start, end: where its citations end in `answer`}]. ok: word for word in a passage
-    it cites - or, citing none, in any. A quotation of a word or two is a term, not a
-    quotation of the source, and is left alone.
+    start, end: where its citations end in `answer`, near}]. ok: word for word in a
+    passage it cites - or, citing none, in any. A quotation of a word or two is a term,
+    not a quotation of the source, and is left alone. near, for one not ok: where to
+    see it - {passage, text: the passage's own words} where it was found, or else came
+    closest (see nearest), the passages it cites first; None if none came close.
     """
     out = []
     for match in _QUOTED.finditer(answer or ""):
@@ -119,10 +184,23 @@ def check_quotes(answer, passages):
             if _contains(passages[n - 1]["text"], quote):
                 found = n
                 break
-        out.append({"quote": quote, "cited": numbers, "found": found,
-                    "ok": found is not None and (not numbers or found in numbers),
-                    "start": match.start(), "end": match.end()})
+        ok = found is not None and (not numbers or found in numbers)
+        out.append({"quote": quote, "cited": numbers, "found": found, "ok": ok,
+                    "start": match.start(), "end": match.end(),
+                    "near": None if ok else _near(quote, numbers, found, passages)})
     return out
+
+
+def _near(quote, numbers, found, passages):
+    """check_quotes' `near` for a quotation that is not where it says."""
+    best, best_share = None, 0.0
+    order = [found] if found else (
+        numbers + [n for n in range(1, len(passages) + 1) if n not in numbers])
+    for n in order:
+        text, share = nearest(passages[n - 1]["text"], quote)
+        if share > best_share:
+            best, best_share = {"passage": n, "text": text}, share
+    return best
 
 
 def cited(answer):

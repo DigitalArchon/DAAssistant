@@ -489,7 +489,11 @@ each falling back on the others - and in words for that reader. The defaults for
 under **Settings > Reference**.
 
 Every quotation in an answer is then checked against the passage it cites. One not found
-there word for word is marked ⚠ where it stands, and listed under the answer. Each
+there word for word is marked ⚠ where it stands, and listed under the answer. Click the
+⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
+passage's own words highlighted - where it was found under another number, or where the
+passage comes closest to it, so you can see straight away what the source really says.
+A ⚠ that is not a link is a quotation nothing in the passages comes near. Each
 citation is a link: it opens the article in Search Encyclopedia at what was quoted, found
 and highlighted on the page. Under the answer are its sources - those cited first, the
 rest folded away, each with its article's contributors - and the pictures and films of

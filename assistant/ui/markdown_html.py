@@ -489,13 +489,24 @@ EDITION_NAMES = {"EB": "Encyclopedia", "EBI": "Student Encyclopedia",
 BYLINE_NAMES = 3
 
 
+def check_where(check):
+    """Where a quotation not found word for word in what it cites is, if anywhere."""
+    if check["found"]:
+        return f"found in [{check['found']}] instead"
+    near = check.get("near")
+    if near:
+        return f"not word for word in any passage, closest in [{near['passage']}]"
+    return "not found in any passage"
+
+
 def sources_html(passages, cited, turn, checks=(), limited=False):
     """The encyclopedia passages an Ask Encyclopedia answer was given, under it.
 
     Those it cited, by their numbers - each a link that opens the article in Search
     Encyclopedia at what was quoted from it - the rest folded away; the result of
-    checking its quotations word for word against them; the pictures and films of the
-    sections it cited; and, when the encyclopedia had little on the question, that.
+    checking its quotations word for word against them, each not found with a link to
+    where it is or comes closest; the pictures and films of the sections it cited; and,
+    when the encyclopedia had little on the question, that.
     `turn` is the answer's place in the conversation, which the links name. """
     def item(number, passage):
         # .get: answers saved before contributors and credits were kept have neither.
@@ -533,15 +544,15 @@ def sources_html(passages, cited, turn, checks=(), limited=False):
         good = sum(1 for c in checks if c["ok"])
         lines = [f'<p class="checks">Quotations checked against the passages: {good} '
                  f'of {len(checks)} found word for word.</p>']
-        for check in checks:
+        for number, check in enumerate(checks):
             if check["ok"]:
                 continue
-            where = (f"found in [{check['found']}] instead"
-                     if check["found"] else "not found in any passage")
             cited_as = (" cited as " + ", ".join(f"[{n}]" for n in check["cited"])
                         if check["cited"] else "")
+            show = (f' - <a href="enc://quote/{int(turn)}/{number}">show it</a>'
+                    if check.get("near") else "")
             lines.append(f'<p class="check-failed">⚠ “{html.escape(_short(check["quote"]))}”'
-                         f"{cited_as}: {where}.</p>")
+                         f"{cited_as}: {check_where(check)}{show}.</p>")
         parts.append("".join(lines))
     tiles, seen = [], set()
     for _n, passage in used:

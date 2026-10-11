@@ -510,16 +510,23 @@ class AskEncyclopediaWindow(ChatWindow):
     # ---- the answer ---------------------------------------------------------
 
     def _finish_answer(self, turn, payload):
-        """Check every quotation against its passage, mark the ones not found, and make
-        the citations links to what they cite."""
+        """Check every quotation against its passage, mark the ones not found - each
+        mark a link to where the passage has it, or comes closest - and make the
+        citations links to what they cite."""
         passages = (payload or {}).get("passages")
         if not passages:
             return
         index = len(self.conversation)      # where the answer is about to go
-        text = turn["content"]
+        text = display = turn["content"]
         checks = check_quotes(text, passages)
-        for check in sorted((c for c in checks if not c["ok"]), key=lambda c: -c["end"]):
-            text = text[:check["end"]] + " ⚠" + text[check["end"]:]
+        for number, check in sorted(enumerate(checks), key=lambda c: -c[1]["end"]):
+            if check["ok"]:
+                continue
+            end = check["end"]
+            text = text[:end] + " ⚠" + text[end:]
+            mark = (f"[⚠](enc://quote/{index}/{number})" if check.get("near")
+                    else "⚠")
+            display = display[:end] + " " + mark + display[end:]
 
         def link(match):
             numbers = [n for n in cited(match.group(0)) if 1 <= n <= len(passages)]
@@ -528,7 +535,8 @@ class AskEncyclopediaWindow(ChatWindow):
             return "".join(f"[\\[{n}\\]](enc://cite/{index}/{n})" for n in numbers)
 
         turn.update(passages=passages, checks=checks, export=text,
-                    display=_CITATION.sub(link, text), links=("enc://cite/",))
+                    display=_CITATION.sub(link, display),
+                    links=("enc://cite/", "enc://quote/"))
 
     def _after_answer(self, turn, payload):
         passages = turn.get("passages")
@@ -549,23 +557,34 @@ class AskEncyclopediaWindow(ChatWindow):
             scroll=None)
         if failed:
             self.status.set_text(f"⚠ {failed} quotation{'s' if failed > 1 else ''} not "
-                                 f"found word for word - see the sources")
+                                 f"found word for word - click ⚠ to see the source")
 
     def _follow_encyclopedia(self, uri):
         """A citation opens its article in Search Encyclopedia at what was quoted from it;
-        a picture or film from the sources, on its own page there."""
-        found = re.match(r"enc://cite/(\d+)/(\d+)$", uri)
+        a quotation marked ⚠, at where its passage has it or comes closest; a picture or
+        film from the sources, on its own page there."""
+        found = re.match(r"enc://(cite|quote)/(\d+)/(\d+)$", uri)
         if found:
-            index, number = int(found.group(1)), int(found.group(2))
+            kind, index, number = found.group(1), int(found.group(2)), int(found.group(3))
             if index >= len(self.conversation):
                 return
             turn = self.conversation[index]
             passages = turn.get("passages") or []
-            if not 1 <= number <= len(passages):
+            checks = turn.get("checks") or []
+            if kind == "quote":
+                near = checks[number].get("near") if number < len(checks) else None
+                if not near or not 1 <= near["passage"] <= len(passages):
+                    return
+                number, quoted = near["passage"], near["text"]
+            elif 1 <= number <= len(passages):
+                # What was quoted from it: word for word, else what it comes closest to.
+                quoted = next((c["quote"] for c in checks
+                               if c["ok"] and c["found"] == number), None) or \
+                    next((c["near"]["text"] for c in checks if not c["ok"]
+                          and (c.get("near") or {}).get("passage") == number), None)
+            else:
                 return
             passage = passages[number - 1]
-            quoted = next((c["quote"] for c in turn.get("checks") or []
-                           if c["ok"] and c["found"] == number), None)
             open_reader(self.app, self._encyclopedia, ("article", passage["article"]),
                         highlight=quoted or passage["heading"])
             return
@@ -612,14 +631,15 @@ def sources_markdown(passages, cited_numbers, turn, checks=(), limited=False):
         good = sum(1 for c in checks if c["ok"])
         lines += ["", f"Quotations checked against the passages: {good} of {len(checks)} "
                       f"found word for word."]
-        for check in checks:
+        for number, check in enumerate(checks):
             if check["ok"]:
                 continue
-            where = (f"found in [{check['found']}] instead" if check["found"]
-                     else "not found in any passage")
             cited_as = (" cited as " + ", ".join(f"[{n}]" for n in check["cited"])
                         if check["cited"] else "")
-            lines.append(f"⚠ “{_md(check['quote'])}”{cited_as}: {where}.")
+            show = (f" - [show it](enc://quote/{turn}/{number})"
+                    if turn is not None and check.get("near") else "")
+            lines.append(f"⚠ “{_md(check['quote'])}”{cited_as}: "
+                         f"{markdown_html.check_where(check)}{show}.")
     media, seen = [], set()
     for _n, passage in used:
         credits = passage.get("credits") or {}

@@ -32,7 +32,7 @@ from assistant.config import Config
 from assistant.reference import axion, encyclopedia_html, ruffle
 from assistant.reference.encyclopedia import (
     Encyclopedia, EncyclopediaError, byline, check_quotes, citation_of, cited,
-    contributors_of, fts_query, import_dvd, query_terms, read_json,
+    contributors_of, fts_query, import_dvd, nearest, query_terms, read_json,
     research_context, section_media, sections_of)
 from assistant.ui import encscheme
 
@@ -454,6 +454,40 @@ class Quotes(unittest.TestCase):
     def test_a_word_or_two_in_quotes_is_a_term_not_a_quotation(self):
         self.assertEqual(self.check('the "Eternal City" [1]'), [])
 
+    def near(self, answer):
+        return [c["near"] for c in check_quotes(answer, self.PASSAGES)]
+
+    def test_a_quotation_not_word_for_word_is_shown_where_it_comes_closest(self):
+        self.assertEqual(self.near('"they cross the shining sea, humming as they went" [2]'),
+                         [{"passage": 1,
+                           "text": "they cross the glimmer sea, humming as they"}])
+
+    def test_one_found_elsewhere_is_shown_there_as_the_passage_writes_it(self):
+        self.assertEqual(self.near('“zorblaxes EAT moonberries” [1]'),
+                         [{"passage": 2, "text": "Zorblaxes eat moonberries"}])
+
+    def test_the_passages_it_cites_come_first(self):
+        passages = [{"text": "The red zorblax hums at dawn."},
+                    {"text": "The red zorblax hums at dusk."}]
+        near = check_quotes('"the red zorblax hums at noon" [2]', passages)[0]["near"]
+        self.assertEqual(near["passage"], 2)
+
+    def test_made_up_or_found_has_nowhere_to_show(self):
+        self.assertEqual(self.near('"they fly to the moon" [1], "Zorblaxes eat '
+                                   'moonberries" [2]'), [None, None])
+
+    def test_the_closest_words_and_how_close(self):
+        passage = "Every winter they cross the glimmer sea, humming as they go."
+        self.assertEqual(nearest(passage, "humming as they go"),
+                         ("humming as they go", 1.0))
+        self.assertEqual(nearest(passage, "every winter … humming"),
+                         ("Every winter they cross the glimmer sea, humming", 1.0))
+        text, share = nearest(passage, "every winter the zorblaxes cross the sea")
+        self.assertEqual(text, "Every winter they cross the glimmer sea")
+        self.assertLess(share, 1.0)
+        # Only words every stretch of English has in common: nowhere near.
+        self.assertEqual(nearest(passage, "the moon was as they were"), (None, 0.0))
+
     def test_a_models_json_is_found_wherever_it_put_it(self):
         self.assertEqual(read_json('Sure!\n```json\n{"enough": false, "queries": '
                                    '["a"]}\n```'), {"enough": False, "queries": ["a"]})
@@ -523,6 +557,26 @@ class Sources(unittest.TestCase):
         self.assertIn("1 of 2 found word for word", html)
         self.assertIn("⚠ “made &lt;up&gt;” cited as [1]: not found in any passage", html)
         self.assertIn("switch Strict off", html)
+
+    def test_a_quotation_not_found_links_to_where_it_is_or_comes_closest(self):
+        from assistant.ui import markdown_html
+        from assistant.ui.encyclopedia_windows import sources_markdown
+        checks = [{"quote": "found it", "cited": [1], "found": 1, "ok": True,
+                   "near": None},
+                  {"quote": "elsewhere", "cited": [1], "found": 2, "ok": False,
+                   "near": {"passage": 2, "text": "Elsewhere"}},
+                  {"quote": "close to it", "cited": [1], "found": None, "ok": False,
+                   "near": {"passage": 1, "text": "close by it"}}]
+        passages = [self.passage(1, "One"), self.passage(2, "Two")]
+        html = markdown_html.sources_html(passages, [1], 5, checks)
+        self.assertIn('cited as [1]: found in [2] instead - '
+                      '<a href="enc://quote/5/1">show it</a>.', html)
+        self.assertIn('cited as [1]: not word for word in any passage, closest in [1] - '
+                      '<a href="enc://quote/5/2">show it</a>.', html)
+        text = sources_markdown(passages, [1], 5, checks)
+        self.assertIn("closest in [1] - [show it](enc://quote/5/2).", text)
+        # Copied or saved, there is nothing to click.
+        self.assertIn("closest in [1].", sources_markdown(passages, [1], None, checks))
 
     def test_an_answer_citing_nothing_shows_every_source(self):
         from assistant.ui import markdown_html
@@ -866,6 +920,29 @@ class AskWindow(EncyclopediaWindowCase):
             window._follow_encyclopedia("enc://film/5")
             self.assertEqual(self.opened, [(("article", 1), "cross the glimmer sea"),
                                            (("film", 5), None)])
+        finally:
+            window.destroy()
+
+    def test_a_quotation_not_word_for_word_links_to_where_it_comes_closest(self):
+        self.client.answer = ('They "cross the shimmering glimmer sea every winter" [1], '
+                              'and "they fly to the moon each spring" [1].')
+        window = self._window(question="Where do zorblaxes migrate?")
+        try:
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            answer, sources = window.conversation[1:]
+            self.assertIn('winter" [\\[1\\]](enc://cite/1/1) [⚠](enc://quote/1/0), and',
+                          answer["display"])
+            self.assertIn('spring" [\\[1\\]](enc://cite/1/1) ⚠.', answer["display"])
+            self.assertIn('winter" [1] ⚠, and', answer["export"])
+            self.assertIn('<a href="enc://quote/1/0">show it</a>', sources["html"])
+            self.assertNotIn("enc://quote/1/1", sources["html"])     # nowhere near
+            window._follow_encyclopedia("enc://quote/1/0")
+            window._follow_encyclopedia("enc://quote/1/1")
+            window._follow_encyclopedia("enc://quote/1/9")          # no such quotation
+            window._follow_encyclopedia("enc://cite/1/1")
+            near = ("article", 1), "Every winter they cross the glimmer sea"
+            self.assertEqual(self.opened, [near, near])
         finally:
             window.destroy()
 

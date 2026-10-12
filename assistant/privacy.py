@@ -44,7 +44,7 @@ from urllib.parse import quote, urlparse
 
 import requests
 
-from . import dcap, nras
+from . import dcap, netguard, nras
 from .ethsig import recover_personal
 
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -120,6 +120,9 @@ def describe(model):
 def problems(config):
     """Why Privacy Mode cannot run with these settings, as a list of sentences."""
     found = []
+    insecure = netguard.problem(getattr(config, "api_url", ""))
+    if insecure:
+        found.append(insecure)
     for key, what in (("private_text_model", "text"), ("private_premium_model", "premium"),
                       ("private_vision_model", "vision")):
         model = (getattr(config, key, "") or "").strip()

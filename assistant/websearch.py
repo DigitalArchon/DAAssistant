@@ -21,6 +21,8 @@ import re
 
 import requests
 
+from . import netguard
+
 # How much page text reaches the model per search, across all results together.
 #
 # This used to be a flat 1,200 per result, which punished a long good page for the sake
@@ -269,6 +271,10 @@ def run(query, config, session=None, timeout=None):
     if not query:
         return []
 
+    try:
+        netguard.check(config.api_url)
+    except netguard.InsecureURL as e:
+        raise SearchError(str(e))
     post = (session or requests).post
     try:
         response = post(

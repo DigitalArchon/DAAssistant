@@ -653,6 +653,14 @@ and the body has to finish uploading before the model is dispatched. Claude mode
 also sent `promptCaching`, since they cache nothing unless asked; other routes cache
 implicitly.
 
+**Requests go over https, or not at all.** An API URL that is plain `http://` is
+accepted only for this machine and its local network - `localhost`, `127.x`, `10.x`,
+`172.16`-`31.x`, `192.168.x`, link-local addresses and `.local` names - which is how a
+model server of your own is reached. For any other address, Settings will not save it,
+and a `config.json` edited by hand to hold one sends nothing: the chat says why instead.
+The address is never rewritten to https for you, and certificates are always checked.
+(Up to 3.2.0 such a URL was only warned about, and then used.)
+
 ## Where things are kept
 
 | What | Where |
@@ -739,6 +747,7 @@ README.md, MANUAL.md       what it is and how to install it; everything else
 LICENSE                    GPL-3.0
 assistant/
   config.py                settings, stored 0600; the API key goes to keychain.py
+  netguard.py              https, or nothing: which API addresses may be used
   keychain.py              the desktop's keyring (Secret Service), for the API key
   session.py               display server / desktop / portal probing
   imaging.py               upscale, flatten, black out, encode before sending
@@ -851,6 +860,10 @@ variable `AppRun` overrides has to be stashed for `hostenv.py` to give back, or 
 screenshot and clipboard tools start failing on somebody else's distribution. It also
 checks that a fallback is used only where the system lacks it, and that every input to
 the build stays pinned by hash.
+
+`tests/test_https.py` guards the API key never crossing the network unencrypted: which
+addresses may be used, that Settings will not save any other, and that the chat, the
+model list, web search and Privacy Mode each send nothing to one.
 
 `tests/test_keychain.py` guards the API key staying out of `config.json`: saved to the
 keyring, moved there from a file an older version wrote, and kept rather than lost when

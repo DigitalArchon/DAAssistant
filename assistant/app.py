@@ -6,7 +6,8 @@ from . import gtkcompat
 from gi.repository import Gdk, GLib, Gtk
 
 from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc,
-                models as catalogue, privacy as privacy_module, prompts, webkitguard)
+                models as catalogue, netguard, privacy as privacy_module, prompts,
+                webkitguard)
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
@@ -745,9 +746,16 @@ class Assistant:
             notify=self.notify, hotkeys=self.hotkeys)
         try:
             if dialog.run() == Gtk.ResponseType.OK:
+                values = dialog.values()
+                # The dialog holds Save while the address is refused; this is for
+                # whatever gets a response out of it all the same.
+                refused = netguard.problem(values.get("api_url"))
+                if refused:
+                    self.notify(f"Settings not saved. {refused}", urgency="normal")
+                    return
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
                           self.config.encyclopedia_enabled)
-                for key, value in dialog.values().items():
+                for key, value in values.items():
                     setattr(self.config, key, value)
                 try:
                     self.config.save()

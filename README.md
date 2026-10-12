@@ -112,6 +112,10 @@ On Wayland, install `wl-clipboard` (KDE needs nothing: it uses Klipper), and on 
 3. Press **Test connection**: it shows the provider's own error message if anything is
    wrong.
 
+The API URL must be `https://`. Plain `http://` is accepted only for a server on this
+machine or your local network; anything else is refused, so the key never crosses the
+internet unencrypted.
+
 Your settings are kept in `~/.config/da-assistant/config.json`. The API key is not: it
 goes into your desktop's keyring (GNOME Keyring, or KWallet on Plasma), which encrypts
 it. Without a keyring, a key typed into Settings works until the app quits, and Settings

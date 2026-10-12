@@ -31,7 +31,6 @@ from assistant.capture import cli
 from assistant.config import Config
 from assistant.llm import LLMClient, LLMError
 from assistant.ui.chat import history_for
-from assistant.ui.dialogs import sends_key_in_the_clear
 from assistant.ui.markdown_html import render_markdown
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -239,13 +238,15 @@ class DebugCapturesArePrivate(TempDir):
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
-class PlainHttpWarning(unittest.TestCase):
-    def test_only_a_remote_http_url_is_flagged(self):
-        self.assertTrue(sends_key_in_the_clear("http://api.example.com/v1/chat/completions"))
-        self.assertFalse(sends_key_in_the_clear("https://nano-gpt.com/api/v1/chat/completions"))
-        self.assertFalse(sends_key_in_the_clear("http://localhost:11434/v1/chat/completions"))
-        self.assertFalse(sends_key_in_the_clear("http://127.0.0.1:8080/v1"))
-        self.assertFalse(sends_key_in_the_clear(""))
+class PlainHttpIsRefused(unittest.TestCase):
+    """It was only warned about, and sent all the same. See tests/test_https.py."""
+
+    def test_only_a_remote_http_url_is_refused(self):
+        from assistant import netguard
+        self.assertTrue(netguard.problem("http://api.example.com/v1/chat/completions"))
+        self.assertIsNone(netguard.problem("https://nano-gpt.com/api/v1/chat/completions"))
+        self.assertIsNone(netguard.problem("http://localhost:11434/v1/chat/completions"))
+        self.assertIsNone(netguard.problem("http://127.0.0.1:8080/v1"))
 
 
 class HotkeyRestart(TempDir):

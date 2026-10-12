@@ -16,7 +16,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 
-from . import privacy
+from . import netguard, privacy
 
 CACHE_DIR = os.path.expanduser("~/.cache/da-assistant")
 CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
@@ -170,6 +170,8 @@ def private_ids_in(body):
 def fetch_private_ids(api_url, timeout=30):
     """The Private Mode relay's model ids (a public list; no key is sent). [] on failure:
     the rest of the catalogue is still worth showing."""
+    if netguard.problem(api_url):
+        return []
     try:
         response = requests.get(private_list_url(api_url), timeout=timeout)
         body = response.json() if response.status_code < 400 else {}
@@ -227,6 +229,10 @@ def save_cache(models, url):
 
 def fetch(config, force=False, timeout=60):
     """Return (models, from_cache). Raises RuntimeError with a readable message."""
+    try:
+        netguard.check(config.api_url)
+    except netguard.InsecureURL as e:
+        raise RuntimeError(str(e))
     url = models_url(config.api_url)
     if not force:
         cached = load_cache(url=url)

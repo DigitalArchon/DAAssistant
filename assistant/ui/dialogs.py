@@ -8,12 +8,11 @@ and the PNG payload size - so a bad capture is obvious before it costs a request
 """
 
 import os
-from urllib.parse import urlparse
 
 from .. import gtkcompat
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
-from .. import imaging, llm as llm_module, privacy as privacy_module, sealed
+from .. import imaging, llm as llm_module, netguard, privacy as privacy_module, sealed
 from ..vendored import location as vendored_location
 from .model_browser import ModelBrowser
 
@@ -76,18 +75,6 @@ def privacy_note(privacy):
           "conversation stays private until it is closed.")
     box.pack_start(label, True, True, 0)
     return box
-
-
-def sends_key_in_the_clear(api_url):
-    """Whether this URL would put the API key on the network unencrypted.
-
-    Plain http to this machine is how a local server is reached and goes nowhere; plain
-    http to anything else hands the key to everyone on the path.
-    """
-    parsed = urlparse((api_url or "").strip())
-    if parsed.scheme.lower() != "http":
-        return False
-    return (parsed.hostname or "").lower() not in ("localhost", "127.0.0.1", "::1")
 
 
 def _scaled_pixbuf(image, max_w, max_h):
@@ -402,7 +389,8 @@ class TextReviewDialog(Gtk.Window):
 
 class SettingsDialog(Gtk.Dialog):
     TEXT_FIELDS = [
-        ("api_url", "API URL", "OpenAI-compatible /chat/completions endpoint"),
+        ("api_url", "API URL", "OpenAI-compatible /chat/completions endpoint. It must be "
+                               "https, unless it is on this machine or its local network."),
         ("api_key", "API key", "Kept in your desktop's keyring (GNOME Keyring, KWallet)"),
         ("default_language", "Target language", "Used for translation and replies"),
     ]
@@ -551,10 +539,9 @@ class SettingsDialog(Gtk.Dialog):
             self.entries[key] = entry
             row += 1
 
+        # Not a warning to click through: an address that would send the key in the
+        # clear is refused, here and again wherever a request is made (netguard.py).
         self.url_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=72)
-        self.url_warning.set_markup(
-            "<small>This URL is not https, so the API key will cross the network "
-            "unencrypted.</small>")
         self.url_warning.set_no_show_all(True)
         page.pack_start(self.url_warning, False, False, 0)
         self.entries["api_url"].connect("changed", self._sync_url_warning)
@@ -570,8 +557,18 @@ class SettingsDialog(Gtk.Dialog):
         page.pack_start(test_row, False, False, 0)
         return page
 
-    def _sync_url_warning(self, entry):
-        self.url_warning.set_visible(sends_key_in_the_clear(entry.get_text()))
+    def url_problem(self):
+        """Why the API URL as typed may not be used, or None."""
+        return netguard.problem(self.entries["api_url"].get_text())
+
+    def _sync_url_warning(self, _entry):
+        problem = self.url_problem()
+        self.url_warning.set_markup(
+            f'<span foreground="#d23a31">{GLib.markup_escape_text(problem)}</span>'
+            if problem else "")
+        self.url_warning.set_visible(bool(problem))
+        if hasattr(self, "privacy_problems"):       # built: Save follows what is typed
+            self._sync_privacy()
 
     def _on_browse(self, _widget, key, vision_only, private_only=False):
         kind = "TEE " if private_only else ""
@@ -664,8 +661,9 @@ class SettingsDialog(Gtk.Dialog):
         return self.config.detached(**self.values())
 
     def _sync_privacy(self):
-        """Say what each private model is, and hold Save while Privacy Mode is on and
-        could not be honoured - saving it would only make every operation refuse."""
+        """Say what each private model is, and hold Save while what is typed could not
+        be used: an API URL that is not https, or Privacy Mode on and not able to be
+        honoured - saving that would only make every operation refuse."""
         for key, label in self.privacy_kinds.items():
             model = self.entries[key].get_text().strip()
             kind = privacy_module.kind_of(model)
@@ -694,7 +692,8 @@ class SettingsDialog(Gtk.Dialog):
         else:
             self.privacy_problems.set_text("")
         self.privacy_problems.set_visible(bool(found))
-        self.save_button.set_sensitive(not (enabled and found))
+        self.save_button.set_sensitive(not (enabled and found)
+                                       and not self.url_problem())
 
     def _on_check_attestation(self, _widget):
         import threading

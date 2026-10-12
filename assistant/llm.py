@@ -18,7 +18,7 @@ import time
 
 import requests
 
-from . import models as catalogue, privacy as privacy_module, prompts, websearch
+from . import models as catalogue, netguard, privacy as privacy_module, prompts, websearch
 from .privacy import ModelRetired, PrivacyError
 
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
@@ -288,6 +288,12 @@ class LLMClient:
         return gzip.compress(raw, GZIP_LEVEL), headers
 
     def _post(self, payload, stream, cancel=None):
+        # https, or the local network: checked here, at the one place every request
+        # leaves from, so that no setting or caller can send the key in the clear.
+        try:
+            netguard.check(self.config.api_url)
+        except netguard.InsecureURL as e:
+            raise LLMError(f"Nothing was sent. {e}", model=payload.get("model"))
         last_error = None
         for attempt in range(MAX_RETRIES):
             if cancel is not None and cancel.is_set():

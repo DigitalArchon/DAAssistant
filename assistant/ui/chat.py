@@ -244,6 +244,7 @@ class ChatWindow(Gtk.Window):
         self._streaming_text = None
         self._streaming_model = None
         self._last_redraw = 0.0
+        self._redraw_queued = False     # a redraw is waiting for the main loop
         self._cancel = None
         self._destroyed = False
         self._loaded = False
@@ -1318,6 +1319,7 @@ class ChatWindow(Gtk.Window):
             web_search = self.search_toggle.get_active()
 
         self._cancel = threading.Event()
+        self._redraw_queued = False
         self._streaming_text = ""
         self._streaming_model = model
         self._streaming_privacy = self._badge(
@@ -1347,10 +1349,15 @@ class ChatWindow(Gtk.Window):
                               "status": lambda m: GLib.idle_add(self._set_status, m)}
 
         def on_delta(_piece, full_text):
+            # One redraw waiting at a time. Each renders the whole answer so far, and
+            # past some 20,000 characters that takes longer than the interval: queued
+            # regardless, they piled up behind the main loop, every one for text the
+            # next had already replaced, and the finished answer waited at the back.
             now = time.monotonic()
-            if now - self._last_redraw < STREAM_REDRAW_INTERVAL:
+            if self._redraw_queued or now - self._last_redraw < STREAM_REDRAW_INTERVAL:
                 return
             self._last_redraw = now
+            self._redraw_queued = True
             GLib.idle_add(self._on_stream_progress, full_text, cancel)
 
         def worker():
@@ -1793,6 +1800,7 @@ class ChatWindow(Gtk.Window):
         return self._destroyed or (cancel is not None and cancel is not self._cancel)
 
     def _on_stream_progress(self, text, cancel=None):
+        self._redraw_queued = False
         if self._cancel is None or self._stale(cancel) or self._cancel.is_set():
             return False
         self._streaming_text = text

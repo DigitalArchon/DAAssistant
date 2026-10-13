@@ -243,6 +243,68 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
+class OneRedrawWaitsAtATime(unittest.TestCase):
+    """A streamed answer is redrawn from the main loop, and each redraw renders the
+    whole answer so far. They used to be queued every 80 ms whether or not the last
+    had been run: behind a main loop slower than that - a long answer is enough to
+    make it so - they piled up, each for text the next had already replaced, and the
+    finished answer waited behind them all."""
+
+    setUpClass = StreamingDom.setUpClass
+    setUp, tearDown = StreamingDom.setUp, StreamingDom.tearDown
+    _run_until, _turn_count = StreamingDom._run_until, StreamingDom._turn_count
+    _make_window = StreamingDom._make_window
+
+    def _settled(self, window, turns=2):
+        return window._cancel is None and len(window.conversation) >= turns \
+            and window._loaded
+
+    def _counted(self, window):
+        redraws = []
+        real = window._on_stream_progress
+        window._on_stream_progress = lambda *a: (redraws.append(a[0]), real(*a))[1]
+        return redraws
+
+    def test_a_busy_main_loop_is_handed_one_redraw_not_one_per_interval(self):
+        import time
+        # 15 pieces over 0.3 s - four redraws' worth - all sent while the main loop
+        # is busy with something else.
+        client = StubClient("word " * 15, chunks=15, delay=0.02)
+        window = self._make_window(client)
+        try:
+            redraws = self._counted(window)
+            window._start_stream()
+            time.sleep(0.6)             # the main loop, busy: nothing is run
+            self.assertTrue(self._run_until(lambda: self._settled(window)))
+            self.assertEqual(len(redraws), 1, "redraws queued up behind the main loop")
+            self.assertEqual(self._turn_count(window), 2)
+            self.assertEqual(window.conversation[-1]["content"], "word " * 15)
+        finally:
+            window.destroy()
+
+    def test_a_main_loop_that_keeps_up_redraws_as_often_as_before(self):
+        client = StubClient("word " * 6, chunks=6, delay=0.15)
+        window = self._make_window(client)
+        try:
+            redraws = self._counted(window)
+            window._start_stream()
+            self.assertTrue(self._run_until(lambda: self._settled(window)))
+            self.assertEqual(len(redraws), 6)
+        finally:
+            window.destroy()
+
+    def test_a_redraw_lost_with_one_request_does_not_hold_up_the_next(self):
+        window = self._make_window(StubClient("word " * 4))
+        try:
+            window._redraw_queued = True    # as if one never came back
+            redraws = self._counted(window)
+            window._start_stream()
+            self.assertTrue(self._run_until(lambda: self._settled(window)))
+            self.assertTrue(redraws, "nothing was redrawn while the answer arrived")
+        finally:
+            window.destroy()
+
+
 class WebKitStrikesFollowTheProcess(unittest.TestCase):
     """The crash guard must only count a WebView that ended the process.
 

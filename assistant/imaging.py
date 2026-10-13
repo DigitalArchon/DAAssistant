@@ -90,18 +90,27 @@ def rescale(img, target_long_edge=1600, max_long_edge=2000, upscale=True):
     return img.resize(new_size, Image.LANCZOS)
 
 
-def to_png_bytes(img, optimize=True):
+# How hard zlib works on a PNG. Every picture is encoded on the main loop - a capture as
+# its review dialog opens, an attachment as it is added - so this is time spent looking
+# at nothing. Pillow's optimize=True, which this used to ask for, is level 9 and a search
+# for the best strategy besides: measured on screenshots of text, 290 ms for a 1600x900
+# region and 430 ms for the largest picture sent, to come out 3.5% smaller than this
+# level does in 50 and 75 ms. A lower level saves little more time and costs more bytes.
+# Lossless at any level: the pixels sent are the same.
+PNG_COMPRESS_LEVEL = 6
+
+
+def to_png_bytes(img):
     buf = BytesIO()
-    img.save(buf, format="PNG", optimize=optimize)
+    img.save(buf, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
     return buf.getvalue()
 
 
 def screenshot_png(img):
     """The capture as the user took it, for them to view and save: no flattening or
-    scaling, which are for the model. Not optimised - a full-screen grab would take
-    seconds, and this runs as the chat window opens. Still pixels only: it is shown, and
-    saved wherever the user saves it."""
-    return to_png_bytes(pixels_only(img), optimize=False)
+    scaling, which are for the model. Still pixels only: it is shown, and saved wherever
+    the user saves it."""
+    return to_png_bytes(pixels_only(img))
 
 
 def prepare_for_vision(img, config=None, save_debug_copy=False):

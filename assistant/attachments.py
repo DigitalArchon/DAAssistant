@@ -99,12 +99,11 @@ def encode_image(image, photo=False, config=None):
         DEFAULTS["capture_max_long_edge"]
     out = imaging.pixels_only(imaging.rescale(imaging.flatten(image), cap, cap,
                                               upscale=False))
-    buf = BytesIO()
     if photo:
+        buf = BytesIO()
         out.save(buf, "JPEG", quality=JPEG_QUALITY)
         return buf.getvalue(), "image/jpeg"
-    out.save(buf, "PNG", optimize=True)
-    return buf.getvalue(), "image/png"
+    return imaging.to_png_bytes(out), "image/png"
 
 
 def thumbnail_png(image, side=THUMBNAIL_SIDE):

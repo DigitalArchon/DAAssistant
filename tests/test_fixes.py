@@ -41,6 +41,43 @@ class ImagePipeline(unittest.TestCase):
         _, info = imaging.prepare_for_vision(Image.new("RGB", (1700, 900)))
         self.assertFalse(info["scaled"])
 
+    def test_what_is_sent_is_every_pixel_however_it_is_packed(self):
+        """The PNG is packed at a level chosen for the time it takes
+        (imaging.PNG_COMPRESS_LEVEL): that may change its size, never what it shows."""
+        import base64
+        from io import BytesIO
+        source = Image.effect_noise((1700, 900), 80).convert("RGB")
+        b64, info = imaging.prepare_for_vision(source)
+        sent = Image.open(BytesIO(base64.b64decode(b64)))
+        self.assertEqual(sent.format, "PNG")
+        self.assertEqual(sent.convert("RGB").tobytes(), source.tobytes())
+        self.assertEqual(info["bytes"], len(base64.b64decode(b64)))
+
+    def test_no_picture_is_packed_with_the_slow_search(self):
+        """optimize=True took six times as long to save 3.5%, on the main loop, before
+        the review dialog could open. A capture, an attachment and the screenshot the
+        chat window keeps all go through the one function that does not ask for it."""
+        from unittest import mock
+        from assistant import attachments
+        asked = []
+        real = Image.Image.save
+
+        def save(image, fp, format=None, **params):
+            asked.append((format, params))
+            return real(image, fp, format, **params)
+
+        picture = Image.new("RGB", (64, 48), "white")
+        with mock.patch.object(Image.Image, "save", save):
+            imaging.prepare_for_vision(picture)
+            imaging.screenshot_png(picture)
+            data, mime = attachments.encode_image(picture)
+        self.assertEqual(mime, "image/png")
+        self.assertEqual(len(asked), 3)
+        for fmt, params in asked:
+            self.assertEqual(fmt, "PNG")
+            self.assertNotIn("optimize", params)
+            self.assertEqual(params.get("compress_level"), imaging.PNG_COMPRESS_LEVEL)
+
     def test_transparency_flattens_to_white_not_black(self):
         """Compositing onto black darkens text; grim and the portal can emit alpha."""
         transparent = Image.new("RGBA", (4, 4), (0, 0, 0, 0))

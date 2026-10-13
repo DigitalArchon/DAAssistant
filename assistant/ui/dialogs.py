@@ -633,15 +633,15 @@ class SettingsDialog(Gtk.Dialog):
         self.privacy_problems = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         page.pack_start(self.privacy_problems, False, False, 0)
 
-        ok, message = sealed.available()
-        where = f" from {vendored_location()}" if ok and vendored_location() else ""
-        e2ee = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
-        e2ee.set_markup(
-            "<small>End-to-end encryption: "
-            + (GLib.markup_escape_text(f"available ({message}{where})") if ok
-               else GLib.markup_escape_text(message)) + "</small>")
+        self.e2ee_status = e2ee = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         e2ee.get_style_context().add_class("dim-label")
         page.pack_start(e2ee, False, False, 0)
+        self._show_e2ee()
+        if sealed.known() is None:
+            # Finding out imports Tinfoil's client, most of a second the first time and
+            # every window frozen for it if done here. A thread of its own does it, and
+            # the line above and the problems it bears on are filled in when it has.
+            sealed.check(lambda _answer: GLib.idle_add(self._on_e2ee_known))
 
         check_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.attest_button = Gtk.Button.new_with_label("Check attestation")
@@ -655,6 +655,25 @@ class SettingsDialog(Gtk.Dialog):
         self.attest_result.set_selectable(True)
         page.pack_start(self.attest_result, False, False, 0)
         return page
+
+    def _show_e2ee(self):
+        """Whether Tinfoil's client can be used, as far as is known yet."""
+        answer = sealed.known()
+        if answer is None:
+            text = "checking…"
+        elif answer[0]:
+            where = f" from {vendored_location()}" if vendored_location() else ""
+            text = f"available ({answer[1]}{where})"
+        else:
+            text = answer[1]
+        self.e2ee_status.set_markup("<small>End-to-end encryption: "
+                                    + GLib.markup_escape_text(text) + "</small>")
+
+    def _on_e2ee_known(self):
+        if not self._closed:
+            self._show_e2ee()
+            self._sync_privacy()
+        return False                    # one-shot idle callback
 
     def _staged(self):
         """The settings as they stand in this dialog, without touching the real ones."""
@@ -681,7 +700,12 @@ class SettingsDialog(Gtk.Dialog):
                 context.add_class("privacy-bad")
             label.set_tooltip_text(privacy_module.describe(model)[1] or
                                    "Privacy Mode can use TEE/ and private/ models only")
-        found = privacy_module.problems(self._staged())
+        # Not waiting to hear whether Tinfoil's client can be used: _on_e2ee_known comes
+        # back here when that is known. Until then Save waits too, if it matters.
+        found = privacy_module.problems(self._staged(), wait=False)
+        unsure = sealed.known() is None and any(
+            privacy_module.is_private_mode(self.entries[key].get_text().strip())
+            for key in self.privacy_kinds)
         enabled = self.privacy_enabled.get_active()
         if found:
             text = " ".join(found)
@@ -692,7 +716,7 @@ class SettingsDialog(Gtk.Dialog):
         else:
             self.privacy_problems.set_text("")
         self.privacy_problems.set_visible(bool(found))
-        self.save_button.set_sensitive(not (enabled and found)
+        self.save_button.set_sensitive(not (enabled and (found or unsure))
                                        and not self.url_problem())
 
     def _on_check_attestation(self, _widget):

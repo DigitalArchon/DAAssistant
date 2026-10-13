@@ -117,8 +117,13 @@ def describe(model):
     return "", ""
 
 
-def problems(config):
-    """Why Privacy Mode cannot run with these settings, as a list of sentences."""
+def problems(config, wait=True):
+    """Why Privacy Mode cannot run with these settings, as a list of sentences.
+
+    Whether Tinfoil's client can be used takes most of a second to find out, the first
+    time (sealed.available). wait=False is for a window on the main loop: while that is
+    not known yet its sentence is left out, and the window, which has asked
+    sealed.check(), asks again when it is."""
     found = []
     insecure = netguard.problem(getattr(config, "api_url", ""))
     if insecure:
@@ -135,7 +140,8 @@ def problems(config):
                          f"URL is not nano-gpt's.")
         elif is_private_mode(model):
             from . import sealed
-            if not sealed.available()[0]:
+            answer = sealed.available() if wait else sealed.known()
+            if answer is not None and not answer[0]:
                 found.append(f"{model} needs Tinfoil's client, which is not installed: "
                              f"run tools/install-private-mode.sh, then restart the app.")
     return found

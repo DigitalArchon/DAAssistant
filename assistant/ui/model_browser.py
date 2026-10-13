@@ -28,6 +28,9 @@ class ModelBrowser(Gtk.Dialog):
         self.selected_id = None
         self.models = []
         self._current = current
+        self._sdk_asked = False         # sealed.check() has been asked, by this browser
+        self._closed = False
+        self.connect("destroy", lambda _w: setattr(self, "_closed", True))
 
         self.set_default_size(920, 620)
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
@@ -221,6 +224,11 @@ class ModelBrowser(Gtk.Dialog):
         model, iterator = self.tree.get_selection().get_selected()
         return model[iterator][COL_ID] if iterator else None
 
+    def _on_sdk_known(self):
+        if not self._closed:
+            self._on_selection_changed(self.tree.get_selection())
+        return False                    # one-shot idle callback
+
     def _on_selection_changed(self, _selection):
         model_id = self._current_id()
         self.choose_button.set_sensitive(model_id is not None)
@@ -235,8 +243,15 @@ class ModelBrowser(Gtk.Dialog):
         label, note = privacy.describe(model_id)
         if label and note not in bits[0]:
             bits.insert(0, note)
-        if privacy.is_private_mode(model_id) and not sealed.available()[0]:
-            bits.insert(0, sealed.INSTALL_HINT)
+        if privacy.is_private_mode(model_id):
+            answer = sealed.known()
+            if answer is None and not self._sdk_asked:
+                # Slow to find out, the first time: asked on a thread, and this is
+                # shown again when it is known.
+                self._sdk_asked = True
+                sealed.check(lambda _answer: GLib.idle_add(self._on_sdk_known))
+            elif answer is not None and not answer[0]:
+                bits.insert(0, sealed.INSTALL_HINT)
         if entry["aliases"]:
             bits.append(f"Also known as: {', '.join(entry['aliases'][:4])}")
         self.detail.set_text("  ".join(bits))

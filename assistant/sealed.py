@@ -34,7 +34,6 @@ figure: laptop sleep, a key rotated underneath us), and once more when the encla
 the key has changed.
 """
 
-import functools
 import hashlib
 import json
 import secrets
@@ -70,10 +69,24 @@ ALLOWED_FIELDS = frozenset({
 CACHE_SECRET_FIELD = "user_cache_secret"
 
 
-@functools.lru_cache(maxsize=None)
+_known = None           # available()'s answer, once it has been worked out
+
+
 def available():
     """(True, version) when Tinfoil's SDK can be imported, else (False, what to do).
-    Cached: it cannot change without a restart, since vendored.py sets sys.path once."""
+    Worked out once: it cannot change without a restart, since vendored.py sets sys.path
+    once.
+
+    Slow the first time: importing the SDK brings in the OpenAI client and sigstore with
+    it, some 1,200 modules and most of a second. The main loop asks known() instead, and
+    has check() do this on a thread of its own."""
+    global _known
+    if _known is None:
+        _known = _import_sdk()
+    return _known
+
+
+def _import_sdk():
     try:
         import ehbp  # noqa: F401
         import tinfoil  # noqa: F401
@@ -84,6 +97,25 @@ def available():
         return True, f"tinfoil {version('tinfoil')}"
     except Exception:
         return True, "tinfoil"
+
+
+def known():
+    """available()'s answer if it has been worked out already, else None. Never imports
+    anything, so it can be asked on the main loop."""
+    return _known
+
+
+def check(then=None):
+    """Work out available() on a thread of its own, and call then(answer) from that
+    thread. For a window that wants the answer without stopping for it: the import is
+    the real one, so an SDK that is installed and will not load is still found here,
+    not in the middle of a conversation."""
+    def work():
+        answer = available()
+        if then is not None:
+            then(answer)
+
+    threading.Thread(target=work, daemon=True, name="sdk-check").start()
 
 
 def relay_url(api_url):

@@ -1133,6 +1133,132 @@ class ARetiredModelInAChat(TempConfig):
         self.assertIn("nothing was sent", window._privacy_detail.get_text())
 
 
+class TheClientIsLookedForOffTheMainLoop(TempConfig):
+    """Whether Tinfoil's client can be used is found out by importing it: some 1,200
+    modules, most of a second, the first time in each run. Settings used to do that as
+    it was built, with every window frozen. It is still the real import - a client that
+    is installed and will not load is found in Settings, not in the middle of a
+    conversation - made on a thread of its own, and Settings filled in when it is done.
+    """
+
+    setUpClass = ChatStaysPrivate.setUpClass
+    _run_until = ChatStaysPrivate._run_until
+
+    def sdk(self, answer, seconds=0.3):
+        """Stand in for the import: `seconds` long, and noting which thread made it."""
+        import threading
+        import time
+        from unittest import mock
+        threads = []
+
+        def slow():
+            threads.append(threading.current_thread())
+            time.sleep(seconds)
+            return answer
+
+        for patch in (mock.patch.object(sealed, "_known", None),
+                      mock.patch.object(sealed, "_import_sdk", slow)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        return threads
+
+    def settings(self):
+        from assistant.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(None, self.config, type("C", (), {"config": self.config}))
+        self.addCleanup(dialog.destroy)
+        return dialog
+
+    def test_known_never_imports_and_check_does_on_its_own_thread(self):
+        import threading
+        threads = self.sdk((True, "tinfoil 9"))
+        self.assertIsNone(sealed.known())
+        self.assertEqual(threads, [])
+        heard = []
+        done = threading.Event()
+        sealed.check(lambda answer: (heard.append(answer), done.set()))
+        self.assertIsNone(sealed.known())           # not waited for
+        self.assertTrue(done.wait(5))
+        self.assertEqual(heard, [(True, "tinfoil 9")])
+        self.assertEqual(sealed.known(), (True, "tinfoil 9"))
+        self.assertIsNot(threads[0], threading.main_thread())
+        self.assertEqual(sealed.available(), (True, "tinfoil 9"))
+        self.assertEqual(len(threads), 1)           # worked out once
+
+    def test_settings_opens_without_waiting_and_fills_the_line_in(self):
+        import threading
+        import time
+        threads = self.sdk((True, "tinfoil 9"), seconds=0.5)
+        started = time.monotonic()
+        dialog = self.settings()
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertIn("checking", dialog.e2ee_status.get_text())
+        self.assertTrue(self._run_until(
+            lambda: "checking" not in dialog.e2ee_status.get_text()))
+        self.assertIn("available (tinfoil 9", dialog.e2ee_status.get_text())
+        self.assertEqual(len(threads), 1)
+        self.assertIsNot(threads[0], threading.main_thread())
+
+    def test_a_client_that_will_not_load_is_found_in_settings(self):
+        self.config.privacy_mode = True
+        self.config.private_text_model = "private/glm-5-3"
+        self.sdk((False, sealed.INSTALL_HINT))
+        dialog = self.settings()
+        # Not known yet: nothing is claimed either way, and Save waits to hear.
+        self.assertFalse(dialog.privacy_problems.get_visible())
+        self.assertFalse(dialog.save_button.get_sensitive())
+        self.assertTrue(self._run_until(
+            lambda: "checking" not in dialog.e2ee_status.get_text()))
+        self.assertIn("install-private-mode", dialog.e2ee_status.get_text())
+        self.assertTrue(dialog.privacy_problems.get_visible())
+        self.assertIn("install-private-mode", dialog.privacy_problems.get_text())
+        self.assertFalse(dialog.save_button.get_sensitive())
+
+    def test_save_is_free_again_once_the_client_is_known_to_be_there(self):
+        self.config.privacy_mode = True
+        self.config.private_text_model = "private/glm-5-3"
+        self.sdk((True, "tinfoil 9"))
+        dialog = self.settings()
+        self.assertFalse(dialog.save_button.get_sensitive())
+        self.assertTrue(self._run_until(dialog.save_button.get_sensitive))
+        self.assertFalse(dialog.privacy_problems.get_visible())
+
+    def test_settings_closed_before_the_answer_is_left_alone(self):
+        self.sdk((True, "tinfoil 9"))
+        dialog = self.settings()
+        dialog.destroy()
+        self.assertTrue(self._run_until(lambda: sealed.known() is not None))
+        self._run_until(lambda: False, timeout=1)    # the answer arrives at nothing
+
+    def test_problems_can_be_asked_without_waiting(self):
+        self.config.private_text_model = "private/glm-5-3"
+        threads = self.sdk((False, sealed.INSTALL_HINT))
+        self.assertEqual(privacy.problems(self.config, wait=False), [])
+        self.assertEqual(threads, [])
+        found = privacy.problems(self.config)        # as the tray and --probe ask
+        self.assertTrue(any("install-private-mode" in f for f in found))
+        self.assertEqual(privacy.problems(self.config, wait=False), found)
+
+    def test_the_model_browser_does_not_wait_either(self):
+        import threading
+        from assistant.ui.model_browser import ModelBrowser
+        from unittest import mock
+        threads = self.sdk((False, sealed.INSTALL_HINT))
+        with mock.patch.object(ModelBrowser, "_load", lambda *a, **kw: None):   # no network
+            browser = ModelBrowser(None, self.config, private_only=True)
+        self.addCleanup(browser.destroy)
+        shown = []
+        browser.detail.set_text = lambda text: shown.append(text)
+        browser.models = [{"id": "private/glm-5-3", "description": "A model.",
+                           "aliases": []}]
+        browser._current_id = lambda: "private/glm-5-3"
+        browser._on_selection_changed(None)
+        self.assertNotIn("install-private-mode", shown[-1])
+        self.assertTrue(self._run_until(
+            lambda: "install-private-mode" in shown[-1]))
+        self.assertEqual(len(threads), 1)
+        self.assertIsNot(threads[0], threading.main_thread())
+
+
 class AppUpgradesButNeverDowngrades(TempConfig):
     def app(self):
         from assistant.app import Assistant

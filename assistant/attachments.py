@@ -199,15 +199,16 @@ def unread(history):
 def reading_request(image):
     """The request for the vision model's reading of one attached picture."""
     return [{"role": "user", "content": [
-        {"type": "text", "text": prompts.IMAGE_BRIEF},
         {"type": "image_url",
-         "image_url": {"url": f"data:{image['mime']};base64,{image['base64']}"}}]}]
+         "image_url": {"url": f"data:{image['mime']};base64,{image['base64']}"}},
+        {"type": "text", "text": prompts.IMAGE_BRIEF}]}]
 
 
 def to_messages(history, can_see):
     """`history` (chat.history_for) with each turn's pictures put where the model will
-    find them: as image parts, for a model that can see; else as the vision model's
-    reading of each, appended to the turn's text. Turns without pictures are unchanged.
+    find them: as image parts ahead of the turn's text (llm.attach_image says why), for a
+    model that can see; else as the vision model's reading of each, appended to the
+    turn's text. Turns without pictures are unchanged.
     """
     out = []
     for turn in history:
@@ -216,10 +217,10 @@ def to_messages(history, can_see):
         if images:
             text = entry.get("content") or ""
             if can_see:
-                entry["content"] = [{"type": "text", "text": text}] + [
+                entry["content"] = [
                     {"type": "image_url",
                      "image_url": {"url": f"data:{i['mime']};base64,{i['base64']}"}}
-                    for i in images]
+                    for i in images] + [{"type": "text", "text": text}]
             else:
                 readings = [prompts.attached_reading(i["name"], i.get("reading") or
                                                      "(not read)") for i in images]

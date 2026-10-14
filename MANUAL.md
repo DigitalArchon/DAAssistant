@@ -183,6 +183,11 @@ whichever provider answers, and no Privacy Mode.
 model is on another provider, that provider is asked for its model list instead, which
 finds a wrong address, a refused key and a model it does not have.
 
+**An Ollama model's own temperature** (and `top_p`), from its Modelfile, is sent with
+every request to it. Ollama's OpenAI-compatible endpoint, which the app uses, would
+otherwise run every model at OpenAI's default of 1: glm-ocr's Modelfile says 0, and
+qwen3's 0.6.
+
 **Thinking models on Ollama** think unless told not to, and for most the levels are on
 and off in all but name. Set **Reasoning effort** to **None** to switch it off: measured
 on `qwen3:1.7b`, a one-line sum took 64 seconds at its default and under one with None.

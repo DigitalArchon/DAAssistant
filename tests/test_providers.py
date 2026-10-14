@@ -38,6 +38,19 @@ TAGS = {"models": [
      "capabilities": ["completion", "tools", "thinking"]},
 ]}
 
+# What /api/show says of each: the Modelfile's parameters, one a line.
+SHOWN = {
+    "glm-ocr:latest": {"parameters": "temperature                    0"},
+    "qwen3:1.7b": {"parameters": 'repeat_penalty                 1\nstop                           '
+                                 '"<|im_end|>"\ntemperature                    0.6\n'
+                                 'top_k                          20\ntop_p                          0.95'},
+}
+
+
+def shown(url, json=None, **_kwargs):
+    return reply(SHOWN.get(json["model"], {}))
+
+
 # As OpenRouter lists them at /api/v1/models (Oct 2026): prices per token, as strings.
 OPENROUTER = {"data": [
     {"id": "google/gemini-4-argon", "name": "Gemini 4 Argon", "context_length": 1000000,
@@ -104,6 +117,10 @@ class Case(unittest.TestCase):
         self.config.ollama_url = OLLAMA
         self.config.vision_provider = "ollama"
         self.config.vision_model = "glm-ocr"
+        # Ollama's /api/show, asked about each model when its list is read.
+        patch = mock.patch.object(models.requests, "post", side_effect=shown)
+        self.show = patch.start()
+        self.addCleanup(patch.stop)
 
     def client(self, *responses):
         client = LLMClient(self.config)
@@ -404,12 +421,38 @@ class TheModelLists(Case):
     def test_an_older_ollama_is_asked_about_each_model(self):
         """Before /api/tags carried capabilities, /api/show did."""
         bare = {"models": [{"name": "llava:13b", "details": {}}]}
-        with mock.patch.object(models.requests, "post", return_value=reply(
-                {"capabilities": ["completion", "vision"]})) as post:
-            listed, _get = self.fetch("ollama", bare)
-        self.assertEqual(post.call_args[0][0], OLLAMA + "/api/show")
-        self.assertEqual(post.call_args[1]["json"], {"model": "llava:13b"})
+        self.show.side_effect = None
+        self.show.return_value = reply({"capabilities": ["completion", "vision"]})
+        listed, _get = self.fetch("ollama", bare)
+        self.assertEqual(self.show.call_args[0][0], OLLAMA + "/api/show")
+        self.assertEqual(self.show.call_args[1]["json"], {"model": "llava:13b"})
         self.assertTrue(listed[0]["vision"])
+
+    def test_a_models_own_sampling_is_read_from_its_modelfile(self):
+        listed, _get = self.fetch("ollama", TAGS)
+        by_id = {m["id"]: m for m in listed}
+        self.assertEqual(by_id["glm-ocr:latest"]["sampling"], {"temperature": 0.0})
+        self.assertEqual(by_id["qwen3:1.7b"]["sampling"], {"temperature": 0.6, "top_p": 0.95})
+
+    def test_and_sent_with_each_request_to_it(self):
+        """Ollama's OpenAI-compatible endpoint runs a request that names no temperature
+        at OpenAI's default of 1, whatever the Modelfile says: glm-ocr's says 0, and at 1
+        it skipped the second column of a page and garbled Greek."""
+        self.fetch("ollama", TAGS)
+        client = self.client(streamed("read"), answer(), answer())
+        client.complete(self.config.model("vision"), [{"role": "user", "content": "x"}])
+        client.complete(providers.Model("qwen3:1.7b", "ollama"),
+                        [{"role": "user", "content": "x"}])
+        client.complete(self.config.model("text"), [{"role": "user", "content": "x"}])
+        self.assertEqual(json.loads(self.sent(client, 0)[2])["temperature"], 0.0)
+        qwen = json.loads(self.sent(client, 1)[2])
+        self.assertEqual((qwen["temperature"], qwen["top_p"]), (0.6, 0.95))
+        self.assertNotIn("temperature", json.loads(self.sent(client, 2)[2]))   # NanoGPT
+
+    def test_a_model_not_listed_yet_is_left_to_the_server(self):
+        client = self.client(streamed("read"))
+        client.complete(self.config.model("vision"), [{"role": "user", "content": "x"}])
+        self.assertNotIn("temperature", json.loads(self.sent(client)[2]))
 
     def test_openrouter_prices_are_per_token_and_shown_per_million(self):
         self.config.openrouter_api_key = "sk-or"

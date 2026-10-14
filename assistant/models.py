@@ -30,11 +30,15 @@ CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
 CACHE_TTL = 6 * 3600
 # Bumped when what is cached changes shape or scope: 2 added the private/ models, which
 # an older cache would otherwise hide for up to CACHE_TTL; 3 the reasoning efforts; 4
-# whether a model thinks unless told not to.
-CACHE_VERSION = 4
-# Ollama before 0.12 or so lists no capabilities in /api/tags, and each model is asked
-# after (/api/show) instead. Not for a library of hundreds.
+# whether a model thinks unless told not to; 5 an Ollama model's own sampling.
+CACHE_VERSION = 5
+# Each of an Ollama server's models is asked after (/api/show), for its own sampling and,
+# before Ollama 0.12 or so put them in /api/tags, its capabilities. Not for a library of
+# hundreds.
 OLLAMA_SHOW_LIMIT = 40
+# What a model's Modelfile sets that Ollama's OpenAI-compatible endpoint replaces with
+# OpenAI's defaults when a request does not say: see sampling_for.
+OLLAMA_SAMPLING = ("temperature", "top_p")
 
 # nano-gpt's end-to-end encrypted models are listed apart from the rest, by the Private
 # Mode relay, and by id alone: no prices, context lengths or capabilities.
@@ -156,7 +160,22 @@ def normalise_ollama(entry):
         # glm-ocr is glm-ocr:latest, and is asked for either way.
         "aliases": [name[: -len(":latest")]] if name.endswith(":latest") else [],
         "subscription": False,
+        "sampling": dict(entry.get("sampling") or {}),
     }
+
+
+def ollama_sampling(parameters):
+    """The sampling a Modelfile sets, from /api/show's "parameters": one setting a line,
+    name and value apart by spaces ("temperature                    0")."""
+    found = {}
+    for line in (parameters or "").splitlines():
+        name, _space, value = line.strip().partition(" ")
+        if name in OLLAMA_SAMPLING:
+            try:
+                found[name] = float(value.strip())
+            except ValueError:
+                pass
+    return found
 
 
 def format_price(model):
@@ -344,15 +363,18 @@ def _fetch_ollama(source, headers, timeout):
     if not tags:
         raise ValueError("the Ollama server has no models; pull one with `ollama pull`")
     show = source.models_url.rsplit("/", 1)[0] + "/show"
-    for tag in [t for t in tags if "capabilities" not in t][:OLLAMA_SHOW_LIMIT]:
+    for tag in tags[:OLLAMA_SHOW_LIMIT]:
         try:
             response = requests.post(show, headers=headers, timeout=timeout,
                                      json={"model": tag.get("name") or tag.get("model")})
             shown = response.json() if response.status_code < 400 else {}
         except (requests.exceptions.RequestException, ValueError):
             continue
-        if isinstance(shown, dict) and isinstance(shown.get("capabilities"), list):
+        if not isinstance(shown, dict):
+            continue
+        if "capabilities" not in tag and isinstance(shown.get("capabilities"), list):
             tag["capabilities"] = shown["capabilities"]
+        tag["sampling"] = ollama_sampling(shown.get("parameters"))
     return [normalise_ollama(tag) for tag in tags]
 
 
@@ -434,6 +456,22 @@ def accepts_images(config, model_id):
     """
     model = resolve(cached_for(config, model_id) or [], model_id)
     return None if model is None else bool(model.get("vision"))
+
+
+def sampling_for(config, model_id):
+    """The temperature and top_p an Ollama model's own Modelfile sets, to be sent with
+    each request to it; {} for any other model.
+
+    Ollama's OpenAI-compatible endpoint, which is the one used, does not leave a model
+    its own: a request that does not name a temperature is run at OpenAI's default of
+    1, and top_p at 1, whatever the Modelfile says. glm-ocr's says 0, and at 1 it was
+    measured skipping the second column of a page, garbling Greek and dropping dim text
+    that it reads without fault at 0. qwen3's says 0.6 and 0.95.
+    """
+    if providers.provider_id(config, model_id) != providers.OLLAMA:
+        return {}
+    model = resolve(cached_for(config, model_id) or [], model_id)
+    return dict((model or {}).get("sampling") or {})
 
 
 def cached_for(config, model_id):

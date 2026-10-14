@@ -235,7 +235,7 @@ class Composing(unittest.TestCase):
         turn = attachments.compose("Q", [self.picture])
         [message] = attachments.to_messages([turn], can_see=True)
         self.assertNotIn("images", message)
-        text, image = message["content"]
+        image, text = message["content"]          # the image first: see llm.attach_image
         self.assertEqual(text, {"type": "text", "text": "Q"})
         self.assertEqual(image["image_url"]["url"],
                          "data:image/png;base64," + self.picture["base64"])
@@ -443,7 +443,7 @@ class ChatAttachments(unittest.TestCase):
         self.assertEqual(self.window._attachments, [])
         self.assertFalse(self.window.attachment_bar.get_visible())
         [user] = [m for m in self.client.streamed[0]["messages"] if m["role"] == "user"]
-        text, picture = user["content"]
+        picture, text = user["content"]
         self.assertIn("What do these show?", text["text"])
         self.assertIn("# Notes\nsecond line", text["text"])
         sent = base64.b64decode(picture["image_url"]["url"].split(",", 1)[1])

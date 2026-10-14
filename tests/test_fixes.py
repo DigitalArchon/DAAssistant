@@ -99,7 +99,8 @@ class LLMMessages(unittest.TestCase):
         ]
         out = attach_image(messages, "BASE64")
         self.assertIsInstance(out[0]["content"], list)
-        self.assertEqual([p["type"] for p in out[0]["content"]], ["text", "image_url"])
+        # The image ahead of the words: glm-ocr reads a whole page only in that order.
+        self.assertEqual([p["type"] for p in out[0]["content"]], ["image_url", "text"])
         self.assertIsInstance(out[2]["content"], str)
 
     def test_the_cached_prefix_survives_a_follow_up(self):

@@ -245,8 +245,13 @@ def attach_image(messages, image_base64, mime="image/png"):
     cannot be cached, and the capture is the expensive part of the request, so each
     follow-up paid full price for it again.
 
-    OpenAI-compatible content-parts form. If a message already carries parts we append
-    to them rather than clobbering, so an image survives repeated turns.
+    OpenAI-compatible content-parts form, the image ahead of the words. That is the
+    order vision models are trained on, and glm-ocr reads only in it: with the words
+    first it read one column of a two-column page and left out the grey timestamps of a
+    log, which with the image first it read without fault (Ollama 0.40.2, temperature 0;
+    and the same as Ollama's own API, which puts images first). If a message already
+    carries parts the image joins them rather than clobbering, so it survives repeated
+    turns.
     """
     if not image_base64:
         return [dict(m) for m in messages]
@@ -259,7 +264,7 @@ def attach_image(messages, image_base64, mime="image/png"):
     content = out[idx].get("content", "")
     parts = list(content) if isinstance(content, list) else [{"type": "text", "text": content}]
     if not any(p.get("type") == "image_url" for p in parts):
-        parts.append({
+        parts.insert(0, {
             "type": "image_url",
             "image_url": {"url": f"data:{mime};base64,{image_base64}"},
         })
@@ -465,6 +470,9 @@ class LLMClient:
                 limit += REASONING_ROOM.get(effort, 4096)
         if limit:
             payload["max_tokens"] = limit
+        # What an Ollama model's Modelfile sets, which its OpenAI-compatible endpoint
+        # would otherwise replace with OpenAI's defaults (models.sampling_for).
+        payload.update(catalogue.sampling_for(self.config, model))
         stops = self._provider(model).stops(model)
         if stops:
             payload["stop"] = stops

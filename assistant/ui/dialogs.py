@@ -12,7 +12,8 @@ import os
 from .. import gtkcompat
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
-from .. import imaging, llm as llm_module, netguard, privacy as privacy_module, sealed
+from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,
+                sealed)
 from ..vendored import location as vendored_location
 from .model_browser import ModelBrowser
 
@@ -389,16 +390,13 @@ class TextReviewDialog(Gtk.Window):
 
 class SettingsDialog(Gtk.Dialog):
     TEXT_FIELDS = [
-        ("api_url", "API URL", "OpenAI-compatible /chat/completions endpoint. It must be "
-                               "https, unless it is on this machine or its local network."),
-        ("api_key", "API key", "Kept in your desktop's keyring (GNOME Keyring, KWallet)"),
         ("default_language", "Target language", "Used for translation and replies"),
     ]
-    # (config key, label, must accept images)
+    # (config key, label, must accept images, the setting naming its provider)
     MODEL_FIELDS = [
-        ("text_model", "Text model", False),
-        ("premium_text_model", "Premium text model", False),
-        ("vision_model", "Vision model (OCR)", True),
+        ("text_model", "Text model", False, "text_provider"),
+        ("premium_text_model", "Premium text model", False, "premium_text_provider"),
+        ("vision_model", "Vision model (OCR)", True, "vision_provider"),
     ]
 
     # (config key, label, must accept images) - browsed among TEE models only.
@@ -453,6 +451,7 @@ class SettingsDialog(Gtk.Dialog):
         notebook = self.notebook = Gtk.Notebook()
         content.pack_start(notebook, True, True, 0)
         notebook.append_page(self._build_general(), Gtk.Label(label="General"))
+        notebook.append_page(self._build_providers(), Gtk.Label(label="Providers"))
         notebook.append_page(self._build_privacy(), Gtk.Label(label="Privacy"))
         notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
         notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
@@ -461,7 +460,16 @@ class SettingsDialog(Gtk.Dialog):
         notebook.append_page(self.shortcuts_page, Gtk.Label(label="Shortcuts"))
         notebook.append_page(self._build_advanced(), Gtk.Label(label="Advanced"))
 
+        # Not a warning to click through: an address that would send a key in the
+        # clear is refused, here and again wherever a request is made (netguard.py).
+        # Under the pages, since the General page's choice of provider and the
+        # Providers page's address can each be what is wrong.
+        self.url_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.url_warning.set_no_show_all(True)
+        content.pack_start(self.url_warning, False, False, 0)
+
         self.show_all()
+        self._sync_url_warning()
         self._sync_search_sensitivity()
         self._sync_privacy()
 
@@ -502,30 +510,29 @@ class SettingsDialog(Gtk.Dialog):
         page.pack_start(grid, False, False, 0)
 
         self.entries = {}
+        self.provider_combos = {}
         row = 0
         for key, label_text, tooltip in self.TEXT_FIELDS:
             entry = Gtk.Entry(hexpand=True)
             entry.set_text(str(getattr(self.config, key, "")))
             if tooltip:
                 entry.set_tooltip_text(tooltip)
-            if key == "api_key":
-                entry.set_visibility(False)
-                entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
-                keychain = getattr(self.config, "keychain", None)
-                problem = getattr(self.config, "keychain_error", None) or (
-                    keychain.problem() if keychain is not None else None)
-                if problem:
-                    entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY,
-                                                  "dialog-warning-symbolic")
-                    entry.set_icon_tooltip_text(
-                        Gtk.EntryIconPosition.SECONDARY,
-                        f"{problem} A key typed here is used until the app quits.")
             grid.attach(self._label(label_text), 0, row, 1, 1)
-            grid.attach(entry, 1, row, 2, 1)
+            grid.attach(entry, 1, row, 3, 1)
             self.entries[key] = entry
             row += 1
 
-        for key, label_text, vision_only in self.MODEL_FIELDS:
+        for key, label_text, vision_only, provider_key in self.MODEL_FIELDS:
+            # Each model beside the provider it is asked of, so OCR can run on the
+            # machine next door while the answers come from somewhere else.
+            combo = self._combo()
+            for provider in providers.ORDER:
+                combo.append(provider, providers.KINDS[provider].short)
+            chosen = getattr(self.config, provider_key, providers.NANOGPT)
+            combo.set_active_id(chosen if chosen in providers.KINDS else providers.NANOGPT)
+            combo.set_tooltip_text("The provider this model is asked of. Their keys and "
+                                   "addresses are on the Providers page.")
+            combo.connect("changed", lambda _w: self._sync_url_warning())
             entry = Gtk.Entry(hexpand=True)
             entry.set_text(str(getattr(self.config, key, "")))
             if key in self.MODEL_TOOLTIPS:
@@ -534,18 +541,12 @@ class SettingsDialog(Gtk.Dialog):
             browse.set_tooltip_text("Search the provider's model list")
             browse.connect("clicked", self._on_browse, key, vision_only)
             grid.attach(self._label(label_text), 0, row, 1, 1)
-            grid.attach(entry, 1, row, 1, 1)
-            grid.attach(browse, 2, row, 1, 1)
+            grid.attach(combo, 1, row, 1, 1)
+            grid.attach(entry, 2, row, 1, 1)
+            grid.attach(browse, 3, row, 1, 1)
             self.entries[key] = entry
+            self.provider_combos[key] = (combo, provider_key)
             row += 1
-
-        # Not a warning to click through: an address that would send the key in the
-        # clear is refused, here and again wherever a request is made (netguard.py).
-        self.url_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=72)
-        self.url_warning.set_no_show_all(True)
-        page.pack_start(self.url_warning, False, False, 0)
-        self.entries["api_url"].connect("changed", self._sync_url_warning)
-        self._sync_url_warning(self.entries["api_url"])
 
         test_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.test_button = Gtk.Button.new_with_label("Test connection")
@@ -557,11 +558,69 @@ class SettingsDialog(Gtk.Dialog):
         page.pack_start(test_row, False, False, 0)
         return page
 
-    def url_problem(self):
-        """Why the API URL as typed may not be used, or None."""
-        return netguard.problem(self.entries["api_url"].get_text())
+    # ---- providers --------------------------------------------------------
 
-    def _sync_url_warning(self, _entry):
+    def _build_providers(self):
+        """Each provider's key and, where it has one to give, its address. Which model
+        goes to which is chosen beside the models, on the General page."""
+        page = self._page()
+        grid = Gtk.Grid(row_spacing=8, column_spacing=12)
+        page.pack_start(grid, False, False, 0)
+        keychain = getattr(self.config, "keychain", None)
+        keyring_problem = getattr(self.config, "keychain_error", None) or (
+            keychain.problem() if keychain is not None else None)
+
+        row = 0
+        for provider in providers.ORDER:
+            kind = providers.KINDS[provider]
+            heading = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+            heading.set_markup(
+                f"<b>{GLib.markup_escape_text(kind.name)}</b>"
+                + (f"  <small>{GLib.markup_escape_text(kind.note)}</small>"
+                   if kind.note else ""))
+            heading.set_margin_top(6 if row else 0)
+            grid.attach(heading, 0, row, 2, 1)
+            row += 1
+            # NanoGPT's address is known, and OpenRouter's: only a server of the
+            # user's own has one to type.
+            if kind.url_key and kind.id != providers.NANOGPT:
+                entry = Gtk.Entry(hexpand=True)
+                entry.set_text(str(getattr(self.config, kind.url_key, "")))
+                entry.set_placeholder_text(kind.placeholder)
+                entry.set_tooltip_text(
+                    "It must be https, unless it is on this machine or its local network.")
+                entry.connect("changed", lambda _w: self._sync_url_warning())
+                grid.attach(self._label("Address"), 0, row, 1, 1)
+                grid.attach(entry, 1, row, 1, 1)
+                self.entries[kind.url_key] = entry
+                row += 1
+            if kind.key_key:
+                entry = Gtk.Entry(hexpand=True)
+                entry.set_text(str(getattr(self.config, kind.key_key, "")))
+                entry.set_visibility(False)
+                entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+                entry.set_tooltip_text(
+                    "Kept in your desktop's keyring (GNOME Keyring, KWallet)")
+                if keyring_problem:
+                    entry.set_icon_from_icon_name(Gtk.EntryIconPosition.SECONDARY,
+                                                  "dialog-warning-symbolic")
+                    entry.set_icon_tooltip_text(
+                        Gtk.EntryIconPosition.SECONDARY,
+                        f"{keyring_problem} A key typed here is used until the app "
+                        f"quits.")
+                grid.attach(self._label("API key"), 0, row, 1, 1)
+                grid.attach(entry, 1, row, 1, 1)
+                self.entries[kind.key_key] = entry
+                row += 1
+        return page
+
+    def url_problem(self):
+        """Why the providers' addresses as they stand here may not be used, or None."""
+        return providers.refused(self._staged())
+
+    def _sync_url_warning(self, _entry=None):
+        if not hasattr(self, "url_warning"):        # still being built
+            return
         problem = self.url_problem()
         self.url_warning.set_markup(
             f'<span foreground="#d23a31">{GLib.markup_escape_text(problem)}</span>'
@@ -572,16 +631,23 @@ class SettingsDialog(Gtk.Dialog):
 
     def _on_browse(self, _widget, key, vision_only, private_only=False):
         kind = "TEE " if private_only else ""
-        browser = ModelBrowser(self, self.config,
+        combo = self.provider_combos.get(key, (None, None))[0]
+        # The settings as typed, so that an address or a key entered a moment ago can
+        # be browsed with before it is saved.
+        browser = ModelBrowser(self, self._staged(),
                                title=f"Choose a {kind}{'vision ' if vision_only else ''}"
                                      f"model",
                                vision_only=vision_only, private_only=private_only,
-                               current=self.entries[key].get_text().strip())
+                               current=self.entries[key].get_text().strip(),
+                               provider=(combo.get_active_id() if combo is not None
+                                         else providers.NANOGPT))
         browser.run()
-        chosen = browser.selected_id
+        chosen, source = browser.selected_id, browser.provider
         browser.destroy()
         if chosen:
             self.entries[key].set_text(chosen)
+            if combo is not None:
+                combo.set_active_id(source)
 
     # ---- privacy ----------------------------------------------------------
 
@@ -769,7 +835,8 @@ class SettingsDialog(Gtk.Dialog):
         note = Gtk.Label(xalign=0, wrap=True, max_width_chars=72)
         note.set_markup(
             "<small>The app searches the web itself and hands the results to the model, "
-            "so the query is what you asked and the sources can be listed. "
+            "so the query is what you asked and the sources can be listed. The search "
+            "runs on NanoGPT, with its API key, whichever provider answers. "
             "This is only the default: every request can be switched with the "
             "<b>Search the web</b> box on the send dialog, and follow-ups with the "
             "magnifier in the chat window.</small>")
@@ -1267,6 +1334,8 @@ class SettingsDialog(Gtk.Dialog):
 
     def values(self):
         out = {key: entry.get_text().strip() for key, entry in self.entries.items()}
+        for combo, provider_key in self.provider_combos.values():
+            out[provider_key] = combo.get_active_id() or providers.NANOGPT
         out["upscale_small_captures"] = self.upscale.get_active()
         out["debug_save_captures"] = self.debug_captures.get_active()
         out["hotkey_mode"] = self.hotkey_mode.get_active_id() or "auto"

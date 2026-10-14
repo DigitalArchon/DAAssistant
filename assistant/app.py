@@ -6,7 +6,7 @@ from . import gtkcompat
 from gi.repository import Gdk, GLib, Gtk
 
 from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc,
-                models as catalogue, netguard, privacy as privacy_module, prompts,
+                models as catalogue, privacy as privacy_module, prompts, providers,
                 webkitguard)
 from .capture import CANCELLED, CaptureManager
 from .config import Config
@@ -88,7 +88,7 @@ class Assistant:
         elif self.config.keychain_error:
             self.notify(f"{self.config.keychain_error} The API key cannot be kept "
                         "between runs.", urgency="normal")
-        if not self.config.api_key:
+        if providers.unready(self.config):
             GLib.idle_add(self._first_run_hint)
         else:
             self._warm_catalogue()
@@ -118,15 +118,17 @@ class Assistant:
         import threading
 
         def worker():
-            try:
-                catalogue.fetch(self.config)
-            except Exception as e:
-                print(f"[models] catalogue not refreshed: {e}")
+            for provider in providers.in_use(self.config):
+                try:
+                    catalogue.fetch(self.config, provider=provider.id)
+                except Exception as e:
+                    print(f"[models] catalogue not refreshed: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _first_run_hint(self):
-        self.notify("No API key set yet — open Settings from the tray menu")
+        self.notify(f"{providers.unready(self.config) or 'Not set up yet.'} "
+                    f"Settings are in the tray menu.")
         return False
 
     def _build_menu(self):
@@ -309,9 +311,12 @@ class Assistant:
         return "premium" if self.config.use_premium else "text"
 
     def _require_api_key(self):
-        if self.config.api_key:
+        """Whether every provider in use can be sent to: its address set, and its key
+        if it wants one. Settings are opened when not."""
+        missing = providers.unready(self.config)
+        if not missing:
             return True
-        self.notify("Set an API key in Settings first", urgency="normal")
+        self.notify(missing, urgency="normal")
         self.show_settings()
         return False
 
@@ -395,7 +400,7 @@ class Assistant:
             else:
                 # OCR: the vision model's transcription is the first answer, and the
                 # answering model takes the follow-ups.
-                reader = session.vision_model if session else self.config.vision_model
+                reader = session.vision_model if session else self.config.model("vision")
                 self._open_chat(title, prompt_text, display,
                                 image_base64=image_base64, first_model=reader,
                                 web_search=web_search, system=system, privacy=session,
@@ -409,8 +414,7 @@ class Assistant:
         """The model that answers: see _answer_role."""
         if privacy is not None:
             return privacy.model_for(self._answer_role())
-        return (self.config.premium_text_model if self.config.use_premium
-                else self.config.text_model)
+        return self.config.model(self._answer_role())
 
     def _image_answer(self, title, image_base64, question, web_search, privacy,
                       screenshot=None):
@@ -436,7 +440,7 @@ class Assistant:
                     question, privacy),
                 privacy=privacy, screenshot=screenshot)
             return
-        reader = privacy.vision_model if privacy else self.config.vision_model
+        reader = privacy.vision_model if privacy else self.config.model("vision")
         self._open_chat(
             title, question, f"{question}\n\n_Reading the image with {reader}…_",
             image_base64=image_base64, image_first=False,
@@ -451,7 +455,7 @@ class Assistant:
         def preflight(cancel, status):
             status("Reading and describing the image…")
             if privacy is None:
-                reader = self.config.vision_model
+                reader = self.config.model("vision")
                 reading = self.client.complete(
                     reader, [{"role": "user", "content": prompts.IMAGE_BRIEF}],
                     image_base64=image_base64, cancel=cancel)
@@ -483,7 +487,7 @@ class Assistant:
         Mode, attested and checked like any other private request."""
         if privacy is None:
             return self.client.complete(
-                self.config.vision_model,
+                self.config.model("vision"),
                 [{"role": "user", "content": prompts.OCR}],
                 image_base64=image_base64, cancel=cancel)
         return self.client.complete(
@@ -749,7 +753,7 @@ class Assistant:
                 values = dialog.values()
                 # The dialog holds Save while the address is refused; this is for
                 # whatever gets a response out of it all the same.
-                refused = netguard.problem(values.get("api_url"))
+                refused = providers.refused(self.config.detached(**values))
                 if refused:
                     self.notify(f"Settings not saved. {refused}", urgency="normal")
                     return

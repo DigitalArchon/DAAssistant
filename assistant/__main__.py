@@ -58,7 +58,10 @@ def probe():
     from .hotkeys import bindings, choose
     config = Config()
     print(f"Config file    : {config.config_file}")
-    print(f"API key set    : {'yes' if config.api_key else 'NO - set one in Settings'}")
+    from . import providers
+    for provider in providers.in_use(config):
+        print(f"{provider.name:<15}: {provider.problem() or 'ready'}"
+              + (f" ({provider.chat_url})" if provider.id != providers.NANOGPT else ""))
     print(f"Keyring        : {config.keychain_error or config.keychain.describe()}")
     from .app import privacy_lines
     for line in privacy_lines(config):

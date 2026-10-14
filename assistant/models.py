@@ -1,29 +1,40 @@
-"""Model catalogue: fetch, cache and search the provider's model list.
+"""Model catalogue: fetch, cache and search a provider's model list.
 
-The provider exposes the plain OpenAI-shaped list at /v1/models, but that carries only
-id/object/created/owned_by. Pricing, context length and capability flags come from
-`?detailed=true`, so that is what we ask for, falling back to the plain list if the
-detailed variant is not supported by whatever endpoint the user has configured.
+Each provider (assistant/providers.py) lists its models its own way:
 
-Results are cached on disk because the detailed list is ~650 KB and rarely changes.
+  NanoGPT      the plain OpenAI-shaped list at /v1/models carries only
+               id/object/created/owned_by. Pricing, context length and capability flags
+               come from `?detailed=true`, so that is what is asked for.
+  OpenRouter   /api/v1/models says all of it unasked, with prices per token.
+  Ollama       /v1/models is the plain list again, so its own /api/tags is read instead:
+               that one says which models see images and which think.
+  Other        the detailed list if the endpoint has one, else the plain one - which
+               says nothing about images, and the model browser allows for that.
+
+Results are cached on disk, a file per provider, because NanoGPT's detailed list is
+~650 KB and rarely changes.
 """
 
 import copy
 import json
 import os
 import time
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import requests
 
-from . import netguard, privacy
+from . import netguard, privacy, providers
 
 CACHE_DIR = os.path.expanduser("~/.cache/da-assistant")
 CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
 CACHE_TTL = 6 * 3600
 # Bumped when what is cached changes shape or scope: 2 added the private/ models, which
-# an older cache would otherwise hide for up to CACHE_TTL; 3 the reasoning efforts.
-CACHE_VERSION = 3
+# an older cache would otherwise hide for up to CACHE_TTL; 3 the reasoning efforts; 4
+# whether a model thinks unless told not to.
+CACHE_VERSION = 4
+# Ollama before 0.12 or so lists no capabilities in /api/tags, and each model is asked
+# after (/api/show) instead. Not for a library of hundreds.
+OLLAMA_SHOW_LIMIT = 40
 
 # nano-gpt's end-to-end encrypted models are listed apart from the rest, by the Private
 # Mode relay, and by id alone: no prices, context lengths or capabilities.
@@ -36,17 +47,8 @@ _PRICE_FIELDS = ("prompt", "completion", "cacheReadInputPer1kTokens", "input_cac
 
 
 def models_url(api_url):
-    """Derive the models endpoint from the configured chat endpoint."""
-    parsed = urlparse(api_url)
-    path = parsed.path
-    for suffix in ("/chat/completions", "/completions", "/responses"):
-        if path.endswith(suffix):
-            path = path[: -len(suffix)]
-            break
-    else:
-        path = path.rsplit("/", 1)[0] if "/" in path else path
-    return urlunparse(parsed._replace(path=path.rstrip("/") + "/models", query="",
-                                      fragment=""))
+    """Derive the models endpoint from a chat endpoint."""
+    return providers.models_url(api_url)
 
 
 def _price(entry, key):
@@ -79,12 +81,81 @@ def normalise(entry):
         # ["low", "high", "max"] for GLM 5.3. "none" among them marks a model that
         # thinks only when asked - see effort_for.
         "efforts": [str(e).lower() for e in entry.get("reasoning_efforts") or []],
+        # Thinks unless told not to, where the provider says so: see effort_for.
+        "thinks": False,
         "prompt_price": _price(entry, "prompt"),
         "completion_price": _price(entry, "completion"),
         "price_unit": pricing.get("unit") or "",
         "currency": pricing.get("currency") or "USD",
         "aliases": list(entry.get("aliases") or []),
         "subscription": bool((entry.get("subscription") or {}).get("included")),
+    }
+
+
+def _per_million(value):
+    try:
+        return float(value) * 1_000_000
+    except (TypeError, ValueError):
+        return None
+
+
+def normalise_openrouter(entry):
+    """One of OpenRouter's entries. The shape is close to NanoGPT's detailed one, apart
+    from prices, which are per token, and reasoning, which is an object:
+    {mandatory, default_enabled, supported_efforts, default_effort}."""
+    model = normalise(entry)
+    pricing = entry.get("pricing") or {}
+    supported = entry.get("supported_parameters") or []
+    reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
+    model.update({
+        "owned_by": model["id"].split("/", 1)[0].lstrip("~") if "/" in model["id"] else "",
+        "max_output_tokens": (entry.get("top_provider") or {}).get("max_completion_tokens"),
+        "reasoning": bool(reasoning) or "reasoning" in supported,
+        "tool_calling": "tools" in supported,
+        "efforts": [str(e).lower() for e in reasoning.get("supported_efforts") or []],
+        "thinks": bool(reasoning.get("mandatory") or reasoning.get("default_enabled")),
+        "prompt_price": _per_million(pricing.get("prompt")),
+        "completion_price": _per_million(pricing.get("completion")),
+        "price_unit": "per_million_tokens",
+    })
+    return model
+
+
+def normalise_ollama(entry):
+    """One of the models an Ollama server has, from /api/tags (and /api/show's
+    capabilities, where the tags carried none)."""
+    name = entry.get("name") or entry.get("model") or ""
+    details = entry.get("details") or {}
+    caps = entry.get("capabilities") or []
+    thinking = "thinking" in caps
+    size = entry.get("size")
+    described = ", ".join(str(bit) for bit in (
+        details.get("family"), details.get("parameter_size"),
+        details.get("quantization_level"),
+        f"{size / 1e9:.1f} GB" if isinstance(size, (int, float)) and size else None)
+        if bit)
+    return {
+        "id": name,
+        "name": name,
+        "description": f"On your Ollama server. {described}".strip(),
+        "owned_by": "ollama",
+        "category": "",
+        "context_length": details.get("context_length"),
+        "max_output_tokens": None,
+        "vision": "vision" in caps,
+        "reasoning": thinking,
+        "tool_calling": "tools" in caps,
+        # Thinking is on unless switched off, and the levels are on and off in all but
+        # name for most models: see effort_for.
+        "efforts": ["none", "low", "medium", "high"] if thinking else [],
+        "thinks": thinking,
+        "prompt_price": 0.0,
+        "completion_price": 0.0,
+        "price_unit": "per_million_tokens",
+        "currency": "USD",
+        # glm-ocr is glm-ocr:latest, and is asked for either way.
+        "aliases": [name[: -len(":latest")]] if name.endswith(":latest") else [],
+        "subscription": False,
     }
 
 
@@ -192,16 +263,25 @@ def offered(model_id, private_ids):
     return any(_twin_key(i) == key for i in private_ids)
 
 
-def load_cache(max_age=CACHE_TTL, url=None):
+def cache_file(provider=providers.NANOGPT):
+    """A provider's cached list: NanoGPT's where it has always been, the others' beside
+    it."""
+    if provider == providers.NANOGPT:
+        return CACHE_FILE
+    return os.path.join(CACHE_DIR, f"models-{provider}.json")
+
+
+def load_cache(max_age=CACHE_TTL, url=None, provider=providers.NANOGPT):
     """The cached list, or None. `url` is the endpoint it has to have come from."""
+    path = cache_file(provider)
     try:
-        stat = os.stat(CACHE_FILE)
+        stat = os.stat(path)
     except OSError:
         return None
     if max_age is not None and time.time() - stat.st_mtime > max_age:
         return None
     try:
-        with open(CACHE_FILE) as f:
+        with open(path) as f:
             payload = json.load(f)
     except (OSError, ValueError):
         return None
@@ -215,67 +295,110 @@ def load_cache(max_age=CACHE_TTL, url=None):
     return payload.get("models") or None
 
 
-def save_cache(models, url):
+def save_cache(models, url, provider=providers.NANOGPT):
+    path = cache_file(provider)
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        tmp = CACHE_FILE + ".tmp"
+        tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump({"version": CACHE_VERSION, "url": url, "fetched": time.time(),
                        "models": models}, f)
-        os.replace(tmp, CACHE_FILE)
+        os.replace(tmp, path)
     except OSError:
         pass        # a cache failure must never break the browser
 
 
-def fetch(config, force=False, timeout=60):
-    """Return (models, from_cache). Raises RuntimeError with a readable message."""
+def _listed(body):
+    """The entries of an OpenAI-shaped model list, or raise ValueError saying what is
+    wrong with it."""
+    entries = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(entries, list):
+        raise ValueError("unexpected model list shape")
+    entries = [e for e in entries if isinstance(e, dict) and e.get("id")]
+    if not entries:
+        raise ValueError("provider returned an empty model list")
+    return entries
+
+
+def _get_json(url, headers, params, timeout):
+    """The JSON at `url`, or raise ValueError with what went wrong in a few words."""
     try:
-        netguard.check(config.api_url)
-    except netguard.InsecureURL as e:
-        raise RuntimeError(str(e))
-    url = models_url(config.api_url)
+        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+    except requests.exceptions.RequestException as e:
+        raise ValueError(str(e))
+    if response.status_code >= 400:
+        raise ValueError(f"HTTP {response.status_code}")
+    try:
+        return response.json()
+    except ValueError:
+        raise ValueError("provider returned a non-JSON model list")
+
+
+def _fetch_ollama(source, headers, timeout):
+    """What an Ollama server has, from its own /api/tags."""
+    body = _get_json(source.models_url, headers, None, timeout)
+    tags = body.get("models") if isinstance(body, dict) else None
+    if not isinstance(tags, list):
+        raise ValueError("unexpected model list shape")
+    tags = [t for t in tags if isinstance(t, dict) and (t.get("name") or t.get("model"))]
+    if not tags:
+        raise ValueError("the Ollama server has no models; pull one with `ollama pull`")
+    show = source.models_url.rsplit("/", 1)[0] + "/show"
+    for tag in [t for t in tags if "capabilities" not in t][:OLLAMA_SHOW_LIMIT]:
+        try:
+            response = requests.post(show, headers=headers, timeout=timeout,
+                                     json={"model": tag.get("name") or tag.get("model")})
+            shown = response.json() if response.status_code < 400 else {}
+        except (requests.exceptions.RequestException, ValueError):
+            continue
+        if isinstance(shown, dict) and isinstance(shown.get("capabilities"), list):
+            tag["capabilities"] = shown["capabilities"]
+    return [normalise_ollama(tag) for tag in tags]
+
+
+def fetch(config, force=False, timeout=60, provider=None):
+    """Return (models, from_cache) for a provider - NanoGPT unless one is named. Raises
+    RuntimeError with a readable message."""
+    source = providers.get(config, provider or providers.NANOGPT)
+    refused = source.url_problem()
+    if refused:
+        raise RuntimeError(refused)
+    url = source.models_url
     if not force:
-        cached = load_cache(url=url)
+        cached = load_cache(url=url, provider=source.id)
         if cached:
             return cached, True
 
-    headers = {"Authorization": f"Bearer {config.api_key}"} if config.api_key else {}
+    headers = {"Authorization": f"Bearer {source.api_key}"} if source.api_key else {}
 
     last_error = None
-    # Detailed first - it is the only variant carrying pricing and capabilities.
-    for params in ({"detailed": "true"}, None):
+    # Detailed first, where a list has two variants - it is the only one carrying
+    # pricing and capabilities.
+    attempts = [None] if source.listing in ("ollama", "openrouter") else [
+        {"detailed": "true"}, None]
+    for params in attempts:
         try:
-            response = requests.get(url, headers=headers, params=params, timeout=timeout)
-        except requests.exceptions.RequestException as e:
+            if source.listing == "ollama":
+                models = _fetch_ollama(source, headers, timeout)
+            else:
+                entries = _listed(_get_json(url, headers, params, timeout))
+                if source.listing == "openrouter":
+                    models = [normalise_openrouter(e) for e in entries]
+                else:
+                    if source.listing == "nanogpt" and \
+                            privacy.offers_private_mode(source.chat_url):
+                        entries += private_entries(fetch_private_ids(source.chat_url),
+                                                   entries)
+                    models = [normalise(e) for e in entries]
+        except ValueError as e:
             last_error = str(e)
             continue
-        if response.status_code >= 400:
-            last_error = f"HTTP {response.status_code}"
-            continue
-        try:
-            body = response.json()
-        except ValueError:
-            last_error = "provider returned a non-JSON model list"
-            continue
-
-        entries = body.get("data") if isinstance(body, dict) else body
-        if not isinstance(entries, list):
-            last_error = "unexpected model list shape"
-            continue
-
-        entries = [e for e in entries if isinstance(e, dict) and e.get("id")]
-        if not entries:
-            last_error = "provider returned an empty model list"
-            continue
-        if privacy.offers_private_mode(config.api_url):
-            entries += private_entries(fetch_private_ids(config.api_url), entries)
-        models = [normalise(e) for e in entries]
 
         models.sort(key=lambda m: m["id"].lower())
-        save_cache(models, url)
+        save_cache(models, url, source.id)
         return models, False
 
-    raise RuntimeError(f"Could not fetch models from {url}: {last_error}")
+    raise RuntimeError(f"Could not fetch {source.name}'s models from {url}: {last_error}")
 
 
 def search(models, query, vision_only=False, free_only=False, private_only=False):
@@ -309,11 +432,14 @@ def accepts_images(config, model_id):
     Any age of cache will do - a model does not gain or lose vision often - so this never
     waits on the network; the app refreshes the catalogue in the background at startup.
     """
-    cached = load_cache(max_age=None, url=models_url(config.api_url))
-    if not cached:
-        return None
-    model = resolve(cached, model_id)
+    model = resolve(cached_for(config, model_id) or [], model_id)
     return None if model is None else bool(model.get("vision"))
+
+
+def cached_for(config, model_id):
+    """The cached list of the provider `model_id` is asked of, whatever its age."""
+    source = providers.of(config, model_id)
+    return load_cache(max_age=None, url=source.models_url, provider=source.id)
 
 
 EFFORT_ORDER = ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -331,14 +457,16 @@ def effort_for(config, model_id, wanted=None):
         list "none". Measured live (Sept 2026), asking a model that thinks only when
         asked - deepseek/deepseek-v4-pro, listed as ["none", "high", "max"] - for any
         effort switched its thinking on: 35 tokens and 2s became 1,143 and 15s.
+      - and to one that lists "none" but thinks unless told not to, where the provider
+        says which those are (OpenRouter's default_enabled, any thinking model on
+        Ollama): asking those for a level switches nothing on.
     A model the catalogue says nothing about is left alone.
 
     `wanted` (the setting, "low" by default) becomes the nearest level the model
     offers, rounding up: GLM 5.3 offers low, high and max, so "medium" is "high".
     """
     wanted = (wanted or getattr(config, "reasoning_effort", "low") or "low").lower()
-    cached = load_cache(max_age=None, url=models_url(config.api_url))
-    model = resolve(cached or [], model_id)
+    model = resolve(cached_for(config, model_id) or [], model_id)
     levels = (model or {}).get("efforts") or []
     if not levels:
         return None
@@ -346,7 +474,7 @@ def effort_for(config, model_id, wanted=None):
         if "none" in levels:
             return "none"
         return next((level for level in EFFORT_ORDER if level in levels), None)
-    if "none" in levels:
+    if "none" in levels and not model.get("thinks"):
         return None
     if wanted in levels:
         return wanted

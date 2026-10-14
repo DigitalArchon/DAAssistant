@@ -176,11 +176,11 @@ class SettingsRefuseAnInsecureAddress(TempDir):
         dialog = self.dialog()
         self.assertTrue(dialog.save_button.get_sensitive())
         self.assertFalse(dialog.url_warning.get_visible())
-        dialog.entries["api_url"].set_text("http://api.example.com/v1/chat/completions")
+        dialog.entries["custom_url"].set_text("http://api.example.com/v1/chat/completions")
         self.assertFalse(dialog.save_button.get_sensitive())
         self.assertTrue(dialog.url_warning.get_visible())
         self.assertIn("not https", dialog.url_warning.get_text())
-        dialog.entries["api_url"].set_text("https://api.example.com/v1/chat/completions")
+        dialog.entries["custom_url"].set_text("https://api.example.com/v1/chat/completions")
         self.assertTrue(dialog.save_button.get_sensitive())
         self.assertFalse(dialog.url_warning.get_visible())
 
@@ -196,11 +196,13 @@ class SettingsRefuseAnInsecureAddress(TempDir):
         app.notify = lambda message, urgency="low": app.notices.append(message)
         dialog = mock.Mock()
         dialog.run.return_value = Gtk.ResponseType.OK
-        dialog.values.return_value = {"api_url": "http://api.example.com/v1",
+        dialog.values.return_value = {"custom_url": "http://api.example.com/v1",
+                                      "text_provider": "custom",
                                       "default_language": "French"}
         with mock.patch.object(app_module, "SettingsDialog", return_value=dialog):
             app.show_settings()
-        self.assertEqual(config.api_url, "https://nano-gpt.com/api/v1/chat/completions")
+        self.assertEqual(config.custom_url, "")
+        self.assertEqual(config.text_provider, "nanogpt")
         self.assertEqual(config.default_language, "English")
         self.assertFalse(os.path.exists(config.config_file))
         self.assertIn("Settings not saved", app.notices[-1])
@@ -209,16 +211,17 @@ class SettingsRefuseAnInsecureAddress(TempDir):
 
     def test_a_local_address_over_http_can_be_saved(self):
         dialog = self.dialog()
-        dialog.entries["api_url"].set_text("http://192.168.1.20:11434/v1/chat/completions")
+        dialog.entries["ollama_url"].set_text("http://192.168.1.20:11434")
+        dialog.provider_combos["vision_model"][0].set_active_id("ollama")
         self.assertTrue(dialog.save_button.get_sensitive())
         self.assertFalse(dialog.url_warning.get_visible())
-        self.assertEqual(dialog.values()["api_url"],
-                         "http://192.168.1.20:11434/v1/chat/completions")
+        self.assertEqual(dialog.values()["ollama_url"], "http://192.168.1.20:11434")
+        self.assertEqual(dialog.values()["vision_provider"], "ollama")
 
     def test_the_address_is_not_rewritten_for_the_user(self):
         dialog = self.dialog()
-        dialog.entries["api_url"].set_text("http://api.example.com/v1")
-        self.assertEqual(dialog.values()["api_url"], "http://api.example.com/v1")
+        dialog.entries["custom_url"].set_text("http://api.example.com/v1")
+        self.assertEqual(dialog.values()["custom_url"], "http://api.example.com/v1")
 
     def test_a_config_edited_by_hand_shows_its_fault_when_settings_open(self):
         dialog = self.dialog(api_url="http://api.example.com/v1")
@@ -228,7 +231,7 @@ class SettingsRefuseAnInsecureAddress(TempDir):
     def test_privacy_mode_being_fine_does_not_let_a_bad_address_through(self):
         dialog = self.dialog()
         dialog.privacy_enabled.set_active(False)
-        dialog.entries["api_url"].set_text("http://api.example.com/v1")
+        dialog.entries["custom_url"].set_text("http://api.example.com/v1")
         self.assertFalse(dialog.save_button.get_sensitive())
         dialog.entries["private_text_model"].set_text("TEE/another")   # re-syncs privacy
         self.assertFalse(dialog.save_button.get_sensitive())

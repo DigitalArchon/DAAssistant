@@ -1,12 +1,13 @@
 # DA Assistant
 
 A system-tray assistant for Linux that translates and answers questions about whatever is
-on your screen or in your clipboard, using any OpenAI-compatible chat API.
+on your screen or in your clipboard, using NanoGPT, OpenRouter, an Ollama server of your
+own, or any other OpenAI-compatible chat API.
 
 > [!WARNING]
 > **DA Assistant is beta software.** Expect rough edges, and settings that may change
-> between versions. Everything you capture or copy into it is sent to the API provider
-> you configure: check what is in a screenshot before you send it, and read
+> between versions. Everything you capture or copy into it is sent to the providers
+> you choose: check what is in a screenshot before you send it, and read
 > [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. Answers are written by
 > language models and can be wrong, even when they sound sure.
 
@@ -107,18 +108,23 @@ On Wayland, install `wl-clipboard` (KDE needs nothing: it uses Klipper), and on 
 ## First run
 
 1. Open **Settings** from the tray icon.
-2. Under **General**, enter your provider's **API URL** and **API key**, and choose the
-   models: **Browse…** lists everything the provider offers, with prices.
-3. Press **Test connection**: it shows the provider's own error message if anything is
+2. Under **Providers**, enter the API key of the provider you use: NanoGPT or
+   OpenRouter. For an Ollama server, or another OpenAI-compatible endpoint, enter its
+   address instead.
+3. Under **General**, choose the three models, each with its provider beside it:
+   **Browse…** lists everything that provider offers, with prices. They need not share
+   one: the vision model can be on your own Ollama server and the text model elsewhere.
+4. Press **Test connection**: it shows the provider's own error message if anything is
    wrong.
 
-The API URL must be `https://`. Plain `http://` is accepted only for a server on this
-machine or your local network; anything else is refused, so the key never crosses the
-internet unencrypted.
+An address must be `https://`. Plain `http://` is accepted only for a server on this
+machine or your local network; anything else is refused, so a key never crosses the
+internet unencrypted. Privacy Mode and web search are NanoGPT's and need its key; the
+manual has [what each provider does](MANUAL.md#providers).
 
-Your settings are kept in `~/.config/da-assistant/config.json`. The API key is not: it
-goes into your desktop's keyring (GNOME Keyring, or KWallet on Plasma), which encrypts
-it. Without a keyring, a key typed into Settings works until the app quits, and Settings
+Your settings are kept in `~/.config/da-assistant/config.json`. API keys are not: they
+go into your desktop's keyring (GNOME Keyring, or KWallet on Plasma), which encrypts
+them. Without a keyring, a key typed into Settings works until the app quits, and Settings
 says why it cannot be kept.
 
 ## Shortcuts

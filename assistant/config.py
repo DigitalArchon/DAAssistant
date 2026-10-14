@@ -1,8 +1,10 @@
 """Configuration storage.
 
 What matters here:
-  - The API key is kept in the desktop's keyring (see keychain.py), never in
+  - API keys are kept in the desktop's keyring (see keychain.py), never in
     config.json. A key left in the file by an older version is moved there on start.
+  - A config from before providers had names, whose one API URL was not NanoGPT's, is
+    given the provider that URL was: see providers.legacy.
   - config.json is written 0600 all the same: it says which models and services are used.
   - Writes are atomic (temp + rename) so a crash mid-save cannot truncate the file.
   - Corrupt JSON is reported instead of being swallowed by a bare `except:`.
@@ -13,11 +15,24 @@ import os
 import stat
 import tempfile
 
+from . import providers
 from .keychain import KeychainError, MemoryKeychain, SystemKeychain
 
 DEFAULTS = {
-    "api_url": "https://nano-gpt.com/api/v1/chat/completions",
+    # NanoGPT's endpoint and key. The address is not in Settings: providers are chosen
+    # by name there (see assistant/providers.py), and this one's is known.
+    "api_url": providers.NANOGPT_URL,
     "api_key": "",
+    # The other providers: OpenRouter's key, the Ollama server's address, and an
+    # OpenAI-compatible endpoint of the user's own with the key it wants, if any.
+    "openrouter_api_key": "",
+    "ollama_url": providers.OLLAMA_DEFAULT_URL,
+    "custom_url": "",
+    "custom_api_key": "",
+    # Which provider each of the three models below is asked of.
+    "text_provider": providers.NANOGPT,
+    "premium_text_provider": providers.NANOGPT,
+    "vision_provider": providers.NANOGPT,
     "default_language": "English",
     "text_model": "deepseek-ai/DeepSeek-V3.1-Terminus",
     "premium_text_model": "gpt-5-chat-latest",
@@ -110,7 +125,7 @@ DEFAULTS = {
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.
-SECRETS = ("api_key",)
+SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
 
 
 class ConfigError(Exception):
@@ -210,11 +225,32 @@ class Config:
         finally:
             object.__setattr__(self, "_loading", False)
         object.__getattribute__(self, "_dirty").clear()
+        if on_disk and "text_provider" not in on_disk:
+            moved = self._name_provider(on_disk.get("api_url")) or moved
         if moved or (loose and all(kept[key] for key in loose)):
             try:
                 self.save()                 # the same file, without the key in it
-            except OSError:
+            except (OSError, KeychainError):
                 pass                        # read-only: it goes at the next save
+
+    def _name_provider(self, api_url):
+        """Written before providers had names: everything went to one API URL with one
+        key. If that was not NanoGPT, the three models are given the provider it was,
+        and the address and key are moved to that provider's own settings. True if
+        anything changed."""
+        provider, address = providers.legacy(api_url)
+        if provider == providers.NANOGPT:
+            return False
+        kind = providers.KINDS[provider]
+        for _model_key, provider_key in providers.ROLES.values():
+            setattr(self, provider_key, provider)
+        self.api_url = DEFAULTS["api_url"]
+        if address and kind.url_key:
+            setattr(self, kind.url_key, address)
+        if kind.key_key and kind.key_key != "api_key":
+            setattr(self, kind.key_key, self.api_key)
+            self.api_key = ""
+        return True
 
     def as_dict(self):
         return {key: getattr(self, key) for key in DEFAULTS}
@@ -319,7 +355,11 @@ class Config:
         object.__setattr__(copy, "_loading", False)
         return copy
 
+    def model(self, role):
+        """The model for "text", "premium" or "vision", carrying its provider."""
+        return providers.role_model(self, role)
+
     def active_text_model(self):
         if self.privacy_mode:
             return self.private_premium_model if self.use_premium else self.private_text_model
-        return self.premium_text_model if self.use_premium else self.text_model
+        return self.model("premium" if self.use_premium else "text")

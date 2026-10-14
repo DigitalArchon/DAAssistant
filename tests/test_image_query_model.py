@@ -197,7 +197,7 @@ class TheTextModelAnswers(ImageQueryCase):
         self.assertTrue(started["transcribe_first"])
 
     def test_there_is_no_separate_image_query_model_any_more(self):
-        fields = [key for key, _label, _vision in SettingsDialog.MODEL_FIELDS]
+        fields = [field[0] for field in SettingsDialog.MODEL_FIELDS]
         self.assertNotIn("image_query_model", fields)
         self.assertNotIn("image_query_model", config_module.DEFAULTS)
 

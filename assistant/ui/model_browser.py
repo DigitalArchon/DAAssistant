@@ -1,8 +1,10 @@
 """Searchable model picker.
 
-The provider lists ~600 models, so this is a filtered list rather than a combo box:
+A provider lists hundreds of models, so this is a filtered list rather than a combo box:
 type to narrow, tick to restrict to vision-capable or free models, and the pricing and
-context length are shown inline so a choice can be made without leaving the app.
+context length are shown inline so a choice can be made without leaving the app. The
+provider whose list it is can be changed here too; .provider says which the chosen
+model is from.
 """
 
 import threading
@@ -10,7 +12,7 @@ import threading
 from .. import gtkcompat
 from gi.repository import GLib, Gtk, Pango
 
-from .. import models as catalogue, privacy, sealed
+from .. import models as catalogue, privacy, providers, sealed
 
 COL_ID, COL_PRICE, COL_CONTEXT, COL_CAPS, COL_HAYSTACK, COL_DESC = range(6)
 
@@ -19,12 +21,16 @@ class ModelBrowser(Gtk.Dialog):
     """Pick a model id. Returns the chosen id via .selected_id after run()."""
 
     def __init__(self, parent, config, title="Choose a model",
-                 vision_only=False, current=None, private_only=False):
+                 vision_only=False, current=None, private_only=False,
+                 provider=providers.NANOGPT):
         """private_only offers TEE/ and private/ models alone, and cannot be unticked:
         it is how the Privacy Mode fields are browsed, and anything else there would be
-        refused when used."""
+        refused when used. Those are NanoGPT's, so the provider cannot be changed
+        either."""
         super().__init__(title=title, transient_for=parent, modal=True)
         self.config = config
+        self.provider = (providers.NANOGPT if private_only or provider not in providers.KINDS
+                         else provider)
         self.selected_id = None
         self.models = []
         self._current = current
@@ -46,6 +52,16 @@ class ModelBrowser(Gtk.Dialog):
         box.set_margin_bottom(10)
 
         controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.provider_combo = Gtk.ComboBoxText()
+        self.provider_combo.set_wrap_width(1)
+        for kind_id in providers.ORDER:
+            self.provider_combo.append(kind_id, providers.KINDS[kind_id].short)
+        self.provider_combo.set_active_id(self.provider)
+        self.provider_combo.set_sensitive(not private_only)
+        self.provider_combo.set_tooltip_text("The provider whose models are listed")
+        self.provider_combo.connect("changed", self._on_provider_changed)
+        controls.pack_start(self.provider_combo, False, False, 0)
+
         self.search = Gtk.SearchEntry()
         self.search.set_placeholder_text("Search by name, provider or description…")
         self.search.set_hexpand(True)
@@ -122,26 +138,39 @@ class ModelBrowser(Gtk.Dialog):
 
     # ---- loading ----------------------------------------------------------
 
+    def _on_provider_changed(self, combo):
+        self.provider = combo.get_active_id() or providers.NANOGPT
+        self.models = []
+        self.store.clear()
+        self._load()
+
     def _load(self, force=False):
         self.status.set_text("Fetching models…" if force else "Loading models…")
         self.search.set_sensitive(False)
+        # TEE models are NanoGPT's alone: nothing to tick anywhere else.
+        self.private_check.set_visible(self.provider == providers.NANOGPT)
+        source = self.provider
 
         def worker():
             try:
-                models, cached = catalogue.fetch(self.config, force=force)
+                models, cached = catalogue.fetch(self.config, force=force, provider=source)
             except Exception as e:
-                GLib.idle_add(self._on_load_failed, str(e))
+                GLib.idle_add(self._on_load_failed, str(e), source)
             else:
-                GLib.idle_add(self._on_loaded, models, cached)
+                GLib.idle_add(self._on_loaded, models, cached, source)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_load_failed(self, message):
+    def _on_load_failed(self, message, source=None):
+        if self._closed or (source is not None and source != self.provider):
+            return False                # another provider's list was asked for since
         self.status.set_text(f"Could not load models — {message}")
         self.search.set_sensitive(True)
         return False
 
-    def _on_loaded(self, models, cached):
+    def _on_loaded(self, models, cached, source=None):
+        if self._closed or (source is not None and source != self.provider):
+            return False
         self.models = models
         self.store.clear()
         for model in models:
@@ -171,10 +200,17 @@ class ModelBrowser(Gtk.Dialog):
 
         self.search.set_sensitive(True)
         self.search.grab_focus()
+        # A plain OpenAI-shaped list says nothing about images. Filtering on what it
+        # does not say would hide every model it has, the right one among them.
+        unsaid = self.vision_check.get_active() and not any(m["vision"] for m in models)
+        if unsaid:
+            self.vision_check.set_active(False)
         self._refilter()
-        source = "cached" if cached else "fetched"
-        self.status.set_text(f"{len(models)} models ({source}). "
-                             f"Double-click a row to choose it.")
+        age = "cached" if cached else "fetched"
+        self.status.set_text(
+            f"{len(models)} models ({age}). Double-click a row to choose it."
+            + (f" {providers.KINDS[self.provider].name} does not say which of its "
+               f"models accept images, so all are listed." if unsaid else ""))
         self._select_current()
         return False
 

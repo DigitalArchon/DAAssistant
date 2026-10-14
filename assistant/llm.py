@@ -18,7 +18,8 @@ import time
 
 import requests
 
-from . import models as catalogue, netguard, privacy as privacy_module, prompts, websearch
+from . import (models as catalogue, privacy as privacy_module, prompts, providers,
+               websearch)
 from .privacy import ModelRetired, PrivacyError
 
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
@@ -115,6 +116,102 @@ def web_search_active(config, enabled=None):
 # work. Reading the real fields costs nothing and says nothing to the model.
 SEARCH_RESULT_KEYS = ("x_nanogpt_search_results", "x_nanogpt_search_annotations",
                       "citations", "annotations", "web_search_results", "sources")
+
+
+# A model that does not stop (providers.OLLAMA_RUNAWAYS) is watched for the moment it
+# starts over. Its opening this many characters, whitespace aside, have to come round a
+# third time, the second time followed by what followed the first - for as long as the
+# first copy was, or this far. Twice is not enough: a window's title is often its first
+# heading too.
+REPEAT_HEAD = 24
+REPEAT_SPAN = 200
+# Or it has said all it had to and is saying one line over and over: "NO TEXT FOUND",
+# 660 times and three and a half minutes of it, under a table it had read correctly. Or
+# going round the same few: that line and two more, 79 times.
+REPEAT_LINES = 8            # one line, this many times running
+REPEAT_PERIOD = 4           # or up to this many lines,
+REPEAT_CYCLES = 5           # this many times round
+
+
+def repeat_start(text):
+    """Where `text` starts over from its top, as an index into it, or None.
+
+    For a model that is never told it has finished, and so transcribes the same image
+    again and again. Whitespace is not compared: the copies differ in their line breaks.
+    What it costs is a capture that really does open with the same long line three
+    times, which is cut to one - only for those models.
+    """
+    marks, spaced = [], True
+    for index, char in enumerate(text or ""):
+        if char.isspace():
+            if not spaced:
+                marks.append((" ", index))
+            spaced = True
+        else:
+            marks.append((char, index))
+            spaced = False
+    flat = "".join(char for char, _index in marks)
+    head = flat[:REPEAT_HEAD]
+    if len(head) < REPEAT_HEAD:
+        return None
+    again = flat.find(head, REPEAT_HEAD)
+    while again != -1:
+        span = min(again, REPEAT_SPAN)
+        if (flat[again:again + span] == flat[:span]
+                and flat.find(head, again + REPEAT_HEAD) != -1):
+            return marks[again][1]
+        again = flat.find(head, again + 1)
+    return None
+
+
+def repeated_lines(text):
+    """Where `text` began going round in circles - one line REPEAT_LINES times running,
+    or a few lines REPEAT_CYCLES times round - as an index into it: the end of the
+    first time round. None if its last lines are doing no such thing.
+
+    Once round is kept: it may be the last thing the capture said, and only after that
+    what the model could not stop saying.
+    """
+    lines = (text or "").split("\n")[:-1]          # whole lines only
+    said = [(number, line.strip()) for number, line in enumerate(lines) if line.strip()]
+    for period in range(1, REPEAT_PERIOD + 1):
+        needed = REPEAT_LINES if period == 1 else REPEAT_CYCLES * period
+        if len(said) < needed:
+            break
+        start = len(said) - needed
+        if any(said[at][1] != said[at - period][1]
+               for at in range(start + period, len(said))):
+            continue
+        while start > 0 and said[start - 1][1] == said[start - 1 + period][1]:
+            start -= 1
+        last = said[start + period - 1][0]
+        return sum(len(line) + 1 for line in lines[:last]) + len(lines[last])
+    return None
+
+
+def runaway_start(text):
+    """Where a reply that will not end ought to have: where it starts over, or the end
+    of the lines it goes on repeating. None while it is doing neither."""
+    found = [cut for cut in (repeat_start(text), repeated_lines(text)) if cut is not None]
+    return min(found) if found else None
+
+
+def tidy_end(text):
+    """The end of a reply that had to be stopped or cut (providers.OLLAMA_RUNAWAYS):
+    without the rule or the opening fence the next copy began with, and with a code
+    block's closing fence back where the stop took it."""
+    lines = (text or "").rstrip().split("\n")
+
+    def fences():
+        return sum(1 for line in lines if line.lstrip().startswith("```"))
+
+    while len(lines) > 1 and (lines[-1].strip() in ("", "---") or (
+            lines[-1].lstrip().startswith("```") and fences() % 2
+            and len(lines[-1].strip()) > 3)):
+        lines.pop()
+    if fences() % 2:
+        lines.append("```")
+    return "\n".join(lines)
 
 
 def system_message(instructions):
@@ -246,11 +343,10 @@ class LLMClient:
         self.config = config
         self.session = requests.Session()
 
-    def _headers(self):
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.config.api_key}",
-        }
+    def _provider(self, model):
+        """The provider `model` is asked of: the one it carries, or the one its model
+        setting names (providers.provider_id)."""
+        return providers.of(self.config, model)
 
     @staticmethod
     def _error_text(response):
@@ -270,8 +366,12 @@ class LLMClient:
                 return str(body["message"])
         return json.dumps(body)[:400]
 
-    def _encode(self, payload):
-        """Serialise the body, gzipped once it is big enough to be worth it.
+    @staticmethod
+    def _encode(payload, provider):
+        """Serialise the body, gzipped once it is big enough to be worth it - for a
+        provider known to read one. Ollama does not: it answers HTTP 400, "invalid
+        character '\x1f' looking for beginning of value", and every capture is over
+        the threshold.
 
         Every turn resends the whole conversation, and a capture is a base64 PNG, so
         bodies here run to hundreds of kilobytes. The body must finish uploading before
@@ -281,27 +381,28 @@ class LLMClient:
         https://docs.nano-gpt.com/api-reference/miscellaneous/request-compression
         """
         raw = json.dumps(payload).encode("utf-8")
-        headers = self._headers()
-        if len(raw) < GZIP_THRESHOLD_BYTES:
+        headers = provider.headers()
+        if not provider.gzip or len(raw) < GZIP_THRESHOLD_BYTES:
             return raw, headers
         headers["Content-Encoding"] = "gzip"
         return gzip.compress(raw, GZIP_LEVEL), headers
 
-    def _post(self, payload, stream, cancel=None):
+    def _post(self, payload, stream, cancel=None, provider=None):
+        provider = provider or self._provider(payload.get("model"))
         # https, or the local network: checked here, at the one place every request
-        # leaves from, so that no setting or caller can send the key in the clear.
-        try:
-            netguard.check(self.config.api_url)
-        except netguard.InsecureURL as e:
-            raise LLMError(f"Nothing was sent. {e}", model=payload.get("model"))
+        # leaves from, so that no setting or caller can send the key in the clear. And
+        # a provider with no address or no key is said so, not left to a 401.
+        refused = provider.problem()
+        if refused:
+            raise LLMError(f"Nothing was sent. {refused}", model=payload.get("model"))
         last_error = None
         for attempt in range(MAX_RETRIES):
             if cancel is not None and cancel.is_set():
                 return None
             try:
-                body, headers = self._encode(payload)
+                body, headers = self._encode(payload, provider)
                 response = self.session.post(
-                    self.config.api_url,
+                    provider.chat_url,
                     headers=headers,
                     data=body,
                     stream=stream,
@@ -364,6 +465,9 @@ class LLMClient:
                 limit += REASONING_ROOM.get(effort, 4096)
         if limit:
             payload["max_tokens"] = limit
+        stops = self._provider(model).stops(model)
+        if stops:
+            payload["stop"] = stops
         return payload
 
     @staticmethod
@@ -398,7 +502,7 @@ class LLMClient:
             return None
         try:
             answer = self.complete(
-                self.config.text_model,
+                providers.role_model(self.config, "text"),
                 [{"role": "user", "content": prompts.SEARCH_QUERY + material}],
                 cancel=cancel, max_tokens=QUERY_TOKENS)
         except LLMError as e:
@@ -448,6 +552,11 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, None, system,
                                       privacy, status, max_tokens)
+        if self._provider(model).stops(model):
+            # One that has to be watched as it writes, to be stopped at all: streamed,
+            # though nothing is shown, and without the search a stream would run.
+            return self.stream(model, messages, image_base64, cancel, web_search=False,
+                               system=system, max_tokens=max_tokens)
         payload = self._payload(model, messages, image_base64, False, web_search, system,
                                 max_tokens=max_tokens)
         response = self._post(payload, False, cancel)
@@ -461,17 +570,22 @@ class LLMClient:
             response.close()
         try:
             choice = body["choices"][0]
-            return self._ending(choice["message"]["content"] or "",
-                                choice.get("finish_reason"), model,
+            text = choice["message"]["content"] or ""
+            return self._ending(text, choice.get("finish_reason"), model,
                                 payload.get("max_tokens"))
         except (KeyError, IndexError, TypeError):
             raise LLMError(f"Unexpected response shape: {json.dumps(body)[:300]}",
                            model=model)
 
     @staticmethod
-    def _consume(lines, cancel, on_delta, citations):
+    def _consume(lines, cancel, on_delta, citations, halt=None):
         """Read an SSE stream. Returns {text, id, finish_reason, done}, or None if it
         was cancelled part way.
+
+        `halt(text)` is asked at every line's end where the reply ought to have ended,
+        for a model that does not end it (runaway_start): given an index, the text is
+        cut there and no more is read - which, the caller closing the response, is also
+        what stops the model.
 
         `lines` may be bytes (requests) or str (httpx, for the sealed stream). The
         completion's id is kept because a TEE reply's signature is filed under it.
@@ -513,6 +627,10 @@ class LLMClient:
                 text += piece
                 if on_delta:
                     on_delta(piece, text)
+                cut = halt(text) if halt and "\n" in piece else None
+                if cut is not None:
+                    text, finish_reason, done = text[:cut], "stop", True
+                    break
             for source in (_extract_citations(delta)
                            + _extract_citations(choices[0])
                            + _extract_citations(choices[0].get("message"))):
@@ -522,7 +640,7 @@ class LLMClient:
                 "done": done}
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None, privacy=None, status=None):
+               web_search=None, system=None, privacy=None, status=None, max_tokens=None):
         """Streaming completion.
 
         on_delta(chunk_text, full_text_so_far) is called for every token chunk, so the UI
@@ -542,19 +660,25 @@ class LLMClient:
             return None
 
         payload = self._payload(model, messages, image_base64, True, web_search, system,
-                                search_context)
+                                search_context, max_tokens=max_tokens)
         response = self._post(payload, True, cancel)
         if response is None:
             return None
 
+        # A model that has to be told where to stop is one that does not stop.
+        runaway = bool(payload.get("stop"))
         try:
-            result = self._consume(response.iter_lines(), cancel, on_delta, citations)
+            result = self._consume(response.iter_lines(), cancel, on_delta, citations,
+                                   halt=runaway_start if runaway else None)
         finally:
             response.close()
         if result is None:
             return None
 
-        text = self._ending(result["text"].strip(), result["finish_reason"], model,
+        text = result["text"].strip()
+        if runaway and result["finish_reason"] == "stop":
+            text = tidy_end(text)
+        text = self._ending(text, result["finish_reason"], model,
                             payload.get("max_tokens"))
         # The sources are the ones we searched for, so the footer is built from what we
         # know rather than from what the model remembers reading. Any the response
@@ -594,6 +718,9 @@ class LLMClient:
             return None
         say(f"{attestation.headline} ✓ — sending to {model}…")
 
+        # A private conversation's models are NanoGPT's, whatever the model settings
+        # name: plain ids, so that nothing they carry can send them anywhere else.
+        model = str(model)
         payload = self._payload(model, messages, image_base64, True, system=system,
                                 max_tokens=max_tokens)
         if kind == privacy_module.E2EE:
@@ -614,7 +741,8 @@ class LLMClient:
                 raise LLMError(f"{e}. Private Mode: nothing was sent in the clear",
                                model=model)
         else:
-            response = self._post(payload, True, cancel)
+            response = self._post(payload, True, cancel,
+                                  providers.get(self.config, providers.NANOGPT))
             if response is None:
                 return None
             privacy.note_sent(model)
@@ -629,6 +757,39 @@ class LLMClient:
         privacy.check_reply(model, result["id"])
         return self._ending(result["text"].strip(), result["finish_reason"], model,
                             payload.get("max_tokens"))
+
+    def _check_other_providers(self, answered, reply):
+        """The rest of a connection test, when the premium or vision model is asked of
+        another provider than the one that just answered: (ok, message).
+
+        Those are not sent a question - an OCR model has no answer to one - but their
+        provider is asked for its model list, which finds a wrong address, a refused
+        key and a model the provider does not have.
+        """
+        first = providers.provider_id(self.config, answered)
+        checked, notes = {first}, []
+        for role in ("premium", "vision"):
+            model = providers.role_model(self.config, role)
+            if model.provider in checked or not model:
+                continue
+            checked.add(model.provider)
+            source = providers.get(self.config, model.provider)
+            refused = source.problem()
+            if refused:
+                return False, f"{reply} — but the {role} model cannot be reached. {refused}"
+            try:
+                listed, _cached = catalogue.fetch(self.config, force=True, timeout=20,
+                                                  provider=source.id)
+            except RuntimeError as e:
+                return False, f"{reply} — but {e}"
+            if catalogue.resolve(listed, model) is None:
+                return False, (f"{reply} — but {source.name} does not list the {role} "
+                               f"model, {model}")
+            notes.append(f"{source.name} has {model}")
+        if not notes:
+            return True, reply
+        name = providers.get(self.config, first).name
+        return True, f"{name}: {reply[0].lower()}{reply[1:]} — {'; '.join(notes)}"
 
     def test_connection(self):
         """Used by the Settings 'Test connection' button. Returns (ok, message).
@@ -654,7 +815,7 @@ class LLMClient:
             return False, f"{type(e).__name__}: {e}"
         reply = f"Model replied: {(result or '').strip()[:80]}"
         if privacy is None:
-            return True, reply
+            return self._check_other_providers(model, reply)
         attestation = privacy.attestations.get(model)
         receipt = privacy.pop_receipt()
         badge = privacy_module.receipt_badge(receipt)

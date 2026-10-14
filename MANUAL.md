@@ -152,12 +152,63 @@ picture once - its text verbatim and a description - and that reading is sent in
 place. The transcript shows a thumbnail of each picture and the name of each file;
 Markdown exports list them by name.
 
+## Providers
+
+A model is asked of a provider, and each of the three models names its own. **Settings >
+Providers** holds what each one needs; **Settings > General** has a provider beside every
+model.
+
+| Provider | Needs | Model list says | Also |
+|---|---|---|---|
+| NanoGPT | its API key | prices, context, which models see images, reasoning levels | the only one with `TEE/` and `private/` models, so [Privacy Mode](#privacy-mode) is its alone; runs the [web search](#web-search) |
+| OpenRouter | its API key | the same, from `openrouter.ai/api/v1/models` | |
+| Ollama | the server's address, `http://localhost:11434` unless you say otherwise; no key | which models see images and which think, from the server's `/api/tags` | everything is free, and stays on your network |
+| Other OpenAI-compatible endpoint | its address, and a key if it wants one | whatever its `/v1/models` says, which is often only the names | |
+
+So OCR can run on a machine of your own while the answers come from somewhere else: set
+the vision model's provider to Ollama and leave the text models where they are. The chat
+window's model menu names the provider of any model that is not NanoGPT's, and **Other
+model…** can pick from any of them.
+
+An address is typed as the server's: `http://192.168.1.20:11434` for Ollama, whatever
+path follows it. For another endpoint, its base (`https://host/v1`) and its full
+`/chat/completions` address are both understood. Addresses follow the rule under
+[Requests](#requests): https, or this machine and its local network.
+
+Only the providers your models use have to be set up. With all three on Ollama no key is
+wanted at all - but then there is no web search, which runs on NanoGPT with its key
+whichever provider answers, and no Privacy Mode.
+
+**Test connection** asks the text model a one-word question. If the premium or vision
+model is on another provider, that provider is asked for its model list instead, which
+finds a wrong address, a refused key and a model it does not have.
+
+**Thinking models on Ollama** think unless told not to, and for most the levels are on
+and off in all but name. Set **Reasoning effort** to **None** to switch it off: measured
+on `qwen3:1.7b`, a one-line sum took 64 seconds at its default and under one with None.
+
+**glm-ocr on Ollama does not stop when it has finished** (Ollama 0.30 to 0.40.2 at
+least): it transcribes the image and carries on to the token limit, from `ollama run` as
+much as from here, because Ollama does not count the model's end-of-turn token as an
+end. The app tells it where to stop for the endings that have a recognisable start, and
+watches the rest: it is cut off where it starts the transcription over, says one line
+eight times running, or goes round the same few lines five times. That makes it usable,
+not exact: now and then a reply still ends with a stray line or a second copy, and a
+capture that really does repeat one line eight times is cut short there. The cure is on the server - a newer Ollama that stops it, or
+the model rebuilt with `<|user|>` named as its end-of-turn token
+(`gguf-new-metadata --special-token eot "<|user|>"`, then `ollama create`).
+
+A settings file from before providers had names, whose one API URL was not NanoGPT's, is moved over when
+the app starts: the three models are given the provider that URL was - Ollama for port
+11434, otherwise the other endpoint - with its address and key.
+
 ## Choosing models
 
-Settings shows the four model fields with a **Browse…** button beside each. That opens a
-searchable list of everything the provider offers, with price per million tokens, context
-length and capability flags. Type to narrow it, or tick **Vision only** / **Free only**.
-The vision field filters to models that actually accept images.
+Settings shows the three model fields, each with its provider and a **Browse…** button.
+That opens a searchable list of everything the provider offers, with price per million
+tokens, context length and capability flags. Type to narrow it, or tick **Vision only** /
+**Free only**. The vision field filters to models that actually accept images, unless the
+provider's list does not say which do; then all are listed, and the browser says so.
 
 | Field | Used by | Wants |
 |---|---|---|
@@ -170,8 +221,9 @@ about an image is answered from the picture itself comes down to the answering m
 pick one that accepts images (the **Capabilities** column says `vision`) and it will be
 given the image. Any other model is one menu away in the chat window.
 
-The list comes from the provider's `/v1/models?detailed=true` and is cached for six hours;
-the refresh button re-fetches it.
+The list comes from the provider (NanoGPT's `/v1/models?detailed=true`, OpenRouter's
+`/api/v1/models`, an Ollama server's `/api/tags`) and is cached for six hours, one file
+per provider; the refresh button re-fetches it.
 
 ## Reasoning effort
 
@@ -327,6 +379,10 @@ installed. To move to a newer SDK, change `packaging/private-mode.in` and run
 The implementation is ported from StoryLoom, which talks to the same models.
 
 ## Web search
+
+The search runs on NanoGPT, with its API key, whichever [provider](#providers) answers
+the question; without that key nothing is searched and the model answers from what it
+has.
 
 Three levels of control, narrowest first:
 
@@ -648,12 +704,13 @@ install `wl-clipboard`.
 
 ### Requests
 
-Requests are gzipped above 16 KB — every turn resends the conversation and any capture,
-and the body has to finish uploading before the model is dispatched. Claude models are
+Requests to NanoGPT are gzipped above 16 KB — every turn resends the conversation and any
+capture, and the body has to finish uploading before the model is dispatched. No other
+provider is sent a gzipped body: Ollama answers one with HTTP 400. Claude models are
 also sent `promptCaching`, since they cache nothing unless asked; other routes cache
 implicitly.
 
-**Requests go over https, or not at all.** An API URL that is plain `http://` is
+**Requests go over https, or not at all.** A provider's address that is plain `http://` is
 accepted only for this machine and its local network - `localhost`, `127.x`, `10.x`,
 `172.16`-`31.x`, `192.168.x`, link-local addresses and `.local` names - which is how a
 model server of your own is reached. For any other address, Settings will not save it,
@@ -666,12 +723,12 @@ The address is never rewritten to https for you, and certificates are always che
 | What | Where |
 |---|---|
 | Settings | `~/.config/da-assistant/config.json`, readable only by you (`0600`) |
-| The API key | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant` |
-| Model list, dictionary index, error log | `~/.cache/da-assistant` |
+| API keys | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant`, one entry per provider |
+| Model lists, dictionary index, error log | `~/.cache/da-assistant` |
 | The encyclopedia's database, the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` |
 | A hidden launcher entry, for the GlobalShortcuts portal (KDE, GNOME 48+) only | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
 
-The API key is never written to `config.json`. The keyring encrypts it and unlocks it
+An API key is never written to `config.json`. The keyring encrypts it and unlocks it
 with your login. A key that an older version left in `config.json` is moved into the
 keyring the next time the app starts. Where there is no keyring, a key typed into
 Settings is used until the app quits, and Settings shows why it cannot be kept.
@@ -746,9 +803,10 @@ run-assistant              launcher
 README.md, MANUAL.md       what it is and how to install it; everything else
 LICENSE                    GPL-3.0
 assistant/
-  config.py                settings, stored 0600; the API key goes to keychain.py
+  config.py                settings, stored 0600; API keys go to keychain.py
+  providers.py             NanoGPT, OpenRouter, Ollama, another endpoint: what differs
   netguard.py              https, or nothing: which API addresses may be used
-  keychain.py              the desktop's keyring (Secret Service), for the API key
+  keychain.py              the desktop's keyring (Secret Service), for the API keys
   session.py               display server / desktop / portal probing
   imaging.py               upscale, flatten, black out, encode before sending
   attachments.py           pictures and text files attached to a message
@@ -864,6 +922,11 @@ the build stays pinned by hash.
 `tests/test_https.py` guards the API key never crossing the network unencrypted: which
 addresses may be used, that Settings will not save any other, and that the chat, the
 model list, web search and Privacy Mode each send nothing to one.
+
+`tests/test_providers.py` guards what differs between providers: where a request goes and
+with which key, that only NanoGPT is sent a gzipped body, how each model list is read,
+that a private conversation goes nowhere but NanoGPT, that an older settings file is
+moved over, and that a model Ollama does not stop is cut off where it starts over.
 
 `tests/test_keychain.py` guards the API key staying out of `config.json`: saved to the
 keyring, moved there from a file an older version wrote, and kept rather than lost when

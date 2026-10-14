@@ -275,6 +275,10 @@ def run(query, config, session=None, timeout=None):
         netguard.check(config.api_url)
     except netguard.InsecureURL as e:
         raise SearchError(str(e))
+    if not config.api_key:
+        # The search is NanoGPT's (/api/web), whichever provider answers the question.
+        raise SearchError("web search runs on NanoGPT and needs its API key "
+                          "(Settings > Providers)")
     post = (session or requests).post
     try:
         response = post(

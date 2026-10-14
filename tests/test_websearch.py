@@ -348,13 +348,14 @@ class TheUpload(unittest.TestCase):
         self.client = LLMClient(a_config())
 
     def test_a_small_body_is_sent_as_it_is(self):
-        body, headers = self.client._encode({"model": "m", "messages": []})
+        body, headers = self.client._encode({"model": "m", "messages": []},
+                                            self.client._provider("m"))
         self.assertNotIn("Content-Encoding", headers)
         self.assertEqual(json.loads(body)["model"], "m")
 
     def test_a_capture_sized_body_is_compressed(self):
         payload = {"model": "m", "image": "A" * 200_000}
-        body, headers = self.client._encode(payload)
+        body, headers = self.client._encode(payload, self.client._provider("m"))
         self.assertEqual(headers["Content-Encoding"], "gzip")
         self.assertLess(len(body), 100_000, "gzip bought nothing")
         self.assertEqual(json.loads(gzip.decompress(body))["model"], "m")

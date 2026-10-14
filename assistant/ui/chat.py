@@ -14,7 +14,8 @@ from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
 from . import bubbles, find, markdown_html, markdown_text, screenshot as screenshot_view
-from .. import attachments, models as catalogue, privacy as privacy_module, prompts
+from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
+                providers)
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -444,10 +445,28 @@ class ChatWindow(Gtk.Window):
                      ("premium", "Private premium", self.privacy.premium_model),
                      ("vision", "Private vision", self.privacy.vision_model)]
         else:
-            roles = [("text", "Text", self.config.text_model),
-                     ("premium", "Premium", self.config.premium_text_model),
-                     ("vision", "Vision", self.config.vision_model)]
-        return roles + [(f"model:{model}", "Chosen", model) for model in self._chosen]
+            # Each with the provider its setting names, which goes with it to where
+            # the request is made (providers.Model).
+            roles = [("text", "Text", self.config.model("text")),
+                     ("premium", "Premium", self.config.model("premium")),
+                     ("vision", "Vision", self.config.model("vision"))]
+        return roles + [(self._chosen_key(model), "Chosen", model)
+                        for model in self._chosen]
+
+    @staticmethod
+    def _chosen_key(model):
+        """The menu key of a model picked with Other model...: with its provider, since
+        two providers can each have a model of the same name."""
+        provider = getattr(model, "provider", None)
+        return f"model:{provider}:{model}" if provider else f"model:{model}"
+
+    def _where(self, model):
+        """' · Ollama' for a model asked of a provider other than NanoGPT, else ''."""
+        if self.privacy is not None:
+            return ""
+        provider = providers.provider_id(self.config, model)
+        return ("" if provider == providers.NANOGPT
+                else f" · {providers.KINDS[provider].short}")
 
     def _model_of(self, key):
         for choice, _label, model in self._choices():
@@ -467,7 +486,7 @@ class ChatWindow(Gtk.Window):
         return self._model_of(self._choice)
 
     def _vision_reader(self):
-        return self.privacy.vision_model if self.privacy else self.config.vision_model
+        return self.privacy.vision_model if self.privacy else self.config.model("vision")
 
     def _choose(self, key):
         """Send the next message to the model under `key`. False if it was refused."""
@@ -492,23 +511,31 @@ class ChatWindow(Gtk.Window):
                                       if self.privacy else
                                       "Choose a model for this conversation"),
                                private_only=self.privacy is not None,
-                               current=self.current_model)
+                               current=self.current_model,
+                               provider=providers.provider_id(self.config,
+                                                              self.current_model))
         browser.run()
-        chosen = browser.selected_id
+        chosen, source = browser.selected_id, browser.provider
         browser.destroy()
         if not chosen:
             return
-        known = {model: key for key, _label, model in self._choices()}
-        if chosen not in known:
-            self._chosen.append(chosen)
-        then(known.get(chosen, f"model:{chosen}"))
+        if self.privacy is None:
+            chosen = providers.Model(chosen, source)
+        for key, _label, model in self._choices():
+            if model == chosen and (providers.provider_id(self.config, model)
+                                    == providers.provider_id(self.config, chosen)):
+                then(key)
+                return
+        self._chosen.append(chosen)
+        then(self._chosen_key(chosen))
 
     def _popup_models(self, widget, then):
         """The model menu under `widget`; picking an entry calls then(key)."""
         menu = Gtk.Menu()
         for key, label, model in self._choices():
             gone = " (no longer offered)" if model in self._retired else ""
-            item = Gtk.CheckMenuItem(label=f"{label} — {model}{gone}")
+            item = Gtk.CheckMenuItem(
+                label=f"{label} — {model}{self._where(model)}{gone}")
             item.set_draw_as_radio(True)
             item.set_active(key == self._choice)
             item.connect("activate", lambda _w, k=key: then(k))
@@ -533,7 +560,7 @@ class ChatWindow(Gtk.Window):
         if self.privacy is not None:
             self.header.set_subtitle(f"🔒 Privacy Mode · {model}")
         else:
-            self.header.set_subtitle(model)
+            self.header.set_subtitle(model + self._where(model))
 
     # ---- privacy ----------------------------------------------------------
 

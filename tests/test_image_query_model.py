@@ -72,6 +72,12 @@ class CaptureDialogStub:
         CaptureDialogStub.plans.append(plan)
         on_confirm(image, "IMAGEDATA", {}, self.prompt, self.web_search)
 
+    def connect(self, _signal, _handler):
+        pass
+
+    def set_route(self, privacy, plan, refused=None):
+        CaptureDialogStub.plans.append(plan)
+
 
 class StubAssistant:
     """The real methods under test, without the tray, capture stack or dialogs."""
@@ -87,6 +93,7 @@ class StubAssistant:
     _answer_role = Assistant._answer_role
     _ocr = Assistant._ocr
     _capture_plan = Assistant._capture_plan
+    _watch_review = Assistant._watch_review
     _transcribe_preflight = Assistant._transcribe_preflight
     _start_privacy = Assistant._start_privacy
     _confirm_privacy = Assistant._confirm_privacy
@@ -96,6 +103,7 @@ class StubAssistant:
         self.client = client
         self.started = None
         self.opened = None
+        self._reviews = []
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
                        transcribe_first=False, system=None, answer_by_text=False):

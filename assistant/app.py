@@ -56,6 +56,9 @@ class Assistant:
         self._action_items = {}
         self._notification = None
         self._settings_dialog = None
+        # The review dialogs open now, each with how to bring what it says about where
+        # its request goes up to date: see _watch_review.
+        self._reviews = []
 
         self._load_css()
 
@@ -211,6 +214,7 @@ class Assistant:
 
     def _on_premium_toggled(self, widget):
         self.config.use_premium = widget.get_active()
+        self._refresh_reviews()
         try:
             self.config.save()
         except OSError as e:
@@ -220,6 +224,7 @@ class Assistant:
 
     def _on_privacy_toggled(self, widget):
         self.config.privacy_mode = widget.get_active()
+        self._refresh_reviews()
         try:
             self.config.save()
         except OSError as e:
@@ -259,6 +264,38 @@ class Assistant:
         except privacy_module.PrivacyError as e:
             self.notify(str(e), urgency="normal")
             return False
+
+    def _watch_review(self, dialog, route, uses, plan_for):
+        """Keep what a review dialog says about where its request goes true until Send.
+
+        `route` is the dialog's {"privacy": session or None}, which its on_confirm sends
+        with. Switching Privacy Mode on while the dialog is open makes the request
+        private - here, at once, so the dialog says so before Send rather than after -
+        and switching it off leaves an opened private request private, as
+        _confirm_privacy always has. `uses()` is which private models it needs, and
+        `plan_for(privacy)` names the models.
+        """
+        def refresh():
+            privacy, refused = route["privacy"], None
+            if privacy is None and self.config.privacy_mode:
+                try:
+                    privacy = route["privacy"] = privacy_module.PrivacySession.start(
+                        self.config, uses=uses())
+                except privacy_module.PrivacyError as e:
+                    refused = (str(e).removesuffix(" Nothing was sent.")
+                               + " Nothing will be sent until you choose models that "
+                                 "can be used in Settings > Privacy, or switch Privacy "
+                                 "Mode off.")
+            dialog.set_route(privacy, None if refused else plan_for(privacy), refused)
+
+        self._reviews.append(refresh)
+        dialog.connect("destroy", lambda _w: self._reviews.remove(refresh))
+
+    def _refresh_reviews(self):
+        """Privacy Mode, the premium option or the settings changed: every open review
+        dialog says again where its request goes."""
+        for refresh in list(getattr(self, "_reviews", ())):
+            refresh()
 
     def _confirm_privacy(self, privacy, uses=("text", "vision")):
         """The session to send with, decided at Send. Privacy only ever tightens here:
@@ -374,10 +411,13 @@ class Assistant:
                     answer_by_text),
                 on_error, title=f"{title} — re-crop")
 
+        route = {"privacy": privacy}
+
         def on_confirm(image, image_base64, info, prompt, web_search):
             if info.get("debug_path"):
                 print(f"[capture] sent image saved to {info['debug_path']}")
-            session = self._confirm_privacy(privacy, ("vision", self._answer_role()))
+            session = self._confirm_privacy(route["privacy"],
+                                            ("vision", self._answer_role()))
             if session is False:
                 return
             # What the chat window shows and saves: the crop as taken, not the copy
@@ -406,11 +446,15 @@ class Assistant:
                                 web_search=web_search, system=system, privacy=session,
                                 screenshot=screenshot)
 
-        CaptureReviewDialog(image, title, self.config, on_confirm,
-                            ask_prompt=ask_prompt, on_recrop=on_recrop,
-                            web_search_default=web_search_default, privacy=privacy,
-                            plan=self._capture_plan(transcribe_first, answer_by_text,
-                                                    privacy))
+        def plan_for(session):
+            return self._capture_plan(transcribe_first, answer_by_text, session)
+
+        dialog = CaptureReviewDialog(image, title, self.config, on_confirm,
+                                     ask_prompt=ask_prompt, on_recrop=on_recrop,
+                                     web_search_default=web_search_default,
+                                     privacy=privacy, plan=plan_for(privacy))
+        self._watch_review(dialog, route, lambda: ("vision", self._answer_role()),
+                           plan_for)
 
     def _capture_plan(self, transcribe_first, answer_by_text, privacy):
         """[(model, what it does)] for this capture, in order: for the review dialog to
@@ -568,7 +612,9 @@ class Assistant:
         return preflight
 
     def _start_clipboard(self, title, ask_prompt, build, web_search_default=None,
-                         system=None):
+                         system=None, job="answers"):
+        """Clipboard -> review -> send, to the answering model; `job` is what it does
+        with the text, for the review dialog to say ("translates it")."""
         if not self._require_api_key():
             return
         privacy = self._start_privacy((self._answer_role(),))
@@ -588,17 +634,24 @@ class Assistant:
             self.notify(message, urgency="normal")
             return
 
+        route = {"privacy": privacy}
+
         def on_confirm(edited_text, prompt, web_search):
-            session = self._confirm_privacy(privacy, (self._answer_role(),))
+            session = self._confirm_privacy(route["privacy"], (self._answer_role(),))
             if session is False:
                 return
             prompt_text, display = build(edited_text, prompt)
             self._open_chat(title, prompt_text, display, web_search=web_search,
                             system=system, privacy=session)
 
-        TextReviewDialog(text, title, on_confirm, ask_prompt=ask_prompt,
-                         config=self.config, web_search_default=web_search_default,
-                         privacy=privacy)
+        def plan_for(session):
+            return [(self._image_answerer(session), job)]
+
+        dialog = TextReviewDialog(text, title, on_confirm, ask_prompt=ask_prompt,
+                                  config=self.config,
+                                  web_search_default=web_search_default,
+                                  privacy=privacy, plan=plan_for(privacy))
+        self._watch_review(dialog, route, lambda: (self._answer_role(),), plan_for)
 
     # ---- the five operations ---------------------------------------------
 
@@ -660,7 +713,7 @@ class Assistant:
             # Translation works from the text it was given; a search only adds cost and
             # latency. Still available per request, and for follow-ups.
             web_search_default=False,
-            system=prompts.translate_system(language))
+            system=prompts.translate_system(language), job="translates it")
 
     def query_text(self):
         language = self.config.default_language
@@ -789,6 +842,7 @@ class Assistant:
                                 "It is used until the app quits.", urgency="normal")
                 else:
                     self.notify("Settings saved")
+                self._refresh_reviews()
                 self._sync_privacy_item()
                 self._sync_encyclopedia_items()
                 # Only when they changed: tearing the grabs down, asking the portal

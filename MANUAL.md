@@ -59,9 +59,13 @@ when **Use premium text model** is ticked (their private versions in Privacy Mod
 cheap OCR model is fine for transcribing, but not for the questions and searches that
 might follow, so those never stay with it.
 
-The dialog where you review a screen region before sending says which models it will go
-to, and for what - *glm-ocr on Ollama reads the text, then deepseek/deepseek-v4-pro
-translates it* - so that is known before anything is sent.
+The dialog where you review a screen region or the clipboard text before sending says
+where it will go: which models, and for what - *glm-ocr on Ollama reads the text, then
+deepseek/deepseek-v4-pro translates it* - and, with **Search the web** ticked, that a
+search query made from it goes to NanoGPT. If you switch Privacy Mode or the premium
+option, or change the settings, while it is open, it says so at once: switched on,
+Privacy Mode makes the waiting request private before you send it, and if Privacy Mode
+cannot be used, Send is held and the dialog says why.
 
 - **OCR only**: the vision model's transcription is the first answer, verbatim and
   nothing else. Ask for changes, explanations or searches after, and those go to the

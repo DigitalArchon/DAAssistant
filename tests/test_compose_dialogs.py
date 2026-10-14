@@ -146,7 +146,7 @@ class CaptureDialogNamesItsModels(unittest.TestCase):
                          f"{self.config.text_model} translates it.")
 
     def test_without_a_plan_there_is_no_line(self):
-        self.assertIsNone(self.dialog(None).plan)
+        self.assertFalse(self.dialog(None).plan.get_visible())
 
 
 if __name__ == "__main__":

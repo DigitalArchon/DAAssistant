@@ -23,7 +23,7 @@ _DICTIONARY_TARGET = Gtk.TargetEntry.new("application/x-da-assistant-dictionary"
 _DRAG_ICON = "list-drag-handle-symbolic"
 
 
-def web_search_toggle(config, default=None, privacy=None):
+def web_search_toggle(config, default=None):
     """A 'Search the web' check button seeded from the saved default.
 
     `default` lets an operation override that seed. Translation passes False: the model
@@ -39,13 +39,9 @@ def web_search_toggle(config, default=None, privacy=None):
     button.set_active(bool(getattr(config, "web_search_enabled", False))
                       if default is None else bool(default))
     button.set_tooltip_text("Look things up online before answering this request")
-    if privacy is not None:
-        # The query is made from what is being sent, and would go to a search provider
-        # in the clear. LLMClient never searches for a private request either way.
-        button.set_active(False)
-        button.set_sensitive(False)
-        button.set_tooltip_text("Off in Privacy Mode: the search query would carry your "
-                                "text outside the attested enclave")
+    # Off and greyed in Privacy Mode: ReviewRoute.set_route. The query is made from what
+    # is being sent, and would go to a search provider in the clear; LLMClient never
+    # searches for a private request either way.
     return button
 
 
@@ -89,29 +85,111 @@ def _scaled_pixbuf(image, max_w, max_h):
                                GdkPixbuf.InterpType.BILINEAR)
 
 
-def plan_label(config, plan, privacy=None):
+def plan_markup(config, plan, privacy=None, web_search=False):
     """"Models: glm-ocr on Ollama reads the text, then deepseek-v4 translates it." -
     which models a request goes to, and for what, said where it is composed. The
-    provider is named where it is not NanoGPT, as in the chat window's model menu."""
-    def where(model):
+    provider is named where it is not NanoGPT, as in the chat window's model menu. With
+    web search ticked, where the search query goes as well: that is data leaving too."""
+    def named(model):
         provider = providers.provider_id(config, model)
-        return ("" if privacy or provider == providers.NANOGPT
-                else f" on {providers.KINDS[provider].short}")
+        where = ("" if privacy or provider == providers.NANOGPT
+                 else f" on {providers.KINDS[provider].short}")
+        return f"<b>{GLib.markup_escape_text(str(model))}</b>{GLib.markup_escape_text(where)}"
 
-    steps = [f"<b>{GLib.markup_escape_text(str(model))}</b>"
-             f"{GLib.markup_escape_text(where(model))} {GLib.markup_escape_text(job)}"
-             for model, job in plan]
-    label = Gtk.Label(xalign=0, wrap=True, max_width_chars=110)
-    label.set_markup("Models: " + ", then ".join(steps) + ".")
-    label.get_style_context().add_class("capture-meta")
-    label.set_tooltip_text(
-        "The models under Settings > Privacy, in Privacy Mode." if privacy else
-        "Chosen in Settings > General. In the conversation that follows, the model "
-        "button in its header can send any message to another.")
-    return label
+    text = "Models: " + ", then ".join(
+        f"{named(model)} {GLib.markup_escape_text(job)}" for model, job in plan) + "."
+    if web_search and not privacy:
+        if getattr(config, "web_search_craft_query", True):
+            text += (f" Web search: {named(providers.role_model(config, 'text'))} writes a "
+                     f"search query from it, and NanoGPT runs the search.")
+        else:
+            text += " Web search: a query made from it goes to NanoGPT, which runs it."
+    return text
 
 
-class CaptureReviewDialog(Gtk.Window):
+class ReviewRoute:
+    """Where a review dialog's request will go, said on the dialog and kept up to date.
+
+    The header's subtitle, the Send button, the Privacy Mode note, the web search box and
+    the line naming the models all say the same thing, and set_route changes them
+    together: the app calls it when Privacy Mode, the premium option or the settings
+    change while the dialog is open, so it never shows a destination the request has
+    stopped going to. `refused` is why nothing can be sent at all - Privacy Mode on and
+    not able to be honoured - and holds Send until that changes.
+    """
+
+    def _build_route(self, header, config, web_search_default):
+        self.header = header
+        self.config = config
+        self.privacy_slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.plan = Gtk.Label(xalign=0, wrap=True, max_width_chars=110)
+        self.plan.get_style_context().add_class("capture-meta")
+        self.plan.set_no_show_all(True)
+        self.search_check = web_search_toggle(config, web_search_default)
+        self._search_wanted = self.search_check.get_active()
+        self.search_check.connect("toggled", self._on_search_toggled)
+
+    def _on_search_toggled(self, button):
+        if button.get_sensitive():
+            self._search_wanted = button.get_active()
+        self._show_plan()
+
+    def set_route(self, privacy, plan, refused=None):
+        self.route_privacy, self.route_plan, self.route_refused = privacy, plan, refused
+        self.header.set_subtitle(
+            "Nothing can be sent" if refused else
+            "Review before sending privately" if privacy else "Review before sending")
+        self.send.set_label("Send privately" if privacy else "Send")
+        self.send.set_sensitive(not refused)
+
+        for child in self.privacy_slot.get_children():
+            self.privacy_slot.remove(child)
+        note = refused_note(refused) if refused else privacy_note(privacy)
+        if note is not None:
+            self.privacy_slot.pack_start(note, False, False, 0)
+            note.show_all()
+
+        # Private, or not to be sent: no search, whatever was ticked. Back to ordinary,
+        # the box is as the user last left it.
+        closed = bool(privacy or refused)
+        self.search_check.set_sensitive(not closed)
+        self.search_check.set_active(False if closed else self._search_wanted)
+        self.search_check.set_tooltip_text(
+            "Off in Privacy Mode: the search query would carry your text outside the "
+            "attested enclave" if closed else
+            "Look things up online before answering this request")
+        self._show_plan()
+
+    def _show_plan(self):
+        plan = getattr(self, "route_plan", None)
+        privacy = getattr(self, "route_privacy", None)
+        if not plan:
+            self.plan.hide()
+            return
+        self.plan.set_markup(plan_markup(self.config, plan, privacy,
+                                         self.search_check.get_active()))
+        self.plan.set_tooltip_text(
+            "The models under Settings > Privacy, in Privacy Mode." if privacy else
+            "Chosen in Settings > General. In the conversation that follows, the model "
+            "button in its header can send any message to another.")
+        self.plan.show()
+
+
+def refused_note(reason):
+    """The compose dialogs' statement that nothing will be sent, and why."""
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+    context = box.get_style_context()
+    context.add_class("privacy-compose")
+    context.add_class("bad")
+    box.pack_start(Gtk.Image.new_from_icon_name("dialog-warning-symbolic",
+                                                Gtk.IconSize.LARGE_TOOLBAR), False, False, 0)
+    label = Gtk.Label(xalign=0, wrap=True, max_width_chars=90)
+    label.set_text(reason)
+    box.pack_start(label, True, True, 0)
+    return box
+
+
+class CaptureReviewDialog(ReviewRoute, Gtk.Window):
     """Preview a capture, optionally ask a question about it, then send.
 
     on_confirm(image, image_base64, info, prompt_or_None, web_search_bool)
@@ -126,8 +204,8 @@ class CaptureReviewDialog(Gtk.Window):
     def __init__(self, image, operation, config, on_confirm,
                  ask_prompt=False, on_recrop=None, prompt_label="Your question",
                  web_search_default=None, privacy=None, plan=None):
-        """`plan` is [(model, what it does)], in order (Assistant._capture_plan): shown
-        above the Send button's work, so the models are known before anything goes."""
+        """`plan` is [(model, what it does)], in order (Assistant._capture_plan), so the
+        models are known before anything goes; set_route keeps it current."""
         super().__init__(title=operation)
         self.image = image
         self.config = config
@@ -144,9 +222,8 @@ class CaptureReviewDialog(Gtk.Window):
         self.set_position(Gtk.WindowPosition.CENTER)
 
         header = Gtk.HeaderBar(show_close_button=True, title=operation)
-        header.set_subtitle("Review before sending privately" if privacy
-                            else "Review before sending")
         self.set_titlebar(header)
+        self._build_route(header, config, web_search_default)
 
         cancel = Gtk.Button.new_with_label("Cancel")
         cancel.connect("clicked", lambda _w: self.destroy())
@@ -164,7 +241,7 @@ class CaptureReviewDialog(Gtk.Window):
         self.redact_button.connect("clicked", lambda _w: self._on_redact())
         header.pack_start(self.redact_button)
 
-        self.send = Gtk.Button.new_with_label("Send privately" if privacy else "Send")
+        self.send = Gtk.Button.new_with_label("Send")
         self.send.get_style_context().add_class("suggested-action")
         self.send.connect("clicked", lambda _w: self._confirm())
         header.pack_end(self.send)
@@ -175,10 +252,7 @@ class CaptureReviewDialog(Gtk.Window):
         box.set_margin_top(12)
         box.set_margin_bottom(14)
         self.add(box)
-
-        note = privacy_note(privacy)
-        if note is not None:
-            box.pack_start(note, False, False, 0)
+        box.pack_start(self.privacy_slot, False, False, 0)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -197,14 +271,9 @@ class CaptureReviewDialog(Gtk.Window):
         meta.get_style_context().add_class("capture-meta")
         meta_row.pack_start(meta, False, False, 0)
         meta_row.pack_start(Gtk.Box(), True, True, 0)
-        self.search_check = web_search_toggle(config, web_search_default, privacy)
         meta_row.pack_start(self.search_check, False, False, 0)
         box.pack_start(meta_row, False, False, 0)
-
-        self.plan = None
-        if plan:
-            self.plan = plan_label(config, plan, privacy)
-            box.pack_start(self.plan, False, False, 0)
+        box.pack_start(self.plan, False, False, 0)
 
         self.prompt_view = None
         if ask_prompt:
@@ -226,6 +295,7 @@ class CaptureReviewDialog(Gtk.Window):
             frame.add(self.prompt_view)
             box.pack_start(frame, False, False, 0)
 
+        self.set_route(privacy, plan)
         self.connect("key-press-event", self._on_window_key)
         self.show_all()
         self.present()
@@ -292,15 +362,16 @@ class CaptureReviewDialog(Gtk.Window):
         self.on_confirm(self.image, self.image_base64, self.info, prompt, web_search)
 
 
-class TextReviewDialog(Gtk.Window):
+class TextReviewDialog(ReviewRoute, Gtk.Window):
     """Review/edit text, optionally ask a question about it, then send.
 
     on_confirm(text, prompt_or_None, web_search_bool)
+    `plan`: as CaptureReviewDialog's - which models the text goes to, and for what.
     """
 
     def __init__(self, text, operation, on_confirm, ask_prompt=False,
                  prompt_label="Your question", config=None, web_search_default=None,
-                 privacy=None):
+                 privacy=None, plan=None):
         super().__init__(title=operation)
         self.on_confirm = on_confirm
         self._done = False
@@ -309,15 +380,14 @@ class TextReviewDialog(Gtk.Window):
         self.set_position(Gtk.WindowPosition.CENTER)
 
         header = Gtk.HeaderBar(show_close_button=True, title=operation)
-        header.set_subtitle("Review before sending privately" if privacy
-                            else "Review before sending")
         self.set_titlebar(header)
+        self._build_route(header, config, web_search_default)
 
         cancel = Gtk.Button.new_with_label("Cancel")
         cancel.connect("clicked", lambda _w: self.destroy())
         header.pack_start(cancel)
 
-        self.send = Gtk.Button.new_with_label("Send privately" if privacy else "Send")
+        self.send = Gtk.Button.new_with_label("Send")
         self.send.get_style_context().add_class("suggested-action")
         self.send.connect("clicked", lambda _w: self._confirm())
         header.pack_end(self.send)
@@ -328,10 +398,7 @@ class TextReviewDialog(Gtk.Window):
         box.set_margin_top(12)
         box.set_margin_bottom(14)
         self.add(box)
-
-        note = privacy_note(privacy)
-        if note is not None:
-            box.pack_start(note, False, False, 0)
+        box.pack_start(self.privacy_slot, False, False, 0)
 
         scrolled = Gtk.ScrolledWindow()
         scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -352,9 +419,9 @@ class TextReviewDialog(Gtk.Window):
         counter.get_style_context().add_class("capture-meta")
         meta_row.pack_start(counter, False, False, 0)
         meta_row.pack_start(Gtk.Box(), True, True, 0)
-        self.search_check = web_search_toggle(config, web_search_default, privacy)
         meta_row.pack_start(self.search_check, False, False, 0)
         box.pack_start(meta_row, False, False, 0)
+        box.pack_start(self.plan, False, False, 0)
         self.textview.get_buffer().connect(
             "changed", lambda b: counter.set_text(
                 f"{b.get_char_count()} characters"))
@@ -379,6 +446,7 @@ class TextReviewDialog(Gtk.Window):
             frame.add(self.prompt_view)
             box.pack_start(frame, False, False, 0)
 
+        self.set_route(privacy, plan)
         self.connect("key-press-event", self._on_window_key)
         self.show_all()
         self.present()

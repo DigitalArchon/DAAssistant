@@ -408,7 +408,24 @@ class Assistant:
 
         CaptureReviewDialog(image, title, self.config, on_confirm,
                             ask_prompt=ask_prompt, on_recrop=on_recrop,
-                            web_search_default=web_search_default, privacy=privacy)
+                            web_search_default=web_search_default, privacy=privacy,
+                            plan=self._capture_plan(transcribe_first, answer_by_text,
+                                                    privacy))
+
+    def _capture_plan(self, transcribe_first, answer_by_text, privacy):
+        """[(model, what it does)] for this capture, in order: for the review dialog to
+        say, before anything is sent, which models the capture goes to. The same
+        choices as the operations themselves make - _image_answer's among them."""
+        reader = privacy.vision_model if privacy else self.config.model("vision")
+        answerer = self._image_answerer(privacy)
+        if transcribe_first:
+            return [(reader, "reads the text"), (answerer, "translates it")]
+        if not answer_by_text:
+            return [(reader, "transcribes the text")]
+        if catalogue.accepts_images(self.config, answerer):
+            return [(reader, "reads the text"), (answerer, "answers, seeing the image")]
+        return [(reader, "reads and describes the image"),
+                (answerer, "answers from that reading")]
 
     def _image_answerer(self, privacy):
         """The model that answers: see _answer_role."""

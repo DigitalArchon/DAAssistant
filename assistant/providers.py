@@ -253,6 +253,13 @@ def of(config, model):
     return get(config, provider_id(config, model))
 
 
+def where(config, model):
+    """' · Ollama' for a model asked of a provider other than NanoGPT, else '': how a
+    model is named wherever its provider is worth saying."""
+    provider = provider_id(config, model)
+    return "" if provider == NANOGPT else f" · {KINDS[provider].short}"
+
+
 def in_use(config):
     """The providers the three model settings name, each once, in ORDER. NanoGPT is
     among them when Privacy Mode is on, whatever the settings say."""

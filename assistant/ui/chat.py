@@ -462,11 +462,7 @@ class ChatWindow(Gtk.Window):
 
     def _where(self, model):
         """' · Ollama' for a model asked of a provider other than NanoGPT, else ''."""
-        if self.privacy is not None:
-            return ""
-        provider = providers.provider_id(self.config, model)
-        return ("" if provider == providers.NANOGPT
-                else f" · {providers.KINDS[provider].short}")
+        return "" if self.privacy is not None else providers.where(self.config, model)
 
     def _model_of(self, key):
         for choice, _label, model in self._choices():

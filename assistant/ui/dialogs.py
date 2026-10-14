@@ -89,6 +89,28 @@ def _scaled_pixbuf(image, max_w, max_h):
                                GdkPixbuf.InterpType.BILINEAR)
 
 
+def plan_label(config, plan, privacy=None):
+    """"Models: glm-ocr on Ollama reads the text, then deepseek-v4 translates it." -
+    which models a request goes to, and for what, said where it is composed. The
+    provider is named where it is not NanoGPT, as in the chat window's model menu."""
+    def where(model):
+        provider = providers.provider_id(config, model)
+        return ("" if privacy or provider == providers.NANOGPT
+                else f" on {providers.KINDS[provider].short}")
+
+    steps = [f"<b>{GLib.markup_escape_text(str(model))}</b>"
+             f"{GLib.markup_escape_text(where(model))} {GLib.markup_escape_text(job)}"
+             for model, job in plan]
+    label = Gtk.Label(xalign=0, wrap=True, max_width_chars=110)
+    label.set_markup("Models: " + ", then ".join(steps) + ".")
+    label.get_style_context().add_class("capture-meta")
+    label.set_tooltip_text(
+        "The models under Settings > Privacy, in Privacy Mode." if privacy else
+        "Chosen in Settings > General. In the conversation that follows, the model "
+        "button in its header can send any message to another.")
+    return label
+
+
 class CaptureReviewDialog(Gtk.Window):
     """Preview a capture, optionally ask a question about it, then send.
 
@@ -103,7 +125,9 @@ class CaptureReviewDialog(Gtk.Window):
 
     def __init__(self, image, operation, config, on_confirm,
                  ask_prompt=False, on_recrop=None, prompt_label="Your question",
-                 web_search_default=None, privacy=None):
+                 web_search_default=None, privacy=None, plan=None):
+        """`plan` is [(model, what it does)], in order (Assistant._capture_plan): shown
+        above the Send button's work, so the models are known before anything goes."""
         super().__init__(title=operation)
         self.image = image
         self.config = config
@@ -176,6 +200,11 @@ class CaptureReviewDialog(Gtk.Window):
         self.search_check = web_search_toggle(config, web_search_default, privacy)
         meta_row.pack_start(self.search_check, False, False, 0)
         box.pack_start(meta_row, False, False, 0)
+
+        self.plan = None
+        if plan:
+            self.plan = plan_label(config, plan, privacy)
+            box.pack_start(self.plan, False, False, 0)
 
         self.prompt_view = None
         if ask_prompt:

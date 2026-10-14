@@ -65,8 +65,11 @@ class CaptureDialogStub:
     prompt = "what does this error mean?"
     web_search = False
 
+    plans = []
+
     def __init__(self, image, title, config, on_confirm, ask_prompt=False,
-                 on_recrop=None, web_search_default=None, privacy=None):
+                 on_recrop=None, web_search_default=None, privacy=None, plan=None):
+        CaptureDialogStub.plans.append(plan)
         on_confirm(image, "IMAGEDATA", {}, self.prompt, self.web_search)
 
 
@@ -83,6 +86,8 @@ class StubAssistant:
     _image_answerer = Assistant._image_answerer
     _answer_role = Assistant._answer_role
     _ocr = Assistant._ocr
+    _capture_plan = Assistant._capture_plan
+    _transcribe_preflight = Assistant._transcribe_preflight
     _start_privacy = Assistant._start_privacy
     _confirm_privacy = Assistant._confirm_privacy
 
@@ -156,20 +161,66 @@ class ImageQueryCase(unittest.TestCase):
         return self.app.opened
 
 
+class TheReviewSaysWhichModels(ImageQueryCase):
+    """The capture is on screen with Send under it: which models it is about to go to,
+    and for what, is said there - not only afterwards, in the chat window."""
+
+    def plan(self, operation):
+        getattr(self.app, operation)()
+        started = self.app.started
+        original = app_module.CaptureReviewDialog
+        app_module.CaptureReviewDialog = CaptureDialogStub
+        try:
+            self.app._review_capture(
+                Image.new("RGB", (40, 20)), started["title"], started["ask_prompt"],
+                started["build"], lambda _m: None, started["web_search_default"],
+                started["transcribe_first"], started["system"],
+                answer_by_text=started["answer_by_text"])
+        finally:
+            app_module.CaptureReviewDialog = original
+        return [(str(model), job) for model, job in CaptureDialogStub.plans[-1]]
+
+    def test_ocr_is_the_vision_model_alone(self):
+        self.assertEqual(self.plan("ocr_only"), [(OCR_MODEL, "transcribes the text")])
+
+    def test_translation_is_the_vision_model_then_the_answering_one(self):
+        self.assertEqual(self.plan("ocr_translate"),
+                         [(OCR_MODEL, "reads the text"), (TEXT_MODEL, "translates it")])
+        self.config.use_premium = True
+        self.assertEqual(self.plan("ocr_translate")[1], (PREMIUM_MODEL, "translates it"))
+
+    def test_a_question_says_whether_the_answering_model_sees_the_image(self):
+        self.sees_images = True
+        self.assertEqual(self.plan("query_image"),
+                         [(OCR_MODEL, "reads the text"),
+                          (TEXT_MODEL, "answers, seeing the image")])
+        self.sees_images = False
+        self.assertEqual(self.plan("query_image"),
+                         [(OCR_MODEL, "reads and describes the image"),
+                          (TEXT_MODEL, "answers from that reading")])
+
+    def test_the_models_carry_their_providers(self):
+        self.config.vision_provider = "ollama"
+        getattr(self.app, "ocr_only")()
+        self.plan("ocr_only")
+        [(model, _job)] = CaptureDialogStub.plans[-1]
+        self.assertEqual(model.provider, "ollama")
+
+
 class TheTextModelAnswers(ImageQueryCase):
     def test_an_image_query_is_answered_by_the_text_model(self):
         self.app.query_image()
         self.assertTrue(self.app.started["answer_by_text"])
         self.assertTrue(self.app.started["ask_prompt"])
         opened = self._confirm()
-        self.assertEqual(self.asked, [TEXT_MODEL])
+        self.assertEqual(set(self.asked), {TEXT_MODEL})
         # No first model of its own: the window's model menu starts on the answerer.
         self.assertIsNone(opened["first_model"])
 
     def test_with_the_premium_option_on_the_premium_model_answers(self):
         self.config.use_premium = True
         self._confirm()
-        self.assertEqual(self.asked, [PREMIUM_MODEL])
+        self.assertEqual(set(self.asked), {PREMIUM_MODEL})
 
     def test_ocrs_first_answer_is_the_vision_models_transcription(self):
         self.app.ocr_only()
@@ -369,7 +420,7 @@ class PrivacyModeImageQueries(ImageQueryCase):
         opened = self._confirm()
         session = opened["privacy"]
         self.assertCountEqual(session.models(), [self.PRIVATE_TEXT, self.PRIVATE_VISION])
-        self.assertEqual(self.asked, [self.PRIVATE_TEXT])
+        self.assertEqual(self.asked[-1], self.PRIVATE_TEXT)       # at Send
         self.assertFalse(opened["image_first"])
         opened["preflight"](threading.Event(), lambda _m: None)
         read = self.client.calls[0]
@@ -382,7 +433,7 @@ class PrivacyModeImageQueries(ImageQueryCase):
         opened = self._confirm()
         self.assertTrue(opened["image_first"])
         self.assertEqual(opened["image"], "IMAGEDATA")
-        self.assertEqual(self.asked, [self.PRIVATE_TEXT])
+        self.assertEqual(self.asked[-1], self.PRIVATE_TEXT)       # at Send
 
 
 class AConversationFollowsItsModelMenu(unittest.TestCase):

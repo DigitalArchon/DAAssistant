@@ -59,6 +59,10 @@ when **Use premium text model** is ticked (their private versions in Privacy Mod
 cheap OCR model is fine for transcribing, but not for the questions and searches that
 might follow, so those never stay with it.
 
+The dialog where you review a screen region before sending says which models it will go
+to, and for what - *glm-ocr on Ollama reads the text, then deepseek/deepseek-v4-pro
+translates it* - so that is known before anything is sent.
+
 - **OCR only**: the vision model's transcription is the first answer, verbatim and
   nothing else. Ask for changes, explanations or searches after, and those go to the
   answering model.

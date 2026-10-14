@@ -118,5 +118,36 @@ class CaptureDialogWebSearch(unittest.TestCase):
             dialog.destroy()
 
 
+class CaptureDialogNamesItsModels(unittest.TestCase):
+    """Before Send, the capture dialog says which models will read and answer."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.vision_provider, self.config.vision_model = "ollama", "glm-ocr"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def dialog(self, plan):
+        dialog = CaptureReviewDialog(Image.new("RGB", (120, 60), (255, 255, 255)),
+                                     "OCR + Translate", self.config, lambda *a: None,
+                                     plan=plan)
+        self.addCleanup(dialog.destroy)
+        return dialog
+
+    def test_each_model_and_its_job_in_order(self):
+        dialog = self.dialog([(self.config.model("vision"), "reads the text"),
+                              (self.config.model("text"), "translates it")])
+        self.assertEqual(dialog.plan.get_text(),
+                         f"Models: glm-ocr on Ollama reads the text, then "
+                         f"{self.config.text_model} translates it.")
+
+    def test_without_a_plan_there_is_no_line(self):
+        self.assertIsNone(self.dialog(None).plan)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -14,9 +14,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="${BUILD_DIR:-$ROOT/build}/cache"
 
-UV_VERSION="0.12.18"
+UV_VERSION="0.13.5"
 UV_URL="https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-x86_64-unknown-linux-gnu.tar.gz"
-UV_SHA256="89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16"
+UV_SHA256="f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f"
 
 archive="$CACHE/uv-$UV_VERSION.tar.gz"
 mkdir -p "$CACHE"

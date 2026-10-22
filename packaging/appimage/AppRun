@@ -24,9 +24,12 @@ fi
 
 # Stashed for assistant/hostenv.py. Only variables that get set below belong here: a name
 # with no APPIMAGE_HOST_ counterpart means "was unset, leave unset".
-export APPIMAGE_HOST_ENV_KEYS="SSL_CERT_FILE"
+export APPIMAGE_HOST_ENV_KEYS="SSL_CERT_FILE REQUESTS_CA_BUNDLE"
 if [ -n "${SSL_CERT_FILE+set}" ]; then
   export APPIMAGE_HOST_SSL_CERT_FILE="$SSL_CERT_FILE"
+fi
+if [ -n "${REQUESTS_CA_BUNDLE+set}" ]; then
+  export APPIMAGE_HOST_REQUESTS_CA_BUNDLE="$REQUESTS_CA_BUNDLE"
 fi
 
 # Certificate authorities, for anything that asks OpenSSL for its defaults. requests and
@@ -50,6 +53,13 @@ if [ -z "${SSL_CERT_FILE:-}" ]; then
     fi
   done
   unset _bundle
+fi
+# requests reads REQUESTS_CA_BUNDLE, not SSL_CERT_FILE, and it is what the sealed
+# client's attestation fetch (Tinfoil's SDK) and the app's own requests use: the same
+# bundle, so the host's trust decisions (emSign ECC Root CA - G3, the eMudhra root
+# distrusted in Oct 2026) hold there too. A value the user set is left alone.
+if [ -n "${SSL_CERT_FILE:-}" ] && [ -z "${REQUESTS_CA_BUNDLE:-}" ]; then
+  export REQUESTS_CA_BUNDLE="$SSL_CERT_FILE"
 fi
 
 exec "$HERE/usr/python/bin/python3" -I "$HERE/usr/lib/da-assistant/run-assistant" "$@"

@@ -2,6 +2,9 @@
 # end-to-end encryption client (packaging/private-mode.lock, installed apart: see
 # assistant/vendored.py). Locked with hashes in requirements.lock.
 requests
+# requests' CA bundle: 2026.10.19 drops emSign ECC Root CA - G3 (the eMudhra
+# intermediates with recoverable keys, Oct 2026). AppRun prefers the host's store.
+certifi>=2026.10.19
 markdown
 pygments
 pillow

@@ -19,6 +19,7 @@ certifi==2026.10.19 \
     #   httpcore
     #   httpx
     #   requests
+    #   tinfoil
 cffi==2.1.1 \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
     --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
@@ -523,9 +524,9 @@ mdurl==0.1.2 \
     --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8 \
     --hash=sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba
     # via markdown-it-py
-openai==3.19.2 \
-    --hash=sha256:66247fcd07266e72536e90656dc27f3b0bb1e9d8696d4013fc55402c0b96a5c2 \
-    --hash=sha256:de185f9834ad064d965ec42bd0766731cf66bceea16a7670294a835d207019e6
+openai==3.36.1 \
+    --hash=sha256:4c15b6765fe1792c5ad753556f44c7f82c2920c5e9e40219c0fca97369e923d3 \
+    --hash=sha256:ad8e5d56f20198915d98726ac1edb12ae38e7ecfa9bd560057e84642168b20c9
     # via tinfoil
 platformdirs==4.11.15 \
     --hash=sha256:84508421c77d3c6462e71dd8c0d2776c2ace0e94eb006dc4fd383bc1dcf5a176 \
@@ -742,13 +743,13 @@ sniffio==1.3.1 \
     --hash=sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2 \
     --hash=sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc
     # via openai
-tinfoil==0.14.0 \
-    --hash=sha256:b88838a80210582c7dd6b307cd83e581ea21b245fb0dad79ac57202b2e9f2968 \
-    --hash=sha256:f04e1c0ed98e22619c03e6fc8b9a2cab60a4e9ed2001ffec58ab5cd848d77642
+tinfoil==0.15.0 \
+    --hash=sha256:6676e0014ef8a992b26d7f47d4e99f3a440ab6e38488d1f21f34b537d12869d8 \
+    --hash=sha256:dbc5012dd65ab5d2211b9f32a5bdb823550f0310ab79c4ab21175ab4dd4abccd
     # via -r private-mode.in
-tinfoil-ehbp==0.3.2 \
-    --hash=sha256:9428f0c28a540528b534dd0fec9eeb4b632edc424a84d0dacf8d56d8d658ee1f \
-    --hash=sha256:b3ba148797d1638ccbb6fed63958c9a89af6c8d9b09d9fc4f185c1f681e45005
+tinfoil-ehbp==0.4.1 \
+    --hash=sha256:215ddc47a1f336efec813af7df7a11f56dbad120859dd236dce8513a0b81e090 \
+    --hash=sha256:cb76cd944daf94fa6ba1d3a4a99aa935dad9248a892e243fc160543c65f5a246
     # via
     #   -r private-mode.in
     #   tinfoil

@@ -242,6 +242,32 @@ class ReproducibleBuild(unittest.TestCase):
         self.assertIn("direct_url.json -delete", self.build)
 
 
+class PillowsFontsAreLeftOut(unittest.TestCase):
+    """Pillow's font module is the only thing that loads the Brotli it bundles (FreeType reads
+    WOFF2 with it), and Brotli 1.2.0 has CVE-2026-111497 (Oct 2026). The build leaves the module
+    and its libraries out, and stops if anything still needs them. That holds only while the
+    app draws no text with Pillow."""
+
+    def setUp(self):
+        self.build = (PACKAGING / "build.sh").read_text()
+
+    def test_the_font_module_and_its_libraries_are_left_out(self):
+        for part in ("PIL/_imagingft.*.so", "pillow.libs/libfreetype-*.so*",
+                     "pillow.libs/libharfbuzz-*.so*", "pillow.libs/libbrotli*.so*"):
+            self.assertIn(part, self.build)
+        self.assertIn("readelf -d", self.build)
+
+    def test_the_app_draws_no_text_with_pillow(self):
+        source = ROOT / "assistant"
+        for path in source.rglob("*.py"):
+            text = path.read_text()
+            for used in ("ImageFont", "_imagingft", ".text(", "truetype("):
+                if used == ".text(" and "ImageDraw" not in text:
+                    continue
+                self.assertNotIn(used, text, f"{path.relative_to(ROOT)} uses Pillow's fonts: "
+                                 "the AppImage leaves them out (packaging/appimage/build.sh)")
+
+
 class FallbacksFillOnlyGaps(unittest.TestCase):
     """bundle.fill_gaps adds a bundled typelib only where the host has none, and one
     whose libraries will not load not at all."""

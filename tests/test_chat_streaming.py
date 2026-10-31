@@ -10,7 +10,9 @@ This drives the real ChatWindow against a stubbed client and counts the .turn el
 the browser actually ends up with.
 """
 
+import json
 import os
+import queue
 import shutil
 import sys
 import tempfile
@@ -241,6 +243,350 @@ class StreamingDom(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ChunksOnRequest:
+    """Streams only what a test hands it, so a test can act between two chunks."""
+
+    def __init__(self):
+        self.chunks = queue.Queue()
+        self.calls = 0
+
+    def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
+               web_search=None, system=None):
+        self.calls += 1
+        sent = ""
+        while True:
+            chunk = self.chunks.get()
+            if chunk is None:
+                return sent
+            sent += chunk
+            on_delta(chunk, sent)
+
+
+LINES = "".join(f"line {i} of the answer\n\n" for i in range(60))
+MORE = "".join(f"and line {i} more\n\n" for i in range(20))
+
+
+class TheWebViewFollowsAnAnswerUntilTheReaderMoves(unittest.TestCase):
+    """Down with the answer by default; left alone once the reader scrolls up, until
+    they scroll back down to it or send something new."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not gtkcompat.has_webkit():
+            raise unittest.SkipTest("WebKit typelib unavailable")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        config = Config(os.path.join(self.dir, "c.json"))
+        config.api_key = "test"
+        self.client = ChunksOnRequest()
+        self.addCleanup(self.client.chunks.put, None)   # a worker still waiting ends
+        # Long enough to scroll before anything streams.
+        turns = [{"role": "user", "content": "p", "display": "Question?"},
+                 {"role": "assistant", "content": LINES}]
+        self.window = ChatWindow(StubApp(config, self.client), "Test", turns)
+        self.addCleanup(self.window.destroy)
+        self.window.set_default_size(600, 400)
+        self.assertTrue(self._wait(lambda: self.window._loaded))
+
+    def _wait(self, predicate, timeout=10):
+        done = {"ok": False}
+        deadline = GLib.get_monotonic_time() + timeout * 1000000
+
+        def poll():
+            if predicate() or GLib.get_monotonic_time() > deadline:
+                done["ok"] = bool(predicate())
+                Gtk.main_quit()
+                return False
+            return True
+
+        GLib.timeout_add(20, poll)
+        Gtk.main()
+        return done["ok"]
+
+    def _settle(self, ms=250):
+        """Let the page deliver its scroll events, as it does a frame or so later."""
+        GLib.timeout_add(ms, Gtk.main_quit)
+        Gtk.main()
+
+    def _page(self, script="void 0"):
+        """Run `script`, then (scrollY, how far from the end of the page that is)."""
+        got = {}
+
+        def finish(view, result):
+            got["v"] = json.loads(view.run_javascript_finish(result).get_js_value()
+                                  .to_string())
+            Gtk.main_quit()
+
+        self.window.webview.run_javascript(
+            f"{script};JSON.stringify([window.scrollY, "
+            "document.documentElement.scrollHeight-window.innerHeight-window.scrollY])",
+            None, finish)
+        Gtk.main()
+        return got["v"]
+
+    def _scroll_to(self, y):
+        """Where the reader's scrolling leaves the page, as far as the page can tell."""
+        self._page(f"window.scrollTo(0,{y})")
+        self._settle()
+
+    def _start(self):
+        self.window._start_stream()
+        self.assertTrue(self._wait(lambda: self.client.calls == 1 and self.window._loaded))
+        self._settle()
+
+    def _chunk(self, text):
+        """One more of the answer, on the page by the time this returns."""
+        before = self.window._streaming_text or ""
+        self.client.chunks.put(text)
+        self.assertTrue(self._wait(
+            lambda: (self.window._streaming_text or "") == before + text))
+        self._settle(150)
+
+    def _send(self, text):
+        self.window.entry.get_buffer().set_text(text)
+        self.window._send()
+        self.assertTrue(self._wait(lambda: self.window._loaded))
+        self._settle()
+
+    def _finish(self):
+        self.client.chunks.put(None)
+        self.assertTrue(self._wait(lambda: self.window._cancel is None))
+        self._settle()
+
+    def test_a_request_waiting_for_its_first_chunk_is_shown_at_the_end(self):
+        self._send("another question")
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_it_follows_an_answer_nobody_has_touched(self):
+        self._start()
+        for piece in (LINES, MORE):
+            self._chunk(piece)
+            self.assertLessEqual(self._page()[1], 1)
+        self._finish()
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_scrolling_up_stays_put_as_the_answer_grows(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._chunk(MORE)
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], 200)
+
+    def test_even_a_small_move_up_counts(self):
+        self._start()
+        self._chunk(LINES)
+        y = self._page()[0]
+        self._scroll_to(y - 10)
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], y - 10)
+
+    def test_a_wheel_up_counts_before_the_page_has_moved(self):
+        # The next chunk can land before the scroll event does: it must not undo the move.
+        self._start()
+        self._chunk(LINES)
+        y = self._page("window.dispatchEvent(new WheelEvent('wheel',{deltaY:-40}))")[0]
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], y)
+
+    def test_the_finished_answer_does_not_move_a_reader_who_went_up(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._finish()
+        self.assertEqual(self._page()[0], 200)
+
+    def test_scrolling_back_down_to_the_answer_follows_it_again(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._chunk(MORE)
+        self._scroll_to(10 ** 7)
+        for _ in range(2):
+            self._chunk(MORE)
+            self.assertLessEqual(self._page()[1], 1)
+        self._finish()
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_scrolling_down_short_of_the_answer_does_not(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._scroll_to(400)
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], 400)
+
+    def test_the_end_key_follows_a_fast_answer_it_would_otherwise_fall_short_of(self):
+        # It scrolls to where the end was when pressed, and takes a moment to get there.
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._page("window.dispatchEvent(new KeyboardEvent('keydown',{key:'End'}))")
+        self._scroll_to(400)
+        self._chunk(MORE)
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_going_up_again_after_coming_back_stays_put_again(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._scroll_to(10 ** 7)
+        self._chunk(MORE)
+        self._scroll_to(300)
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], 300)
+
+    def test_a_new_prompt_goes_back_to_following(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self._finish()
+        self.assertEqual(self._page()[0], 200)
+        self._send("and another")
+        self.assertLessEqual(self._page()[1], 1)
+        self.assertTrue(self._wait(lambda: self.client.calls == 2))
+        self._chunk(MORE)
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_a_redraw_of_every_turn_keeps_a_readers_place(self):
+        # A private conversation badges its question while the answer is streaming.
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self.window._render(full=True)
+        self._settle()
+        self.assertEqual(self._page()[0], 200)
+        self._chunk(MORE)
+        self.assertEqual(self._page()[0], 200)
+
+    def test_stop_keeps_a_readers_place(self):
+        self._start()
+        self._chunk(LINES)
+        self._scroll_to(200)
+        self.window._stop()
+        self._settle()
+        self.assertEqual(self._page()[0], 200)
+
+    def test_stop_leaves_a_follower_at_the_end(self):
+        self._start()
+        self._chunk(LINES)
+        self.window._stop()
+        self._settle()
+        self.assertLessEqual(self._page()[1], 1)
+
+    def test_a_crashed_page_comes_back_with_the_next_redraw(self):
+        # Redrawn in place, it would stay blank: there is no page left to draw on.
+        self.window.webview.terminate_web_process()
+        self.assertTrue(self._wait(lambda: not self.window._loaded))
+        self.window._render(full=True)
+        self.assertTrue(self._wait(lambda: self.window._loaded))
+        got = {}
+
+        def finish(view, result):
+            got["n"] = view.run_javascript_finish(result).get_js_value().to_int32()
+            Gtk.main_quit()
+
+        self.window.webview.run_javascript(
+            "document.querySelectorAll('.turn').length", None, finish)
+        Gtk.main()
+        self.assertEqual(got["n"], 2)
+
+    def test_a_redraw_with_nothing_streaming_does_not_scroll(self):
+        # A dictionary switched off, with the page read from its top.
+        self.assertEqual(self._page()[0], 0)
+        self.window._render(full=True)
+        self._settle()
+        self.assertEqual(self._page()[0], 0)
+
+
+class TheBubbleViewFollowsAnAnswerUntilTheReaderMoves(unittest.TestCase):
+    """The same promise from the view without WebKit."""
+
+    def setUp(self):
+        self.view = bubbles.BubbleView()
+        self.toplevel = Gtk.OffscreenWindow()
+        self.toplevel.set_default_size(500, 300)
+        self.toplevel.add(self.view)
+        self.toplevel.show_all()
+        self.addCleanup(self.toplevel.destroy)
+        self.text = LINES
+        self._show()
+
+    def _settle(self):
+        GLib.timeout_add(120, Gtk.main_quit)
+        Gtk.main()
+
+    def _show(self):
+        """A redraw, as ChatWindow._render does it: the turns, then keep to the end."""
+        self.view.set_turns([{"role": "assistant", "content": self.text,
+                              "_streaming": True}])
+        self._settle()
+        self.view.follow_end()
+        self._settle()
+
+    def _grow(self):
+        self.text += MORE
+        self._show()
+
+    def _value(self):
+        return self.view.get_vadjustment().get_value()
+
+    def _from_end(self):
+        adjustment = self.view.get_vadjustment()
+        return adjustment.get_upper() - adjustment.get_page_size() - adjustment.get_value()
+
+    def test_it_follows_an_answer_nobody_has_touched(self):
+        self._grow()
+        self.assertGreater(self._value(), 0)
+        self.assertLessEqual(self._from_end(), 1)
+
+    def test_scrolling_up_stays_put_as_the_answer_grows(self):
+        self.view.get_vadjustment().set_value(100)
+        self._grow()
+        self._grow()
+        self.assertEqual(self._value(), 100)
+
+    def test_even_a_small_move_up_counts(self):
+        adjustment = self.view.get_vadjustment()
+        at = adjustment.get_value() - 5
+        adjustment.set_value(at)
+        self._grow()
+        self.assertEqual(self._value(), at)
+
+    def test_scrolling_back_down_to_the_answer_follows_it_again(self):
+        self.view.get_vadjustment().set_value(100)
+        self._grow()
+        adjustment = self.view.get_vadjustment()
+        adjustment.set_value(adjustment.get_upper())
+        self._grow()
+        self.assertLessEqual(self._from_end(), 1)
+
+    def test_scrolling_down_short_of_the_answer_does_not(self):
+        adjustment = self.view.get_vadjustment()
+        adjustment.set_value(100)
+        adjustment.set_value(200)
+        self._grow()
+        self.assertEqual(self._value(), 200)
+
+    def test_an_answer_that_shrinks_does_not_look_like_the_reader_scrolling(self):
+        # Half-finished Markdown can draw taller than the finished thing: the view is
+        # pulled back as it gets shorter, and has to go on following regardless.
+        self._grow()
+        self.text = LINES
+        self._show()
+        self._grow()
+        self.assertLessEqual(self._from_end(), 1)
+
+    def test_a_new_prompt_goes_back_to_following(self):
+        self.view.get_vadjustment().set_value(100)
+        self._grow()
+        self.view.resume_following()
+        self._grow()
+        self.assertLessEqual(self._from_end(), 1)
 
 
 class OneRedrawWaitsAtATime(unittest.TestCase):

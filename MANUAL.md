@@ -42,7 +42,9 @@ answered by your answering model, privately in Privacy Mode. Its suggested key i
 
 Answers open in a chat window that streams as it generates, renders Markdown properly
 (tables, code blocks with syntax highlighting, URLs as links that open in your browser)
-and accepts follow-up questions. The header's buttons copy the whole conversation as
+and accepts follow-up questions. The window follows an answer down as it comes in; scroll
+up and it stays where you put it, until you scroll back down to the end or send something
+new. The header's buttons copy the whole conversation as
 Markdown, save it to a `.md` file, or clear it to start over (Ctrl+L) - keeping the
 window's model, its settings and any capture, with **Undo** beside Send for a few
 seconds after. **Ctrl+F** finds text in the conversation: every match is marked, Enter
@@ -903,7 +905,8 @@ to re-grab the screen.
 `tests/test_chat_streaming.py` drives the real chat window against a stubbed client and
 counts the elements in the live WebKit DOM. It guards the bug where a finished response
 appeared twice, because the streaming placeholder was left in the document instead of
-being replaced.
+being replaced. It also holds both views to following an answer only until the reader
+scrolls up from it.
 
 `tests/test_image_query_model.py` guards who answers a question about an image: the
 selected text model, given the image when it accepts images and the vision model's

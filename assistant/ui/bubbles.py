@@ -24,6 +24,10 @@ LABELS = {"user": "YOU", "assistant": "ASSISTANT", "lookup": "LOOK UP",
           "search": "ENCYCLOPEDIA", "article": "ENCYCLOPEDIA ARTICLE",
           "sources": "ENCYCLOPEDIA SOURCES"}
 
+# How close to the end counts as back at it: it keeps moving away from a reader
+# scrolling down to an answer still coming in. As FOLLOW_JS in chat.py.
+NEAR_END = 48
+
 
 class BubbleView(Gtk.ScrolledWindow):
     def __init__(self, on_link=None):
@@ -38,6 +42,9 @@ class BubbleView(Gtk.ScrolledWindow):
         self.box.set_margin_bottom(12)
         self.add(self.box)
         self._rows = []          # [{role, label, bubble, view, text}]
+        self._following = True   # keeping to the end as the transcript grows
+        self._position = 0.0
+        self.get_vadjustment().connect("value-changed", self._on_scrolled)
 
     # ---- building ---------------------------------------------------------
 
@@ -159,6 +166,29 @@ class BubbleView(Gtk.ScrolledWindow):
         self._drop_from(len(turns))
         self.box.show_all()
 
+    # ---- following --------------------------------------------------------
+
+    def _on_scrolled(self, adjustment):
+        """Going up ends following, however little; coming back down to the end starts
+        it again. A transcript that got shorter also pulls the view back, but only ever
+        to the very end, which is not the reader's doing."""
+        value = adjustment.get_value()
+        from_end = adjustment.get_upper() - adjustment.get_page_size() - value
+        if value < self._position and from_end > 1:
+            self._following = False
+        elif value > self._position and from_end <= NEAR_END:
+            self._following = True
+        self._position = value
+
+    def follow_end(self):
+        """To the end, unless the reader has gone up from it."""
+        adjustment = self.get_vadjustment()
+        if self._following and adjustment is not None:
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+    def resume_following(self):
+        self._following = True
+
     # ---- helpers ----------------------------------------------------------
 
     def scroll_to_turn(self, index):
@@ -169,11 +199,6 @@ class BubbleView(Gtk.ScrolledWindow):
         y = self._rows[index]["heading"].get_allocation().y
         adjustment.set_value(min(max(y, 0), adjustment.get_upper()
                                  - adjustment.get_page_size()))
-
-    def scroll_to_end(self):
-        adjustment = self.get_vadjustment()
-        if adjustment is not None:
-            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
 
     def text_views(self):
         """Each turn's text view, in order - what Ctrl+F searches."""

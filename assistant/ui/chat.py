@@ -79,6 +79,47 @@ document.addEventListener('click', function (e) {
 """
 
 
+# Whether the page keeps to its end as an answer comes in. Decided in the page, where
+# the scrolling happens: Python would hear of a move too late to stop the next chunk
+# undoing it. Going up ends it, however little; coming back down to the end, or a new
+# request (resumeFollowing), starts it again. NEAR_END is how close counts as back, as
+# the end keeps moving away from a reader scrolling down to it.
+FOLLOW_JS = """
+(function () {
+  var NEAR_END = 48;
+  var following = true, last = window.scrollY;
+  function nearEnd() {
+    return document.documentElement.scrollHeight - window.innerHeight -
+      window.scrollY <= NEAR_END;
+  }
+  function toEnd() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    last = window.scrollY;
+  }
+  window.addEventListener('scroll', function () {
+    var y = window.scrollY;
+    if (y < last) following = false;
+    else if (y > last && nearEnd()) following = true;
+    last = y;
+  }, { passive: true });
+  // A frame ahead of the scroll events these lead to, in which a chunk could land. End
+  // goes to where the end was when it was pressed, which a fast answer has left behind.
+  window.addEventListener('wheel', function (e) {
+    if (e.deltaY < 0 && window.scrollY > 0) following = false;
+    else if (e.deltaY > 0 && nearEnd()) following = true;
+  }, { passive: true });
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'End') following = true;
+    else if (window.scrollY > 0 && ['ArrowUp', 'PageUp', 'Home'].indexOf(e.key) >= 0) {
+      following = false;
+    }
+  });
+  window.followEnd = function () { if (following) toEnd(); };
+  window.resumeFollowing = function () { following = true; toEnd(); };
+})();
+"""
+
+
 def history_for(conversation):
     """The turns worth sending upstream, in the shape the API expects.
 
@@ -815,6 +856,10 @@ class ChatWindow(Gtk.Window):
             COPY_BUTTON_JS,
             WebKit2.UserContentInjectedFrames.TOP_FRAME,
             WebKit2.UserScriptInjectionTime.END, None, None))
+        manager.add_script(WebKit2.UserScript(
+            FOLLOW_JS,
+            WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.END, None, None))
         if self.screenshot:
             manager.register_script_message_handler("screenshot")
             manager.connect("script-message-received::screenshot",
@@ -827,6 +872,7 @@ class ChatWindow(Gtk.Window):
         self.webview = WebKit2.WebView(web_context=encscheme.context(),
                                        user_content_manager=manager)
         self.webview.connect("load-changed", self._on_load_changed)
+        self.webview.connect("web-process-terminated", self._on_web_process_gone)
         self.webview.connect("decide-policy", self._on_decide_policy)
         self.webview.connect("context-menu", lambda *a: False)
         settings = self.webview.get_settings()
@@ -927,6 +973,10 @@ class ChatWindow(Gtk.Window):
                 self.webview.run_javascript(script, None, None, None)
             self._pending_js.clear()
 
+    def _on_web_process_gone(self, _view, _reason):
+        # The page went with it, and a redraw in place needs one: the next loads it anew.
+        self._loaded = False
+
     def _on_decide_policy(self, _view, decision, decision_type):
         # Open real links in the user's browser; never navigate the chat view away. A
         # dictionary's cross-reference looks its word up here instead.
@@ -993,7 +1043,10 @@ class ChatWindow(Gtk.Window):
                                        links=turn.get("links"),
                                        attachments=turn.get("attachments"))
 
-    def _render(self, full=False):
+    def _render(self, full=False, new_page=False):
+        """Draw the transcript. By default only the final turn, as streaming wants;
+        `full`, every turn, on the page already there so the reader's place holds;
+        `new_page`, a different page altogether, from its top."""
         if self._destroyed:
             return                      # the view is gone; see _on_destroy
         turns = self._turns()
@@ -1002,14 +1055,25 @@ class ChatWindow(Gtk.Window):
             # Same text the WebKit view shows, including `display` rather than the
             # prompt in `content`: the instructions sent with a turn are not something
             # the reader asked to see, and for OCR they are most of the message.
+            if new_page:
+                self.bubbles.resume_following()
             self.bubbles.set_turns(turns)
             GLib.idle_add(self._scroll_text_to_end)     # after the new rows are sized
             return
 
-        if full or not self._loaded:
+        if new_page or not self._loaded:
             body = self._screenshot_html + "".join(self._turn_html(t) for t in turns)
             self._loaded = False
             self.webview.load_html(markdown_html.document(body, self.dark), None)
+            return
+
+        if full:
+            html = "".join(self._turn_html(t) for t in turns)
+            self._js(
+                "document.querySelectorAll('.turn').forEach(function(t){t.remove();});"
+                "document.getElementById('end').insertAdjacentHTML('beforebegin',"
+                f"{json.dumps(html)});"
+                + ("window.followEnd();" if self._streaming_text is not None else ""))
             return
 
         # Incremental: replace only the final turn, so streaming does not reflow the
@@ -1025,10 +1089,10 @@ class ChatWindow(Gtk.Window):
             "else{var e=document.getElementById('end');"
             "if(e){e.insertAdjacentHTML('beforebegin',h);}"
             "else{document.body.insertAdjacentHTML('beforeend',h);}}"
-            "window.scrollTo(0,document.body.scrollHeight);})();")
+            "window.followEnd();})();")
 
     def _scroll_text_to_end(self):
-        self.bubbles.scroll_to_end()
+        self.bubbles.follow_end()
         return False                                    # one-shot idle callback
 
     def _scroll_text_to_turn(self, index):
@@ -1044,7 +1108,8 @@ class ChatWindow(Gtk.Window):
         it. Appending instead leaves the placeholder in place and the response appears
         twice, which is what happened before replace_placeholder existed.
 
-        `scroll`: "end" follows the conversation down, as an answer wants; "start" puts
+        `scroll`: "end" follows the conversation down, as an answer wants, unless the
+        reader has scrolled up from it (see FOLLOW_JS); "start" puts
         the new turn's top at the top of the view, as reference material wants - a
         lookup's first dictionary is the one the user ranked first, and was scrolled
         past to the last; None leaves the view where it is.
@@ -1078,14 +1143,14 @@ class ChatWindow(Gtk.Window):
                 f"var h={json.dumps(html)};"
                 "if(t.length){t[t.length-1].outerHTML=h;}"
                 "else{document.body.insertAdjacentHTML('beforeend',h);}"
-                "window.scrollTo(0,document.body.scrollHeight);})();")
+                "window.followEnd();})();")
             return
         self._js(
             "(function(){var h=" + json.dumps(html) + ";"
             "var e=document.getElementById('end');"
             "if(e){e.insertAdjacentHTML('beforebegin',h);}"
             "else{document.body.insertAdjacentHTML('beforeend',h);}"
-            "window.scrollTo(0,document.body.scrollHeight);})();")
+            "window.followEnd();})();")
 
     # ---- sending ----------------------------------------------------------
 
@@ -1298,9 +1363,18 @@ class ChatWindow(Gtk.Window):
         self._render(full=True)
         self._start_stream()
 
+    def _resume_following(self):
+        """A new request: back to the end, wherever the reader had gone, and down with
+        the answer as it comes."""
+        if self.webview is None:
+            self.bubbles.resume_following()     # the redraw that follows goes there
+        else:
+            self._js("window.resumeFollowing();")
+
     def _start_stream(self):
         import threading
 
+        self._resume_following()
         preflight = self._preflight
         self._preflight = None      # first request only; follow-ups are plain text turns
         first = self._first_request
@@ -1578,7 +1652,7 @@ class ChatWindow(Gtk.Window):
             self.conversation = [turn]
             self._pages.append(self.conversation)
             self._page = len(self._pages) - 1
-            self._render(full=True)
+            self._render(new_page=True)
         self._sync_pages()
         if found["results"]:
             self.status.set_text(f"Found in {len(found['results'])} of "
@@ -1604,7 +1678,7 @@ class ChatWindow(Gtk.Window):
         if words:
             self.lookup_entry.set_text(words[-1])
         self.status.set_text("")
-        self._render(full=True)
+        self._render(new_page=True)
         self._sync_pages()
 
     def _sync_pages(self):
@@ -1679,7 +1753,7 @@ class ChatWindow(Gtk.Window):
         # A reading of the capture that was in the history now has to ride with the
         # instructions instead, for the next question about the image.
         self._reading_in_history = False
-        self._render(full=True)
+        self._render(new_page=True)
         self._sync_pages()
         self.status.set_text("Cleared")
         self.undo_button.show()
@@ -1695,7 +1769,7 @@ class ChatWindow(Gtk.Window):
         self._cancel_undo_timer()
         self.undo_button.hide()
         self.status.set_text("")
-        self._render(full=True)
+        self._render(new_page=True)
         self._sync_pages()
 
     def _expire_undo(self):

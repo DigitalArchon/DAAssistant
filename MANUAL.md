@@ -50,6 +50,8 @@ window's model, its settings and any capture, with **Undo** beside Send for a fe
 seconds after. **Ctrl+F** finds text in the conversation: every match is marked, Enter
 or F3 goes to the next and Shift+Enter to the one before, Escape closes it. In Search
 Encyclopedia it searches the article when that is where you were reading.
+Drag the bar above the message box to give it more room or less; the height you leave it
+at is kept for the next window.
 A conversation about a screen region shows the
 capture above it, as you took it, to view full size or save as a PNG; saved as Markdown,
 the capture is written beside the `.md` under the same name and linked from it. Until you

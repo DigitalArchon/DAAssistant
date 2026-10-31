@@ -40,6 +40,13 @@ REFERENCE_ROLES = ("lookup", "sources")
 # How long Clear can be undone for.
 UNDO_SECONDS = 8
 
+# The bar between the answers and the message box: what the answers keep however far it
+# is dragged, and the most of a new window a height remembered from a bigger one can
+# take. How long it rests before the height is saved, as a drag moves it many times.
+MIN_ANSWERS_HEIGHT = 60
+MOST_OF_WINDOW_FOR_PROMPT = 0.7
+PROMPT_HEIGHT_SAVE_MS = 400
+
 COPY_BUTTON_JS = """
 (function () {
   function decorate() {
@@ -404,10 +411,7 @@ class ChatWindow(Gtk.Window):
             box.pack_start(self._build_dictionary_bar(dictionary_list()), False, False, 0)
 
         self.view = self._build_view()
-        box.pack_start(self.view, True, True, 0)
-
-        box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
-        box.pack_start(self._build_input(), False, False, 0)
+        box.pack_start(self._build_splitter(self.view, self._build_input()), True, True, 0)
         # Ctrl+F's bar, over the whole window: what it searches is whichever view the
         # user was in (see _find_target).
         self.find_bar = find.FindBar(on_close=lambda: self.entry.grab_focus())
@@ -886,6 +890,60 @@ class ChatWindow(Gtk.Window):
         scrolled.add(self.webview)
         return scrolled
 
+    def _build_splitter(self, view, prompt):
+        """The answers above the message box, with a bar between them to drag. Resizing
+        the window goes to the answers, and the message box keeps its height - in the
+        next window too."""
+        view.set_size_request(-1, MIN_ANSWERS_HEIGHT)
+        self.prompt_box = prompt
+        self.splitter = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL, wide_handle=True)
+        self.splitter.get_style_context().add_class("chat-splitter")
+        self.splitter.pack1(view, True, False)
+        self.splitter.pack2(prompt, False, False)
+        self._prompt_height_timer = None
+        self.splitter.connect("size-allocate", self._on_splitter_sized)
+        return self.splitter
+
+    def _on_splitter_sized(self, splitter, allocation):
+        """Once there is a size to work from: the height remembered, within reason."""
+        if allocation.height <= 1:
+            return
+        splitter.disconnect_by_func(self._on_splitter_sized)
+        wanted = self.config.chat_prompt_height
+        if wanted:
+            prompt = self.prompt_box.get_allocated_height()
+            room = splitter.get_position() + prompt
+            splitter.set_position(room - min(wanted, int(room * MOST_OF_WINDOW_FOR_PROMPT)))
+        GLib.idle_add(self._watch_splitter)     # once that has been laid out
+
+    def _watch_splitter(self):
+        if not self._destroyed:
+            self._splitter_height = self.splitter.get_allocated_height()
+            self._prompt_height = self.prompt_box.get_allocated_height()
+            self.splitter.connect("notify::position", self._on_splitter_moved)
+        return False
+
+    def _on_splitter_moved(self, splitter, _param):
+        height = splitter.get_allocated_height()
+        if height != self._splitter_height:
+            self._splitter_height = height      # the window resized, not the bar dragged
+            return
+        if self._prompt_height_timer is not None:
+            GLib.source_remove(self._prompt_height_timer)
+        self._prompt_height_timer = GLib.timeout_add(PROMPT_HEIGHT_SAVE_MS,
+                                                     self._save_prompt_height)
+
+    def _save_prompt_height(self):
+        self._prompt_height_timer = None
+        height = self.prompt_box.get_allocated_height()
+        if height != self._prompt_height:
+            self._prompt_height = self.config.chat_prompt_height = height
+            try:
+                self.config.save()
+            except OSError as e:
+                self.app.notify(f"Could not save settings: {e}", urgency="normal")
+        return False
+
     def _build_input(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         box.set_margin_start(12)
@@ -916,7 +974,7 @@ class ChatWindow(Gtk.Window):
         self.entry.drag_dest_add_uri_targets()
         self.entry.connect("drag-data-received", self._on_entry_drop)
         frame.add(self.entry)
-        box.pack_start(frame, False, False, 0)
+        box.pack_start(frame, True, True, 0)        # all the room the bar above gives it
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         attach = Gtk.Button.new_from_icon_name("mail-attachment-symbolic",
@@ -2096,6 +2154,9 @@ class ChatWindow(Gtk.Window):
 
     def _on_destroy(self, _widget):
         self._cancel_undo_timer()
+        if self._prompt_height_timer is not None:
+            GLib.source_remove(self._prompt_height_timer)
+            self._save_prompt_height()          # dragged, and closed straight after
         # Reaching here at all means the view did not end the process, whether or not
         # the page ever finished loading. A window closed early must not count against
         # WebKit - see webkitguard.

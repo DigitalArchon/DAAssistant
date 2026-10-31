@@ -32,6 +32,16 @@
   border-radius: 8px;
 }
 
+/* The bar between the answers and the message box: see ChatWindow._build_splitter. */
+.chat-splitter > separator {
+  min-height: 7px;
+  background-color: alpha(@borders, 0.55);
+}
+
+.chat-splitter > separator:hover {
+  background-color: @theme_selected_bg_color;
+}
+
 .toolbar-hint {
   font-size: 11px;
   opacity: 0.6;

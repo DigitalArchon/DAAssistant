@@ -858,6 +858,39 @@ class SearchWindow(EncyclopediaWindowCase):
         finally:
             window.destroy()
 
+    def _pump(self, ms=700):
+        GLib.timeout_add(ms, Gtk.main_quit)
+        Gtk.main()
+
+    def test_the_bar_above_the_question_box_works_inside_the_reader(self):
+        window = self._window(target=("article", 1))
+        try:
+            self._pump()
+            shown = window.prompt_box.get_allocated_height()
+            window.splitter.set_position(window.splitter.get_position() - 40)
+            self._pump()
+            self.assertEqual(window.prompt_box.get_allocated_height(), shown + 40)
+            self.assertEqual(self.app.config.chat_prompt_height, shown + 40)
+        finally:
+            window.destroy()
+
+    def test_hiding_the_answers_does_not_change_the_height_remembered(self):
+        # With the answers hidden the question box has the whole pane, and is taller for
+        # it: that is not the reader having dragged the bar.
+        self.app.config.chat_prompt_height = 130
+        window = self._window(target=("article", 1))
+        try:
+            self._pump()
+            window.answers_toggle.set_active(True)
+            self._pump()
+            self.assertEqual(self.app.config.chat_prompt_height, 130)
+            window.answers_toggle.set_active(False)
+            self._pump()
+            self.assertEqual(self.app.config.chat_prompt_height, 130)
+            self.assertGreaterEqual(window.view.get_allocated_height(), 60)
+        finally:
+            window.destroy()
+
 
 class AskWindow(EncyclopediaWindowCase):
     def _window(self, **kwargs):

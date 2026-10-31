@@ -122,6 +122,9 @@ DEFAULTS = {
     # encyclopedia is preferred, and who the answer is written for.
     "encyclopedia_strict": True,
     "encyclopedia_audience": "adult",
+    # How tall the chat window's message box was last dragged, in pixels; 0 until it has
+    # been. See ChatWindow._build_splitter.
+    "chat_prompt_height": 0,
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.

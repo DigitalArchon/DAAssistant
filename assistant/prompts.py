@@ -356,3 +356,11 @@ ASK_ENCYCLOPEDIA_NOTHING_LABELLED = (
     "sentence. You may then answer from your own knowledge, but only under a heading "
     "\"Not from the encyclopedia\"."
 )
+
+
+def custom_action(prompt, text):
+    """One of the user's own actions (Settings > Actions) applied to `text`: where the
+    prompt says {text}, the text goes there; anywhere else, after it."""
+    if "{text}" in prompt:
+        return prompt.replace("{text}", text)
+    return f"{prompt}\n\n---\n\n{text}"

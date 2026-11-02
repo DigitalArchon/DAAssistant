@@ -47,12 +47,21 @@ ACTIONS = [
     ("ask_encyclopedia", "Ask Encyclopedia", "<Control><Shift>8"),
 ]
 
+# The user's own actions (Settings > Actions, config.custom_actions): a prompt applied
+# to the clipboard, the highlighted text or a screen region. Six fixed slots, so that
+# every place an action is known by name - X11 grabs, the portal's shortcut ids, the
+# desktop's keybindings, --action - knows these too, and an action keeps its slot,
+# and its key, when another is taken out. A slot is offered only once it is defined.
+CUSTOM_SLOTS = 6
+CUSTOM_ACTIONS = tuple(f"custom_{n}" for n in range(1, CUSTOM_SLOTS + 1))
+ACTIONS += [(name, f"Your action {n}", None) for n, name in enumerate(CUSTOM_ACTIONS, 1)]
+
 # Only for those with the encyclopedia DVD: see config.encyclopedia_enabled.
 ENCYCLOPEDIA_ACTIONS = ("search_encyclopedia", "ask_encyclopedia")
 
 # What versions before Settings > Shortcuts bound, which an existing install keeps.
 LEGACY_KEYS = {name: key for name, _, key in ACTIONS
-               if name not in ("ask_anything", "translate_selection")}
+               if key and name not in ("ask_anything", "translate_selection")}
 
 LABELS = {name: label for name, label, _ in ACTIONS}
 
@@ -64,11 +73,38 @@ def action_names():
     return [name for name, _, _ in ACTIONS]
 
 
+def custom_defined(config):
+    """{slot's action name: the action} for each of the user's own actions that has a
+    name and a prompt."""
+    found = {}
+    for action in getattr(config, "custom_actions", None) or []:
+        if not isinstance(action, dict):
+            continue
+        slot = action.get("slot")
+        if isinstance(slot, int) and 1 <= slot <= CUSTOM_SLOTS \
+                and str(action.get("name") or "").strip() \
+                and str(action.get("prompt") or "").strip():
+            found[f"custom_{slot}"] = action
+    return found
+
+
+def labels(config):
+    """LABELS, with each of the user's own actions under its own name."""
+    out = dict(LABELS)
+    for name, action in custom_defined(config).items():
+        out[name] = str(action["name"]).strip()
+    return out
+
+
 def enabled_actions(config):
     """ACTIONS less the encyclopedia's while it is turned off, so that its keys are not
-    taken from other programs by someone without the DVD."""
+    taken from other programs by someone without the DVD - and less the slots for the
+    user's own actions that hold none, the rest under their own names."""
     on = bool(getattr(config, "encyclopedia_enabled", False))
-    return [action for action in ACTIONS if on or action[0] not in ENCYCLOPEDIA_ACTIONS]
+    named, defined = labels(config), custom_defined(config)
+    return [(name, named[name], key) for name, _label, key in ACTIONS
+            if (on or name not in ENCYCLOPEDIA_ACTIONS)
+            and (name not in CUSTOM_ACTIONS or name in defined)]
 
 
 def bindings(config):
@@ -281,10 +317,13 @@ class PortalHotkeys:
     # at a path it is still holding the first one on.
     _sessions = 0
 
-    def __init__(self, dispatch, wanted, on_change=None):
+    def __init__(self, dispatch, wanted, on_change=None, labels=None):
         self.dispatch = dispatch
         self.wanted = dict(wanted)
         self.on_change = on_change or (lambda: None)
+        # What the desktop's own shortcut settings call each: the user's own actions
+        # under their own names.
+        self.labels = labels or LABELS
         self.triggers = {}                  # action -> the desktop's description
         self.failed = {}
         self.bus = None
@@ -383,7 +422,7 @@ class PortalHotkeys:
 
     def _bind(self):
         from gi.repository import Gio
-        listed = [(name, {"description": GLib.Variant("s", label),
+        listed = [(name, {"description": GLib.Variant("s", self.labels.get(name, label)),
                           "preferred_trigger": GLib.Variant(
                               "s", shortcuts.portal_trigger(self.wanted[name]))})
                   for name, label, _ in ACTIONS if name in self.wanted]
@@ -569,7 +608,7 @@ class HotkeyManager:
         elif self.mode == "portal" and self.wanted:
             try:
                 self.impl = PortalHotkeys(self._activated, self.wanted,
-                                          self._portal_changed)
+                                          self._portal_changed, labels(self.config))
                 self.impl.start()
             except Exception as e:
                 self.impl = None
@@ -613,7 +652,7 @@ class HotkeyManager:
         if (getattr(self.config, "hotkeys_installed", None) or {}) == record:
             return
         try:
-            keybindings.writer(desktop, self.run).apply(self.wanted, LABELS,
+            keybindings.writer(desktop, self.run).apply(self.wanted, labels(self.config),
                                                         action_names())
         except (OSError, ValueError) as e:
             self.error = str(e)

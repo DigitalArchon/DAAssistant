@@ -133,6 +133,9 @@ DEFAULTS = {
     # The size of a conversation's text, as Ctrl+plus, Ctrl+minus and Ctrl+0 last left
     # it: 1.0 is the theme's own. Kept for the next window.
     "chat_zoom": 1.0,
+    # The user's own actions, Settings > Actions: [{"slot": 1-6, "name", "prompt",
+    # "source": "clipboard" | "selection" | "region"}]. See hotkeys.CUSTOM_ACTIONS.
+    "custom_actions": [],
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.

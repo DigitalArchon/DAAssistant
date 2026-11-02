@@ -70,7 +70,7 @@ class CaptureDialogStub:
     plans = []
 
     def __init__(self, image, title, config, on_confirm, ask_prompt=False,
-                 on_recrop=None, web_search_default=None, privacy=None, plan=None):
+                 on_recrop=None, web_search_default=None, privacy=None, plan=None, **_kwargs):
         CaptureDialogStub.plans.append(plan)
         on_confirm(image, "IMAGEDATA", {}, self.prompt, self.web_search)
 
@@ -111,7 +111,7 @@ class StubAssistant:
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
                        transcribe_first=False, system=None, answer_by_text=False,
-                       image=None):
+                       image=None, **_kwargs):
         self.started = {"title": title, "ask_prompt": ask_prompt, "build": build,
                         "web_search_default": web_search_default,
                         "transcribe_first": transcribe_first,

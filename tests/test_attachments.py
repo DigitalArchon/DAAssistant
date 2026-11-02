@@ -502,7 +502,8 @@ class AskAnything(unittest.TestCase):
                               "config": Config(os.path.join(self.dir, "c.json")),
                               "_on_premium_toggled": lambda *a: None,
                               "_on_privacy_toggled": lambda *a: None,
-                              "_sync_encyclopedia_items": lambda self: None})()
+                              "_sync_encyclopedia_items": lambda self: None,
+                              "_sync_custom_items": lambda self: None})()
         menu = Assistant._build_menu(stub)
         first = menu.get_children()[0]
         self.assertEqual(first.get_label(), "Ask anything")

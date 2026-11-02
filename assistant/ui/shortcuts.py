@@ -179,7 +179,12 @@ class ShortcutsPage(Gtk.Box):
         grid = Gtk.Grid(row_spacing=6, column_spacing=10)
         self.pack_start(grid, False, False, 0)
         encyclopedia = bool(getattr(config, "encyclopedia_enabled", False))
-        for row, (name, label, _suggested) in enumerate(hotkeys.ACTIONS):
+        # The user's own actions only once they are defined, under their own names: a
+        # new one gets its row when Settings is opened again after saving it.
+        named, defined = hotkeys.labels(config), hotkeys.custom_defined(config)
+        shown = [(name, named[name], key) for name, _label, key in hotkeys.ACTIONS
+                 if name not in hotkeys.CUSTOM_ACTIONS or name in defined]
+        for row, (name, label, _suggested) in enumerate(shown):
             title = Gtk.Label(label=label, xalign=0)
             grid.attach(title, 0, row, 1, 1)
             button = ShortcutButton(self.staged[name],
@@ -210,7 +215,8 @@ class ShortcutsPage(Gtk.Box):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         suggested = Gtk.Button.new_with_label("Use suggested keys")
         suggested.set_tooltip_text(", ".join(
-            f"{label}: {shortcuts.label(key)}" for _n, label, key in hotkeys.ACTIONS))
+            f"{label}: {shortcuts.label(key)}" for _n, label, key in hotkeys.ACTIONS
+            if key))
         suggested.connect("clicked", lambda _w: self.use_suggested())
         row.pack_start(suggested, False, False, 0)
         clear_all = Gtk.Button.new_with_label("Clear all")
@@ -289,20 +295,23 @@ class ShortcutsPage(Gtk.Box):
             if accel and other != name and key == accel:
                 self._set(other, "")
                 self.notes[other].set_text(
-                    f"{shortcuts.label(accel)} went to {hotkeys.LABELS[name]}")
+                    f"{shortcuts.label(accel)} went to "
+                    f"{hotkeys.labels(self.config).get(name, name)}")
         self.staged[name] = accel
         self.notes[name].set_text("")
         self._sync_commands()
 
     def _set(self, name, accel):
         self.staged[name] = accel
-        self.buttons[name].set_accel(accel)
-        self.notes[name].set_text("")
+        if name in self.buttons:
+            self.buttons[name].set_accel(accel)
+            self.notes[name].set_text("")
         self._sync_commands()
 
     def use_suggested(self):
         for name, _label, key in hotkeys.ACTIONS:
-            self._set(name, key)
+            if key:
+                self._set(name, key)
 
     def clear_all(self):
         for name in self.staged:
@@ -310,9 +319,12 @@ class ShortcutsPage(Gtk.Box):
 
     def command_text(self):
         lines = []
-        for name, label, _ in hotkeys.ACTIONS:
+        named = hotkeys.labels(self.config)
+        for name, _label, _ in hotkeys.ACTIONS:
+            label = named.get(name, name)
             key = self.staged.get(name)
-            if key:
+            if key and (name not in hotkeys.CUSTOM_ACTIONS
+                        or name in hotkeys.custom_defined(self.config)):
                 lines.append(f"{shortcuts.label(key):<16} {keybindings.command(name)}"
                              f"    # {label}")
         return "\n".join(lines) or "(no shortcuts chosen)"

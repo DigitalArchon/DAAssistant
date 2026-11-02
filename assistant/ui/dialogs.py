@@ -118,6 +118,36 @@ class ReviewRoute:
     not able to be honoured - and holds Send until that changes.
     """
 
+    # Offered in "Translate into", the default language first; any other can be typed.
+    LANGUAGES = ("English", "Chinese (Simplified)", "Chinese (Traditional)", "Spanish",
+                 "French", "German", "Japanese", "Korean", "Portuguese", "Russian",
+                 "Italian", "Arabic", "Hindi", "Dutch", "Polish", "Turkish", "Ukrainian",
+                 "Vietnamese", "Indonesian", "Thai", "Greek", "Hebrew", "Swedish", "Czech")
+
+    def _language_box(self, language):
+        """"Translate into", for this request alone: the setting is where it starts,
+        and is not changed by it."""
+        self._default_language = self._chosen_language = language
+        self.language_combo = combo = Gtk.ComboBoxText.new_with_entry()
+        for name in (language,) + tuple(n for n in self.LANGUAGES if n != language):
+            combo.append_text(name)
+        combo.set_active(0)
+        # Kept as it changes: Send destroys the dialog before the request is made.
+        combo.get_child().connect("changed", lambda entry: setattr(
+            self, "_chosen_language", entry.get_text().strip()))
+        combo.get_child().set_width_chars(16)
+        combo.set_tooltip_text("The language to translate into, for this request: your "
+                               "default is set in Settings > General")
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        box.pack_start(Gtk.Label(label="Translate into"), False, False, 0)
+        box.pack_start(combo, False, False, 0)
+        return box
+
+    def target_language(self):
+        """The language chosen for this request, or the default."""
+        return (getattr(self, "_chosen_language", None)
+                or getattr(self, "_default_language", None))
+
     def _build_route(self, header, config, web_search_default):
         self.header = header
         self.config = config
@@ -203,7 +233,8 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
 
     def __init__(self, image, operation, config, on_confirm,
                  ask_prompt=False, on_recrop=None, prompt_label="Your question",
-                 web_search_default=None, privacy=None, plan=None):
+                 web_search_default=None, privacy=None, plan=None, language=None,
+                 prompt_default=None):
         """`plan` is [(model, what it does)], in order (Assistant._capture_plan), so the
         models are known before anything goes; set_route keeps it current."""
         super().__init__(title=operation)
@@ -271,6 +302,8 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
         meta.get_style_context().add_class("capture-meta")
         meta_row.pack_start(meta, False, False, 0)
         meta_row.pack_start(Gtk.Box(), True, True, 0)
+        if language:
+            meta_row.pack_start(self._language_box(language), False, False, 0)
         meta_row.pack_start(self.search_check, False, False, 0)
         box.pack_start(meta_row, False, False, 0)
         box.pack_start(self.plan, False, False, 0)
@@ -292,6 +325,9 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
             self.prompt_view.set_margin_top(6)
             self.prompt_view.set_margin_bottom(6)
             self.prompt_view.connect("key-press-event", self._on_key)
+            if prompt_default:
+                # One of the user's own actions: its prompt, ready to send or change.
+                self.prompt_view.get_buffer().set_text(prompt_default)
             frame.add(self.prompt_view)
             box.pack_start(frame, False, False, 0)
 
@@ -378,7 +414,7 @@ class TextReviewDialog(ReviewRoute, Gtk.Window):
 
     def __init__(self, text, operation, on_confirm, ask_prompt=False,
                  prompt_label="Your question", config=None, web_search_default=None,
-                 privacy=None, plan=None):
+                 privacy=None, plan=None, language=None):
         super().__init__(title=operation)
         self.on_confirm = on_confirm
         self._done = False
@@ -426,6 +462,8 @@ class TextReviewDialog(ReviewRoute, Gtk.Window):
         counter.get_style_context().add_class("capture-meta")
         meta_row.pack_start(counter, False, False, 0)
         meta_row.pack_start(Gtk.Box(), True, True, 0)
+        if language:
+            meta_row.pack_start(self._language_box(language), False, False, 0)
         meta_row.pack_start(self.search_check, False, False, 0)
         box.pack_start(meta_row, False, False, 0)
         box.pack_start(self.plan, False, False, 0)
@@ -560,6 +598,7 @@ class SettingsDialog(Gtk.Dialog):
         notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
         notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
         from .shortcuts import ShortcutsPage
+        notebook.append_page(self._build_actions(), Gtk.Label(label="Actions"))
         self.shortcuts_page = ShortcutsPage(config, hotkeys)
         notebook.append_page(self.shortcuts_page, Gtk.Label(label="Shortcuts"))
         notebook.append_page(self._build_advanced(), Gtk.Label(label="Advanced"))
@@ -754,6 +793,134 @@ class SettingsDialog(Gtk.Dialog):
                 combo.set_active_id(source)
 
     # ---- privacy ----------------------------------------------------------
+
+    # ---- Actions: the user's own ------------------------------------------------
+
+    ACTION_SOURCES = (("clipboard", "Clipboard text"), ("selection", "Highlighted text"),
+                      ("region", "A screen region"))
+    EXAMPLE_ACTIONS = (
+        ("Summarise", "Summarise this in a few sentences.", "clipboard"),
+        ("Proofread", "Proofread this. Give the corrected text first, in its own "
+                      "language, then a short list of what you changed and why.",
+         "clipboard"),
+        ("Explain this screen", "Explain what this shows, and what I can do about "
+                                "anything on it that has gone wrong.", "region"),
+    )
+
+    def _build_actions(self):
+        page = self._page()
+        intro = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        intro.set_markup(
+            "<small>Your own actions: a prompt of yours, applied to the clipboard text, "
+            "the text you have highlighted, or a screen region, from the tray menu or a "
+            "shortcut of its own - in Settings &gt; Shortcuts once the action is saved. "
+            "In the prompt, <tt>{text}</tt> stands for the text; without it, the text "
+            "goes after the prompt. A screen region is reviewed with the prompt as its "
+            "question, to send or change. Answers come from your answering model, "
+            "privately in Privacy Mode.</small>")
+        intro.get_style_context().add_class("dim-label")
+        page.pack_start(intro, False, False, 0)
+        self.action_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page.pack_start(self.action_list, False, False, 0)
+        self._action_rows = []
+        for action in sorted((a for a in getattr(self.config, "custom_actions", None) or []
+                              if isinstance(a, dict) and isinstance(a.get("slot"), int)),
+                             key=lambda a: a["slot"]):
+            self._add_action_row(action)
+        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.add_action_button = Gtk.Button.new_with_label("Add an action")
+        self.add_action_button.connect("clicked", lambda _w: self._add_action_row())
+        buttons.pack_start(self.add_action_button, False, False, 0)
+        self.example_actions_button = Gtk.Button.new_with_label("Add the examples")
+        self.example_actions_button.set_tooltip_text(
+            "Summarise, Proofread and Explain this screen, to start from")
+        self.example_actions_button.connect("clicked", lambda _w: self._add_examples())
+        buttons.pack_start(self.example_actions_button, False, False, 0)
+        page.pack_start(buttons, False, False, 0)
+        self._sync_action_buttons()
+        return page
+
+    def _free_action_slot(self):
+        from ..hotkeys import CUSTOM_SLOTS
+        used = {row["slot"] for row in self._action_rows}
+        return next((n for n in range(1, CUSTOM_SLOTS + 1) if n not in used), None)
+
+    def _add_action_row(self, action=None):
+        slot = action["slot"] if action else self._free_action_slot()
+        if slot is None:
+            return None
+        action = action or {}
+        frame = Gtk.Frame()
+        grid = Gtk.Grid(row_spacing=6, column_spacing=10)
+        for side in ("start", "end", "top", "bottom"):
+            getattr(grid, f"set_margin_{side}")(8)
+        frame.add(grid)
+        name = Gtk.Entry(hexpand=True)
+        name.set_placeholder_text("Its name, as the tray menu shows it")
+        name.set_text(str(action.get("name") or ""))
+        source = Gtk.ComboBoxText()
+        for source_id, label in self.ACTION_SOURCES:
+            source.append(source_id, label)
+        source.set_active_id(action.get("source") or "clipboard")
+        prompt = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD)
+        prompt.get_buffer().set_text(str(action.get("prompt") or ""))
+        scroller = Gtk.ScrolledWindow(hexpand=True)
+        scroller.set_min_content_height(64)
+        scroller.set_shadow_type(Gtk.ShadowType.IN)
+        scroller.add(prompt)
+        remove = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+        remove.set_tooltip_text("Take this action out")
+        row = {"slot": slot, "frame": frame, "name": name, "source": source,
+               "prompt": prompt}
+        remove.connect("clicked", lambda _w: self._remove_action_row(row))
+        grid.attach(self._label("Name"), 0, 0, 1, 1)
+        grid.attach(name, 1, 0, 1, 1)
+        grid.attach(remove, 2, 0, 1, 1)
+        grid.attach(self._label("Works on"), 0, 1, 1, 1)
+        grid.attach(source, 1, 1, 1, 1)
+        grid.attach(self._label("Prompt"), 0, 2, 1, 1)
+        grid.attach(scroller, 1, 2, 2, 1)
+        self._action_rows.append(row)
+        self.action_list.pack_start(frame, False, False, 0)
+        frame.show_all()
+        self._sync_action_buttons()
+        return row
+
+    def _remove_action_row(self, row):
+        self._action_rows.remove(row)
+        row["frame"].destroy()
+        self._sync_action_buttons()
+
+    def _add_examples(self):
+        have = {row["name"].get_text().strip().lower() for row in self._action_rows}
+        for name, prompt, source in self.EXAMPLE_ACTIONS:
+            if name.lower() in have:
+                continue
+            slot = self._free_action_slot()
+            if slot is None:
+                break
+            self._add_action_row({"slot": slot, "name": name, "prompt": prompt,
+                                  "source": source})
+
+    def _sync_action_buttons(self):
+        if not hasattr(self, "add_action_button"):
+            return
+        room = self._free_action_slot() is not None
+        self.add_action_button.set_sensitive(room)
+        self.example_actions_button.set_sensitive(room)
+
+    def _actions_value(self):
+        """The actions as typed: those with a name and a prompt, by slot."""
+        out = []
+        for row in sorted(getattr(self, "_action_rows", []), key=lambda r: r["slot"]):
+            buffer = row["prompt"].get_buffer()
+            prompt = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(),
+                                     False).strip()
+            name = row["name"].get_text().strip()
+            if name and prompt:
+                out.append({"slot": row["slot"], "name": name, "prompt": prompt,
+                            "source": row["source"].get_active_id() or "clipboard"})
+        return out
 
     def _build_privacy(self):
         page = self._page()
@@ -1471,6 +1638,13 @@ class SettingsDialog(Gtk.Dialog):
         out["encyclopedia_strict"] = self.encyclopedia_strict.get_active()
         out["encyclopedia_audience"] = self.encyclopedia_audience.get_active_id() or "adult"
         out["dictionaries_order"] = self._dictionary_order()
+        out["custom_actions"] = self._actions_value()
+        # A key given to an action since taken out goes with it, so that the next
+        # action in its slot does not inherit it.
+        from ..hotkeys import CUSTOM_ACTIONS
+        defined = {f"custom_{action['slot']}" for action in out["custom_actions"]}
+        out["hotkeys"] = {name: key for name, key in (out.get("hotkeys") or {}).items()
+                          if name not in CUSTOM_ACTIONS or name in defined}
         out["dictionaries_disabled"] = sorted(
             path for path, check in self._dictionary_checks.items()
             if not check.get_active())

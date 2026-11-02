@@ -11,7 +11,8 @@ from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, i
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
-from .hotkeys import ACTIONS, ENCYCLOPEDIA_ACTIONS, HotkeyManager, migrate as migrate_hotkeys
+from .hotkeys import (ACTIONS, CUSTOM_ACTIONS, ENCYCLOPEDIA_ACTIONS, HotkeyManager,
+                      custom_defined, labels as action_labels, migrate as migrate_hotkeys)
 from .llm import LLMClient, LLMError
 from .reference.encyclopedia import Encyclopedia
 from .reference.dictionaries import Library
@@ -189,17 +190,31 @@ class Assistant:
 
         menu.show_all()
         self._sync_encyclopedia_items()
+        self._sync_custom_items()
         return menu
 
     def _refresh_menu_keys(self):
         """Each action's key beside it in the menu, as bound now - in the portal's
         case, as the desktop says it bound it."""
-        for name, label, _suggested in ACTIONS:
+        named = action_labels(self.config)
+        for name, _label, _suggested in ACTIONS:
             item = self._action_items.get(name)
             if item is None:
                 continue
+            label = named.get(name, name)
             key = self.hotkeys.trigger_label(name)
             item.set_label(f"{label}\t{key}" if key else label)
+
+    def _sync_custom_items(self):
+        """The user's own actions in the menu, under their own names; slots with none
+        are not shown."""
+        defined = custom_defined(self.config)
+        named = action_labels(self.config)
+        for name in CUSTOM_ACTIONS:
+            item = self._action_items.get(name)
+            if item is not None:
+                item.set_label(named[name])
+                item.set_visible(name in defined)
 
     def _sync_encyclopedia_items(self):
         for item in self._encyclopedia_items:
@@ -370,6 +385,7 @@ class Assistant:
             "ask_encyclopedia": self.ask_encyclopedia,
             "settings": self.show_settings,
             "diagnostics": self.show_diagnostics,
+            **{name: (lambda n=name: self.run_custom_action(n)) for name in CUSTOM_ACTIONS},
         }.get(action)
         if handler is None:
             self.notify(f"Unknown action: {action}")
@@ -412,9 +428,12 @@ class Assistant:
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
                        transcribe_first=False, system=None, answer_by_text=False,
-                       image=None):
+                       image=None, language=None, prompt_default=None):
         """Capture -> review -> send. `build(prompt)` returns (prompt_text, display).
         `image`, a picture from the clipboard, is reviewed in place of a capture.
+        `language`, a {"language": ...} the operation's build and `system` - which may
+        then be a function - read, makes the dialog offer "Translate into" and fills it
+        in at Send. `prompt_default` is the question box's text to start with.
 
         The first step goes to the model chosen for its job, and the conversation then
         belongs to the answering model - text or premium, private versions of each in
@@ -447,7 +466,7 @@ class Assistant:
         def on_image(image):
             self._review_capture(image, title, ask_prompt, build, on_error,
                                  web_search_default, transcribe_first, system, privacy,
-                                 answer_by_text)
+                                 answer_by_text, language, prompt_default)
 
         if image is not None:
             on_image(image)             # a picture from the clipboard: nothing to capture
@@ -456,7 +475,8 @@ class Assistant:
 
     def _review_capture(self, image, title, ask_prompt, build, on_error,
                         web_search_default=None, transcribe_first=False, system=None,
-                        privacy=None, answer_by_text=False):
+                        privacy=None, answer_by_text=False, language=None,
+                        prompt_default=None):
         def on_recrop(original):
             from .capture import CropDialog
             CropDialog(
@@ -466,10 +486,11 @@ class Assistant:
                 lambda cropped: self._review_capture(
                     cropped, title, ask_prompt, build, on_error,
                     web_search_default, transcribe_first, system, route["privacy"],
-                    answer_by_text),
+                    answer_by_text, language, prompt_default),
                 on_error, title=f"{title} — re-crop")
 
         route = {"privacy": privacy}
+        dialog = None                   # read by on_confirm, once it has been made
 
         def on_confirm(image, image_base64, info, prompt, web_search):
             if info.get("debug_path"):
@@ -478,6 +499,9 @@ class Assistant:
                                             ("vision", self._answer_role()))
             if session is False:
                 return
+            if language is not None and dialog is not None:
+                language["language"] = dialog.target_language() or language["language"]
+            chosen_system = system() if callable(system) else system
             # What the chat window shows and saves: the crop as taken, not the copy
             # scaled for the model. Held in memory only; see ChatWindow.
             screenshot = imaging.screenshot_png(image)
@@ -492,7 +516,7 @@ class Assistant:
                 # needs it, but the translation itself is given only the text.
                 self._open_chat(
                     title, prompt_text, display, image_base64=image_base64,
-                    image_first=False, web_search=web_search, system=system,
+                    image_first=False, web_search=web_search, system=chosen_system,
                     preflight=self._transcribe_preflight(image_base64, build, session),
                     privacy=session, screenshot=screenshot)
             else:
@@ -501,8 +525,8 @@ class Assistant:
                 reader = session.vision_model if session else self.config.model("vision")
                 self._open_chat(title, prompt_text, display,
                                 image_base64=image_base64, first_model=reader,
-                                web_search=web_search, system=system, privacy=session,
-                                screenshot=screenshot)
+                                web_search=web_search, system=chosen_system,
+                                privacy=session, screenshot=screenshot)
 
         def plan_for(session):
             return self._capture_plan(transcribe_first, answer_by_text, session)
@@ -510,7 +534,9 @@ class Assistant:
         dialog = CaptureReviewDialog(image, title, self.config, on_confirm,
                                      ask_prompt=ask_prompt, on_recrop=on_recrop,
                                      web_search_default=web_search_default,
-                                     privacy=privacy, plan=plan_for(privacy))
+                                     privacy=privacy, plan=plan_for(privacy),
+                                     language=language and language["language"],
+                                     prompt_default=prompt_default)
         self._offer_lookups(getattr(dialog, "prompt_view", None))
         self._watch_review(dialog, route, lambda: ("vision", self._answer_role()),
                            plan_for)
@@ -671,7 +697,8 @@ class Assistant:
         return preflight
 
     def _start_clipboard(self, title, ask_prompt, build, web_search_default=None,
-                         system=None, job="answers", source="clipboard", picture=None):
+                         system=None, job="answers", source="clipboard", picture=None,
+                         language=None):
         """Clipboard -> review -> send, to the answering model; `job` is what it does
         with the text, for the review dialog to say ("translates it").
 
@@ -712,14 +739,18 @@ class Assistant:
             return
 
         route = {"privacy": privacy}
+        dialog = None                   # read by on_confirm, once it has been made
 
         def on_confirm(edited_text, prompt, web_search):
             session = self._confirm_privacy(route["privacy"], (self._answer_role(),))
             if session is False:
                 return
+            if language is not None and dialog is not None:
+                language["language"] = dialog.target_language() or language["language"]
             prompt_text, display = build(edited_text, prompt)
             self._open_chat(title, prompt_text, display, web_search=web_search,
-                            system=system, privacy=session)
+                            system=system() if callable(system) else system,
+                            privacy=session)
 
         def plan_for(session):
             return [(self._image_answerer(session), job)]
@@ -727,7 +758,8 @@ class Assistant:
         dialog = TextReviewDialog(text, title, on_confirm, ask_prompt=ask_prompt,
                                   config=self.config,
                                   web_search_default=web_search_default,
-                                  privacy=privacy, plan=plan_for(privacy))
+                                  privacy=privacy, plan=plan_for(privacy),
+                                  language=language and language["language"])
         self._offer_lookups(getattr(dialog, "textview", None),
                             getattr(dialog, "prompt_view", None))
         self._watch_review(dialog, route, lambda: (self._answer_role(),), plan_for)
@@ -757,11 +789,14 @@ class Assistant:
             web_search_default=False)
 
     def ocr_translate(self, image=None):
-        language = self.config.default_language
+        # The language this request is translated into: the dialog's "Translate into",
+        # which starts on the setting, fills it in at Send.
+        chosen = {"language": self.config.default_language}
 
         def build(extracted=None):
             # Called twice: once before the capture is sent, to label the turn, and
             # again by the preflight with the transcribed text.
+            language = chosen["language"]
             if not extracted:
                 return ("", f"_Reading the selection and translating it into "
                             f"{language}…_")
@@ -772,7 +807,8 @@ class Assistant:
 
         self._start_capture("OCR + Translate", ask_prompt=False, build=build,
                             web_search_default=False, transcribe_first=True,
-                            system=prompts.translate_system(language), image=image)
+                            system=lambda: prompts.translate_system(chosen["language"]),
+                            image=image, language=chosen)
 
     def query_image(self, image=None):
         # Answered by the selected text model: with the image itself when it accepts
@@ -782,32 +818,33 @@ class Assistant:
                             answer_by_text=True, image=image)
 
     def translate_text(self):
-        language = self.config.default_language
+        chosen = {"language": self.config.default_language}
         self._start_clipboard(
             "Translate text", ask_prompt=False,
             build=lambda text, _p: (
                 prompts.translate_text(text),
-                f"_Translate the clipboard text into {language}._\n\n"
+                f"_Translate the clipboard text into {chosen['language']}._\n\n"
                 f"> {text[:400]}{'…' if len(text) > 400 else ''}"),
             # Translation works from the text it was given; a search only adds cost and
             # latency. Still available per request, and for follow-ups.
             web_search_default=False,
-            system=prompts.translate_system(language), job="translates it",
+            system=lambda: prompts.translate_system(chosen["language"]),
+            job="translates it", language=chosen,
             picture=lambda image: self.ocr_translate(image=image))
 
     def translate_selection(self):
         """Translate the highlighted text without copying it first: the primary
         selection, what a middle click would paste."""
-        language = self.config.default_language
+        chosen = {"language": self.config.default_language}
         self._start_clipboard(
             "Translate selection", ask_prompt=False,
             build=lambda text, _p: (
                 prompts.translate_text(text),
-                f"_Translate the selected text into {language}._\n\n"
+                f"_Translate the selected text into {chosen['language']}._\n\n"
                 f"> {text[:400]}{'…' if len(text) > 400 else ''}"),
             web_search_default=False,
-            system=prompts.translate_system(language), job="translates it",
-            source="selection")
+            system=lambda: prompts.translate_system(chosen["language"]),
+            job="translates it", source="selection", language=chosen)
 
     def query_text(self):
         language = self.config.default_language
@@ -817,6 +854,39 @@ class Assistant:
                                         prompt),
             system=prompts.query_text_system(language),
             picture=lambda image: self.query_image(image=image))
+
+    def run_custom_action(self, name):
+        """One of the user's own actions (Settings > Actions): its prompt, applied to
+        the clipboard text, the highlighted text, or a screen region - reviewed and
+        sent as the built-in operations are, and answered by the answering model. A
+        picture on the clipboard is reviewed as a capture and the prompt applied to it."""
+        action = custom_defined(self.config).get(name)
+        if action is None:
+            self.notify("That action is not set up (Settings > Actions)", urgency="normal")
+            return
+        title = str(action["name"]).strip()
+        instruction = str(action["prompt"]).strip()
+        system = prompts.query_text_system(self.config.default_language)
+
+        def on_picture(image=None):
+            # Answered as Query image is, with the action's prompt as the question -
+            # in the question box, to send as it is or change first.
+            self._start_capture(title, ask_prompt=True,
+                                build=lambda prompt, extracted=None: (prompt, prompt),
+                                answer_by_text=True, system=system, image=image,
+                                prompt_default=instruction)
+
+        source = action.get("source") or "clipboard"
+        if source == "region":
+            on_picture()
+            return
+        self._start_clipboard(
+            title, ask_prompt=False,
+            build=lambda text, _p: (
+                prompts.custom_action(instruction, text),
+                f"_{title}_\n\n> {text[:400]}{'…' if len(text) > 400 else ''}"),
+            system=system, source="selection" if source == "selection" else "clipboard",
+            picture=on_picture)
 
     def look_up_selection(self, kind, what):
         """A word or a phrase selected and right-clicked, wherever the app shows text:
@@ -974,6 +1044,8 @@ class Assistant:
                 elif was_private:
                     self._release_privacy_holds()
                 self._sync_encyclopedia_items()
+                self._sync_custom_items()
+                self._refresh_menu_keys()
                 # Only when they changed: tearing the grabs down, asking the portal
                 # for a new session or rewriting the desktop's keybindings is not
                 # free, and most saves are about something else entirely. The

@@ -970,7 +970,9 @@ class Page(TempDir):
         self.assertEqual(page.values(), {"hotkeys": {}})
         page.use_suggested()
         self.assertEqual(page.values()["hotkeys"]["ask_anything"], "<Control><Shift>9")
-        self.assertEqual(len(page.values()["hotkeys"]), len(hotkeys.ACTIONS))
+        # Every action with a suggested key - not the slots for the user's own actions.
+        self.assertEqual(len(page.values()["hotkeys"]),
+                         len([action for action in hotkeys.ACTIONS if action[2]]))
         page.clear_all()
         self.assertEqual(page.values(), {"hotkeys": {}})
 

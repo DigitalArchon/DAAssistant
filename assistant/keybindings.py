@@ -28,6 +28,8 @@ import shlex
 import shutil
 import subprocess
 
+from gi.repository import GLib
+
 from . import hostenv, shortcuts
 
 PREFIX = "da-assistant"
@@ -39,7 +41,9 @@ END = "# --- end DA Assistant hotkeys ---"
 def run_host(args):
     """Run a host program - gsettings, kwriteconfig6, hyprctl - as the desktop would:
     with the environment the app was started with, not the AppImage's. (returncode,
-    stdout); 127 when it is not installed."""
+    output): what it printed, or when it failed, what it said was wrong - gsettings
+    says that on stderr and nothing on stdout, so stdout alone made every refusal a
+    bare "failed". 127 when it is not installed."""
     try:
         done = subprocess.run(args, capture_output=True, text=True, timeout=15,
                               env=hostenv.host_env())
@@ -47,6 +51,8 @@ def run_host(args):
         return 127, ""
     except (OSError, subprocess.SubprocessError) as e:
         return 1, str(e)
+    if done.returncode != 0:
+        return done.returncode, done.stderr or done.stdout
     return done.returncode, done.stdout
 
 
@@ -162,10 +168,27 @@ class GSettingsKeybindings:
         quoted = (s.replace("\\", "\\\\").replace("'", "\\'") for s in strings)
         return "[" + ", ".join(f"'{s}'" for s in quoted) + "]"
 
+    @staticmethod
+    def _string(value):
+        """`value` as GVariant text, which is how gsettings reads every value it sets.
+
+        It takes the text as a bare string only when parsing it fails and it does not
+        begin with a quote. A command begins with one whenever the launcher's path holds
+        a space, an apostrophe or anything outside ASCII, which shlex quotes - so
+        "'/home/u/My Apps/DA.AppImage' --action=ocr_only" was refused ("expected end of
+        input"), and no shortcut could be saved at all from an AppImage kept in ~/My Apps
+        or ~/Téléchargements."""
+        return GLib.Variant("s", value).print_(False)
+
     def _set(self, *args):
+        """gsettings set PATH KEY VALUE, VALUE already GVariant text (_string, _gvariant)."""
         code, out = self.run(["gsettings", "set", *args])
         if code != 0:
-            raise OSError(f"gsettings set {args[0]} failed {out.strip()}".strip())
+            # What gsettings said, less the caret it draws under a parse error.
+            said = " ".join(line.strip() for line in out.splitlines()
+                            if line.strip(" \t^~"))
+            raise OSError(f"gsettings set {args[0]} {args[1]} failed"
+                          + (f": {said}" if said else ""))
 
     def apply(self, bindings, labels, actions):
         """Make ours exactly `bindings` ({action: accel}). `actions` is every action
@@ -175,10 +198,10 @@ class GSettingsKeybindings:
             path = f"{self.item_schema}:{self.base}/{PREFIX}-{action}/"
             accel = bindings.get(action)
             if accel:
-                self._set(path, "name", f"{NAME}: {labels[action]}")
-                self._set(path, "command", command(action))
+                self._set(path, "name", self._string(f"{NAME}: {labels[action]}"))
+                self._set(path, "command", self._string(command(action)))
                 self._set(path, "binding", self._gvariant([accel]) if self.binding_list
-                          else accel)
+                          else self._string(accel))
             elif self._entry(action) in current:
                 self.run(["gsettings", "reset-recursively", path])
         wanted = [e for e in current if not self._ours(e)] + [

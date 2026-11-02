@@ -237,6 +237,11 @@ NAMES = hotkeys.action_names()
 CINNAMON_ITEM = "org.cinnamon.desktop.keybindings.custom-keybinding"
 
 
+def gvariant_string(text):
+    """What gsettings makes of `text` for a string key: it is parsed as GVariant text."""
+    return GLib.Variant.parse(GLib.VariantType("s"), text, None, None).get_string()
+
+
 class GSettingsWriter(unittest.TestCase):
     def test_cinnamon_adds_names_to_the_users_list(self):
         host = FakeHost("['custom0', '__dummy__']")
@@ -247,7 +252,9 @@ class GSettingsWriter(unittest.TestCase):
                "da-assistant-ocr_only/"
         self.assertIn(["gsettings", "set", path, "binding", "['<Control><Shift>5']"],
                       host.calls)
-        command = next(c for c in host.calls if c[3:4] == ["command"])[4]
+        self.assertIn(["gsettings", "set", path, "name", "'DA Assistant: OCR only'"],
+                      host.calls)
+        command = gvariant_string(next(c for c in host.calls if c[3:4] == ["command"])[4])
         self.assertTrue(command.endswith(" --action=ocr_only"), command)
         self.assertIn("run-assistant", command)
 
@@ -258,7 +265,33 @@ class GSettingsWriter(unittest.TestCase):
         writer.apply({"query_image": "<Super>q"}, LABELS, NAMES)
         self.assertEqual(host.listed, f"['{mine}', '/org/gnome/settings-daemon/plugins/"
                          "media-keys/custom-keybindings/da-assistant-query_image/']")
-        self.assertTrue(any(c[3:5] == ["binding", "<Super>q"] for c in host.calls))
+        self.assertTrue(any(c[3:5] == ["binding", "'<Super>q'"] for c in host.calls))
+
+    def test_a_command_quoted_for_the_shell_is_still_one_string_to_gsettings(self):
+        # shlex quotes a path with a space, and a value that begins with a quote is one
+        # gsettings will not take as a bare string: "expected end of input".
+        host = FakeHost()
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/My Apps/DA.AppImage"}):
+            keybindings.GSettingsKeybindings("gnome", host).apply(
+                {"ocr_only": "F5"}, LABELS, NAMES)
+            wanted = keybindings.command("ocr_only")
+        sent = next(c for c in host.calls if c[3:4] == ["command"])[4]
+        self.assertNotEqual(sent, wanted)
+        self.assertEqual(gvariant_string(sent), wanted)
+
+    def test_what_gsettings_said_is_in_the_error(self):
+        def refuses(args):
+            if args[:2] == ["gsettings", "set"]:
+                return 1, ("expected end of input:\n  '/a b' --action=ocr_only\n"
+                           "        ^\n")
+            return 0, "@as []\n"
+
+        with self.assertRaises(OSError) as raised:
+            keybindings.GSettingsKeybindings("cinnamon", refuses).apply(
+                {"ocr_only": "F5"}, LABELS, NAMES)
+        self.assertIn("name failed: expected end of input: '/a b' --action=ocr_only",
+                      str(raised.exception))
+        self.assertNotIn("^", str(raised.exception))
 
     def test_twice_is_once_and_an_unbound_one_is_taken_out(self):
         host = FakeHost("['da-assistant-ocr_only', 'custom0', 'da-assistant-query_text']")
@@ -285,6 +318,71 @@ class GSettingsWriter(unittest.TestCase):
         keybindings.GSettingsKeybindings("cinnamon", host).apply(
             {"ocr_only": "F5"}, LABELS, NAMES)
         self.assertEqual(host.listed, "['it\\'s mine', 'da-assistant-ocr_only']")
+
+
+def memory_gsettings(args):
+    """The host's own gsettings, kept away from the desktop's settings: on the memory
+    backend it opens no dconf database, and whatever it sets is gone when it exits."""
+    if args[0] != "gsettings":
+        raise AssertionError(f"only gsettings is run here, not {args[0]}")
+    with mock.patch.dict(os.environ, {"GSETTINGS_BACKEND": "memory"}):
+        env = keybindings.hostenv.host_env() or os.environ
+        if env.get("GSETTINGS_BACKEND") != "memory":
+            raise AssertionError("gsettings would reach the desktop's own settings")
+        return keybindings.run_host(args)
+
+
+class RealGSettings(unittest.TestCase):
+    """What is written is what the host's own gsettings takes, run on its memory backend.
+
+    Every gsettings is a process of its own, and the memory backend keeps nothing from
+    one to the next, so a value cannot be read back with `gsettings get`. That gsettings
+    accepted it, and that GVariant's parser gives back exactly the command, is the test.
+    """
+
+    PATHS = ("/home/u/My Apps/DA Assistant.AppImage",
+             "/home/u/Jason's Apps/DA.AppImage",
+             "/home/u/Téléchargements/DA.AppImage",
+             "/home/u/$HOME/DA.AppImage")
+
+    def writer(self, desktop):
+        if not shutil.which("gsettings"):
+            self.skipTest("gsettings is not installed")
+        item = keybindings.GSettingsKeybindings.SCHEMAS[desktop][2]
+        code, schemas = memory_gsettings(["gsettings", "list-relocatable-schemas"])
+        if code != 0 or item not in schemas.split():
+            self.skipTest(f"no {item} schema here")
+        calls = []
+
+        def run(args):
+            calls.append(list(args))
+            return memory_gsettings(args)
+
+        return keybindings.GSettingsKeybindings(desktop, run), calls
+
+    def test_gsettings_takes_every_value_and_reads_the_command_as_written(self):
+        for desktop in ("gnome", "cinnamon"):
+            for path in self.PATHS:
+                with self.subTest(desktop=desktop, path=path):
+                    writer, calls = self.writer(desktop)
+                    with mock.patch.dict(os.environ, {"APPIMAGE": path}):
+                        # Raises OSError if gsettings refused any of it.
+                        writer.apply({"ocr_only": "<Control><Shift>5"}, LABELS, NAMES)
+                        wanted = keybindings.command("ocr_only")
+                    sent = {c[3]: c[4] for c in calls if c[1] == "set"}
+                    self.assertEqual(gvariant_string(sent["command"]), wanted)
+                    self.assertEqual(GLib.shell_parse_argv(wanted)[1][0], path)
+                    self.assertEqual(gvariant_string(sent["name"]),
+                                     "DA Assistant: OCR only")
+
+    def test_the_bare_command_is_refused_and_the_error_says_why(self):
+        writer, _calls = self.writer("gnome")
+        with mock.patch.dict(os.environ, {"APPIMAGE": self.PATHS[0]}):
+            bare = keybindings.command("ocr_only")
+        with self.assertRaises(OSError) as raised:
+            writer._set(f"{writer.item_schema}:{writer.base}/da-assistant-x/", "command",
+                        bare)
+        self.assertIn("expected end of input", str(raised.exception))
 
 
 class ConfigFileWriter(TempDir):

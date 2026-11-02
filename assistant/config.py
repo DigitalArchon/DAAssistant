@@ -105,6 +105,10 @@ DEFAULTS = {
     # The answer's length. A model asked for reasoning gets room to think on top of
     # this (llm.REASONING_ROOM), so thinking cannot use up the answer's share.
     "max_tokens": 4096,
+    # Ask Claude models to cache the conversation so far, for "5m" or "1h"; "off". A
+    # cache write costs more than the input it caches (1.25x, or 2x for an hour), and a
+    # read far less (0.1x, Sonnet 5.5 0.05x). See llm.CACHE_TTLS.
+    "prompt_caching": "off",
     "request_timeout": 180,
     # Every request of the app's own through this proxy (proxy.py): socks5h://host:port
     # for Tor, or http://host:port. Empty: the environment's proxy settings, if any.

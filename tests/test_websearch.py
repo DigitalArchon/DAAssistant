@@ -335,14 +335,39 @@ class TheRequestBody(unittest.TestCase):
         # did not choose. Nothing should be appending it any more.
         self.assertNotIn(":online", self._payload()["model"])
 
-    def test_prompt_caching_is_not_requested(self):
-        """Measured, it is a 24% surcharge here: the provider breaks the cache at the
-        end of the whole prompt, so only a byte-identical repeat ever reads one back,
-        and a conversation never sends the same request twice."""
+    def test_prompt_caching_is_not_requested_by_default(self):
+        """Measured, it was a 24% surcharge here, with the provider breaking the cache at
+        the end of the whole prompt: so it is a setting, and off unless chosen."""
         self.assertNotIn("promptCaching", self._payload())
         self.assertNotIn("promptCaching",
                          self.client._payload("deepseek/deepseek-v4-pro",
                                               [{"role": "user", "content": "q"}]))
+
+    def test_asked_for_it_caches_through_the_latest_question(self):
+        self.client.config.prompt_caching = "1h"
+        payload = self._payload(system="Answer in English.",
+                                search_context="Web search results: ...")
+        roles = [m["role"] for m in payload["messages"]]
+        last_question = max(i for i, role in enumerate(roles) if role == "user")
+        self.assertEqual(payload["promptCaching"], {"enabled": True, "ttl": "1h",
+                                                    "cutAfterMessageIndex": last_question})
+        self.assertGreater(len(roles), last_question + 1, "the search comes after it")
+        self.assertNotIn("promptCaching", self.client._payload(
+            "deepseek/deepseek-v4-pro", [{"role": "user", "content": "q"}]))
+
+    def test_openrouter_is_given_the_place_as_a_marker(self):
+        self.client.config.prompt_caching = "5m"
+        self.client.config.text_provider = "openrouter"
+        self.client.config.text_model = "anthropic/claude-sonnet-5.5"
+        self.client.config.openrouter_api_key = "k"
+        payload = self.client._payload("anthropic/claude-sonnet-5.5",
+                                       [{"role": "user", "content": "first"},
+                                        {"role": "assistant", "content": "answer"},
+                                        {"role": "user", "content": "follow-up"}])
+        self.assertNotIn("promptCaching", payload)
+        self.assertEqual(payload["messages"][-1]["content"][-1]["cache_control"],
+                         {"type": "ephemeral"})
+        self.assertEqual(payload["messages"][0]["content"], "first")
 
 
 class TheUpload(unittest.TestCase):

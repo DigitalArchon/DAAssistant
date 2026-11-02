@@ -65,23 +65,31 @@ MAX_PLAIN_BODY = 64 * 1024
 GZIP_THRESHOLD_BYTES = 16 * 1024
 GZIP_LEVEL = 6
 
-# Explicit prompt caching is deliberately not sent. It reads well - Claude caches
-# nothing unless asked - but measured against this API it is a straight surcharge.
+# Explicit prompt caching is off unless asked for (config.prompt_caching). It reads well
+# - Claude caches nothing unless asked - but measured against this API in Sept 2026 it
+# was a straight surcharge.
 #
-# The provider chooses the cache breakpoints, and it puts a single one at the end of the
-# whole prompt. So the write is only ever read back by a byte-identical repeat request,
+# The provider chose the cache breakpoints, and put a single one at the end of the
+# whole prompt. So the write was only ever read back by a byte-identical repeat request,
 # which a conversation never produces: every turn adds a message, and a searched turn
 # brings new results as well. Three follow-ups in a row wrote 1,244-1,248 tokens each
-# and read nothing. A marked-up `cache_control` breakpoint at the end of the stable
-# prefix was ignored too; only an exact whole-prompt match ever hit, at 11,916 tokens
-# read on the second and third of three identical sends.
-#
-# The cost of asking anyway, same request, same 4,216 input tokens:
+# and read nothing. The cost, same request, same 4,216 input tokens:
 #     promptCaching off   $0.008682
 #     promptCaching on    $0.010779     (cacheCost 0.010535, cacheReadInputTokens 0)
-# a 24% premium for a cache nothing reads. Worth revisiting if the API ever exposes
-# breakpoint placement; until then the stable-prefix work below stands on its own.
+# a 24% premium for a cache nothing read.
+#
+# The API now takes the breakpoint's place (cutAfterMessageIndex), and _prompt_caching
+# puts it at the latest question - the end of what the next turn sends again, before
+# any search results, which change - so that a follow-up starts with exactly the prefix
+# written. OpenRouter is given the same place as a cache_control marker. Whether it now
+# pays for itself depends on the conversation, so it is a setting, off by default.
 # https://docs.nano-gpt.com/api-reference/miscellaneous/prompt-caching
+CACHE_TTLS = ("5m", "1h")
+
+
+def is_claude(model):
+    """Whether `model` is one of Claude's, which caches only when asked to."""
+    return "claude" in str(model).lower()
 
 
 def _balance_quotes(query):
@@ -571,6 +579,7 @@ class LLMClient:
         stops = self._provider(model).stops(model)
         if stops:
             payload["stop"] = stops
+        self._prompt_caching(payload, self._provider(model))
         # Within the model's context, the reply's room and a margin kept aside.
         context = catalogue.context_for(self.config, model)
         if context:
@@ -579,6 +588,32 @@ class LLMClient:
             if dropped and status is not None:
                 status(f"{dropped} earlier messages left out, to fit {model}'s context")
         return payload
+
+    def _prompt_caching(self, payload, provider):
+        """Ask a Claude model to cache the conversation so far, where the setting says
+        to: through the end of the latest question, which is where the next turn's
+        request will differ from this one's."""
+        ttl = getattr(self.config, "prompt_caching", "off")
+        if ttl not in CACHE_TTLS or not is_claude(payload.get("model")):
+            return
+        messages = payload["messages"]
+        last = max((i for i, m in enumerate(messages) if m.get("role") == "user"),
+                   default=None)
+        if last is None:
+            return
+        if provider.id == providers.NANOGPT:
+            payload["promptCaching"] = {"enabled": True, "ttl": ttl,
+                                        "cutAfterMessageIndex": last}
+        elif provider.id == providers.OPENROUTER:
+            marker = {"type": "ephemeral"} if ttl == "5m" else {"type": "ephemeral",
+                                                                "ttl": "1h"}
+            message = dict(messages[last])
+            content = message.get("content")
+            parts = list(content) if isinstance(content, list) else [
+                {"type": "text", "text": content or ""}]
+            parts[-1] = dict(parts[-1], cache_control=marker)
+            message["content"] = parts
+            payload["messages"] = messages[:last] + [message] + messages[last + 1:]
 
     @staticmethod
     def _ending(text, finish_reason, model, limit, done=True, error=None):

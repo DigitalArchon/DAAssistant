@@ -1592,6 +1592,23 @@ class SettingsDialog(Gtk.Dialog):
         grid.attach(self._label("Reasoning effort"), 0, 2, 1, 1)
         grid.attach(self.reasoning_effort, 1, 2, 1, 1)
 
+        self.prompt_caching = self._combo()
+        for value, text in (("off", "off"), ("5m", "for 5 minutes"), ("1h", "for 1 hour")):
+            self.prompt_caching.append(value, text)
+        self.prompt_caching.set_active_id(getattr(self.config, "prompt_caching", "off")
+                                          or "off")
+        if self.prompt_caching.get_active_id() is None:
+            self.prompt_caching.set_active_id("off")
+        self.prompt_caching.set_tooltip_text(
+            "Claude models only: each request asks for the conversation so far to be "
+            "kept, so that the next one in the same conversation - a follow-up, with "
+            "the capture again - is read from the cache. Writing costs more than the "
+            "input it keeps (1.25 times for five minutes, twice for an hour), and "
+            "reading far less (a tenth). It pays in long conversations about a "
+            "picture; on NanoGPT it is billed pay-as-you-go, outside a subscription.")
+        grid.attach(self._label("Prompt caching"), 0, 4, 1, 1)
+        grid.attach(self.prompt_caching, 1, 4, 1, 1)
+
         self.proxy_entry = Gtk.Entry(hexpand=True)
         self.proxy_entry.set_text(str(getattr(self.config, "proxy", "") or ""))
         self.proxy_entry.set_placeholder_text(
@@ -1657,6 +1674,7 @@ class SettingsDialog(Gtk.Dialog):
         out.update(self.shortcuts_page.values())
         out["max_tokens"] = int(self.max_tokens.get_value())
         out["proxy"] = self.proxy_entry.get_text().strip()
+        out["prompt_caching"] = self.prompt_caching.get_active_id() or "off"
         out["reasoning_effort"] = self.reasoning_effort.get_active_id() or "low"
         out["web_search_enabled"] = self.search_enabled.get_active()
         out["web_search_citations"] = self.search_citations.get_active()

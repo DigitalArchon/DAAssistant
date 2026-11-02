@@ -937,6 +937,20 @@ class CaptureButton(unittest.TestCase):
         self.assertFalse(self.button._on_key(
             self.button, key_event(Gdk.KEY_a, Gdk.ModifierType.CONTROL_MASK)))
 
+    def test_the_modifiers_pressed_on_the_way_are_waited_through(self):
+        # As real events arrive, is_modifier unset: PyGObject reads it as 0 for every
+        # key, and Ctrl then Shift was captured as Ctrl+Shift_L.
+        ctrl, shift = Gdk.ModifierType.CONTROL_MASK, Gdk.ModifierType.SHIFT_MASK
+        alt = Gdk.ModifierType.MOD1_MASK
+        self.button.start_capture()
+        for keyval, state in ((Gdk.KEY_Control_L, 0), (Gdk.KEY_Shift_L, ctrl),
+                              (Gdk.KEY_Alt_L, ctrl | shift), (Gdk.KEY_Super_L, ctrl)):
+            self.assertTrue(self.button._on_key(self.button, key_event(keyval, state)))
+            self.assertTrue(self.button.capturing, Gdk.keyval_name(keyval))
+        self.assertEqual(self.changes, [])
+        self.button._on_key(self.button, key_event(Gdk.KEY_5, ctrl | shift | alt))
+        self.assertEqual(self.changes, ["<Control><Alt><Shift>5"])
+
 
 class Page(TempDir):
     def page(self, mode="desktop", **config_values):

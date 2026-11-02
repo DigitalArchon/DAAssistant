@@ -19,6 +19,19 @@ from .. import hotkeys, keybindings, shortcuts
 
 PROMPT = "Press keys…"
 
+# Keys pressed on the way to a combination, never one themselves. Told apart by their
+# key values, because GdkEventKey.is_modifier cannot be read from Python: it is a
+# one-bit field, which the compiler packs into the byte after `group` and the typelib
+# places four bytes later, so PyGObject reads 0 for every key - and Ctrl, then Shift,
+# was captured as Ctrl+Shift_L before the key itself was pressed.
+MODIFIER_KEYS = frozenset((
+    Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+    Gdk.KEY_Alt_L, Gdk.KEY_Alt_R, Gdk.KEY_Meta_L, Gdk.KEY_Meta_R, Gdk.KEY_Super_L,
+    Gdk.KEY_Super_R, Gdk.KEY_Hyper_L, Gdk.KEY_Hyper_R, Gdk.KEY_Caps_Lock,
+    Gdk.KEY_Shift_Lock, Gdk.KEY_Num_Lock, Gdk.KEY_ISO_Level3_Shift,
+    Gdk.KEY_ISO_Level5_Shift, Gdk.KEY_Mode_switch, Gdk.KEY_ISO_Next_Group,
+    Gdk.KEY_ISO_Prev_Group, Gdk.KEY_ISO_First_Group, Gdk.KEY_ISO_Last_Group))
+
 
 class ShortcutButton(Gtk.Button):
     """Shows a key combination; click, then press one to change it.
@@ -115,7 +128,7 @@ class ShortcutButton(Gtk.Button):
         if not self.capturing:
             return False
         state = event.state & Gtk.accelerator_get_default_mod_mask()
-        if event.is_modifier:
+        if event.keyval in MODIFIER_KEYS:
             return True                     # wait for the key itself
         if not state and event.keyval == Gdk.KEY_Escape:
             self.stop_capture()

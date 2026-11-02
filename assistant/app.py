@@ -710,7 +710,7 @@ class Assistant:
         if source == "selection":
             text = clipboard.get_selection()
             if not text:
-                hint = clipboard.unreadable_hint()
+                hint = clipboard.unreadable_hint(selection=True)
                 self.notify("Nothing is highlighted. Select some text first"
                             + (f". {hint}" if hint else ""), urgency="normal")
                 return

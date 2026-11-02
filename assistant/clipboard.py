@@ -123,17 +123,21 @@ def get_selection():
     return None
 
 
-def unreadable_hint():
+def unreadable_hint(selection=False):
     """Why 'empty' may mean 'unreadable', and what the user can do about it.
 
     Only worth saying on Wayland without wl-paste or Klipper: everywhere else an empty
-    clipboard really is empty.
+    clipboard really is empty. Klipper answers for the clipboard and not for the
+    highlighted text, so for the `selection` only wl-paste counts: on KDE without
+    wl-clipboard, Translate selected text found "nothing highlighted" with text
+    highlighted, and never said why (seen on the CachyOS test VM).
     """
     if session.session_type() != "wayland":
         return ""
-    if shutil.which("wl-paste") or _klipper_text() is not None:
+    if shutil.which("wl-paste") or (not selection and _klipper_text() is not None):
         return ""
-    return ("On Wayland an app can only read the clipboard while it has focus, which a "
+    what = "the highlighted text" if selection else "the clipboard"
+    return (f"On Wayland an app can only read {what} while it has focus, which a "
             "tray app never does. Install wl-clipboard (wl-paste) to read it anyway.")
 
 

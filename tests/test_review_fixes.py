@@ -429,6 +429,17 @@ class ClipboardOnWaylandWithoutFocus(unittest.TestCase):
                 mock.patch.object(clipboard.shutil, "which", return_value="/usr/bin/wl-paste"):
             self.assertEqual(clipboard.unreadable_hint(), "")
 
+    def test_klipper_does_not_read_the_highlighted_text(self):
+        # KDE without wl-clipboard: the clipboard is read through Klipper, and needs no
+        # hint; the highlighted text cannot be, and does.
+        with mock.patch.object(clipboard.session, "session_type", return_value="wayland"), \
+                mock.patch.object(clipboard.shutil, "which", return_value=None), \
+                mock.patch.object(clipboard, "_klipper_text", return_value="copied"):
+            self.assertEqual(clipboard.unreadable_hint(), "")
+            hint = clipboard.unreadable_hint(selection=True)
+        self.assertIn("highlighted text", hint)
+        self.assertIn("wl-clipboard", hint)
+
 
 class WebKitThatKillsTheProcess(TempDir):
     """A crash cannot be caught in the process it kills, so it is caught on the way back."""

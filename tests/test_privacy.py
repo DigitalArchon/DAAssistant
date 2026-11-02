@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import gtkcompat  # noqa: F401  (pins GI versions)
-from assistant import dcap, models, nras, privacy, sealed
+from assistant import dcap, models, netguard, nras, privacy, sealed
 from assistant.config import Config
 from assistant.ethsig import (address_of, keccak256, personal_hash, recover,
                               recover_personal, sign)
@@ -606,6 +606,26 @@ class RealEvidence(unittest.TestCase):
         self.assertEqual(attestation.level, "partial")
         self.assertIn("NVIDIA signature unchecked", attestation.headline)
         self.assertIn("NVIDIA's verdict unchecked", attestation.summary)
+
+    # where their requests go
+
+    def test_without_a_session_given_each_uses_netguards(self):
+        """They made their own requests.Session, which follows a redirect wherever it
+        points, https to plain http included. netguard's follows one only where the
+        request could have been sent in the first place."""
+        import inspect
+
+        import requests
+        for module in (privacy, dcap, nras):
+            self.assertNotIn("requests.Session(", inspect.getsource(module))
+        plain = AssertionError("a plain requests.Session was made")
+        with mock.patch.object(netguard, "session", return_value=self.session) as made, \
+                mock.patch.object(requests, "Session", side_effect=plain):
+            self.assertEqual(dcap.verify(self.quote, now=self.when).status, "UpToDate")
+            self.assertEqual(nras.verify(self.fixture["nras_answer"], self.fixture["nonce"],
+                                         now=self.now), 8)
+            self.assertIs(TeeClient(API_URL, "k", TEXT).session, self.session)
+        self.assertEqual(made.call_count, 3)
 
     # together
 

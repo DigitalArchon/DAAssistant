@@ -50,6 +50,8 @@ from urllib.parse import unquote
 
 import requests
 
+from . import netguard
+
 # Intel SGX Root CA, as Intel publishes it at
 # https://certificates.trustedservices.intel.com/Intel_SGX_Provisioning_Certification_RootCA.cer
 # (sha256 44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3). Every chain
@@ -573,7 +575,7 @@ def verify(raw, session=None, now=None):
     be verified then, and the caller must say so rather than pass it.
     """
     x509 = _crypto()[0]
-    session = session or requests.Session()
+    session = session or netguard.session()
     now = now or datetime.now(timezone.utc)
     quote = parse_quote(raw)
 

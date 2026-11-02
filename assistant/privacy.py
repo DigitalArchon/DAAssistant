@@ -378,7 +378,9 @@ class TeeClient:
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
-        self.session = session or requests.Session()
+        # netguard's: a redirect is followed only where the request could have been
+        # sent in the first place, and never from https to plain http.
+        self.session = session or netguard.session()
         self.signing_address = None
         self._base = None
         # The two verifiers, replaceable so tests can stand in for Intel and NVIDIA.

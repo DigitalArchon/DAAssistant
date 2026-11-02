@@ -36,6 +36,7 @@ import time
 
 import requests
 
+from . import netguard
 from .dcap import since_boot
 
 JWKS_URL = "https://nras.attestation.nvidia.com/.well-known/jwks.json"
@@ -138,7 +139,7 @@ def verify(answer, nonce, session=None, now=None):
     """Check NRAS's answer. Returns the number of GPUs vouched for, or raises NrasError
     (refuse), KeysUnavailable (unchecked), or ImportError (no cryptography)."""
     import cryptography  # noqa: F401  - ImportError here, before anything is claimed
-    session = session or requests.Session()
+    session = session or netguard.session()
     now = now if now is not None else time.time()
     try:
         label, overall = answer[0]

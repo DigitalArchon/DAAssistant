@@ -542,6 +542,38 @@ class Lookups(unittest.TestCase):
         os.utime(path, (1, 1))
         self.assertTrue(self.library.look_up("newword")["results"])
 
+    def test_listing_does_not_wait_for_an_index_being_built(self):
+        # A Look up window lists its dictionaries on the main loop as it opens. While
+        # another window's first lookup was indexing, that waited for the index - 15
+        # seconds for 2 GB of dictionaries - and the whole app froze.
+        started, release = threading.Event(), threading.Event()
+        headwords = dsl.DSL.headwords
+
+        def slow(dictionary):
+            started.set()
+            release.wait(30)
+            yield from headwords(dictionary)
+
+        with mock.patch.object(dsl.DSL, "headwords", slow):
+            looking = threading.Thread(target=self.library.look_up, args=("glorp",))
+            looking.start()
+            try:
+                self.assertTrue(started.wait(10), "the indexing never started")
+                listed = []
+                lister = threading.Thread(target=lambda: listed.append(
+                    (self.library.listing(), self.library.available())))
+                lister.start()
+                lister.join(5)
+                self.assertFalse(lister.is_alive(), "listing waited for the indexing")
+                listing, available = listed[0]
+                self.assertEqual(sorted(name for _path, name, _icon, _about in listing),
+                                 ["Invented Dictionary", "Made-up StarDict"])
+                self.assertEqual(len(available), 2)
+            finally:
+                release.set()
+                looking.join(30)
+        self.assertEqual(len(self.library.look_up("glorp")["results"]), 2)
+
     def test_context_shares_its_budget_and_names_each_dictionary(self):
         found = self.library.look_up("glorp")
         context = dictionaries.as_context(found, 60)

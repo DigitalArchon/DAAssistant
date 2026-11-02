@@ -170,12 +170,21 @@ def signature(dictionary):
 
 
 class Library:
-    """Lookups across every enabled dictionary in a folder."""
+    """Lookups across every enabled dictionary in a folder.
+
+    Two locks, so that nothing a window asks for on the main loop waits while an index
+    is built. One guards the dictionaries opened - opening one reads its header, a
+    moment's work - and the other the index: building it, which takes a quarter of a
+    minute for 2 GB of dictionaries, and the lookups in it. Under one lock for both, a
+    Look up window opened while another window's first lookup was indexing froze the
+    whole app, as it listed its dictionaries' buttons on the main loop.
+    """
 
     def __init__(self, config, cache_dir=CACHE_DIR):
         self.config = config
         self.cache_dir = cache_dir
-        self._lock = threading.RLock()
+        self._readers_lock = threading.Lock()       # self._opened
+        self._index_lock = threading.RLock()        # the index, and lookups in it
         self._db = None
         self._opened = {}           # path -> dictionary object, or the error opening it
 
@@ -226,7 +235,7 @@ class Library:
         return [(d.path, d.name, d.icon, d.about()) for d in self.enabled()]
 
     def _open(self, kind, path):
-        with self._lock:
+        with self._readers_lock:
             if path not in self._opened:
                 try:
                     self._opened[path] = open_dictionary(kind, path)
@@ -276,7 +285,7 @@ class Library:
 
     def prepare(self, status=None):
         """Index whatever needs it; [(dictionary, id)] of everything usable."""
-        with self._lock:
+        with self._index_lock:
             dictionaries = self.enabled()
             ready = []
             for number, dictionary in enumerate(dictionaries, 1):
@@ -358,7 +367,7 @@ class Library:
          "suggestions": [headword...] when nothing matched}
         """
         word = " ".join((word or "").split())
-        with self._lock:
+        with self._index_lock:
             ready = self.prepare(status)
             if status:
                 status(f"Looking up “{word}”…")

@@ -5,10 +5,15 @@ combination, and it is read from the key event - its unshifted symbol, so Ctrl+S
 is "1" and not "!" - and kept in shortcuts.py's canonical spelling. Escape cancels,
 Backspace clears. Nothing is bound until Settings is saved; how it is bound then
 depends on the session (hotkeys.py), which the page says at the top.
+
+A key that is already one of the app's shortcuts never reaches the button as a key
+event: on X11 the app's own grab takes it, on Wayland the desktop does. So while a
+button waits, the page asks the running HotkeyManager to hand such a press to it
+instead of running the action (HotkeyManager.capture).
 """
 
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from .. import hotkeys, keybindings, shortcuts
 
@@ -18,18 +23,26 @@ PROMPT = "Press keys…"
 class ShortcutButton(Gtk.Button):
     """Shows a key combination; click, then press one to change it.
 
-    on_change(accel) with the canonical spelling, or "" when cleared."""
+    on_change(accel) with the canonical spelling, or "" when cleared. on_waiting(bool)
+    as it starts and stops waiting for a key."""
 
-    def __init__(self, accel, on_change, on_hint=None):
+    # How long focus may stay away before the wait for a key ends: see _on_focus_out.
+    FOCUS_GRACE_MS = 300
+
+    def __init__(self, accel, on_change, on_hint=None, on_waiting=None):
         super().__init__()
         self.accel = accel or ""
         self.on_change = on_change
         self.on_hint = on_hint or (lambda _text: None)
+        self.on_waiting = on_waiting or (lambda _waiting: None)
         self.capturing = False
+        self._leaving = None                # the timeout ending a wait focus has left
         self.set_size_request(170, -1)
         self.connect("clicked", lambda _w: self.start_capture())
         self.connect("key-press-event", self._on_key)
-        self.connect("focus-out-event", lambda *_a: self.stop_capture())
+        self.connect("focus-out-event", self._on_focus_out)
+        self.connect("focus-in-event", lambda *_a: self._stay())
+        self.connect("destroy", lambda _w: self._stay())
         self._sync()
 
     def _sync(self):
@@ -41,17 +54,54 @@ class ShortcutButton(Gtk.Button):
         self._sync()
 
     def start_capture(self):
+        self._stay()
         self.capturing = True
         self.grab_focus()
         self._sync()
         self.on_hint("Press the combination - Ctrl, Alt or Super with a key, or a "
                      "function key. Escape cancels, Backspace clears.")
+        self.on_waiting(True)
 
     def stop_capture(self):
+        self._stay()
         if self.capturing:
             self.capturing = False
             self._sync()
             self.on_hint("")
+            self.on_waiting(False)
+        return False
+
+    def take(self, accel):
+        """End the wait with `accel`, as though it had been pressed here."""
+        self.stop_capture()
+        self.set_accel(accel)
+        self.on_change(accel)
+
+    def _on_focus_out(self, *_args):
+        """Stop waiting for a key once focus has stayed away for a moment.
+
+        Not at once. On X11, pressing a key some program has grabbed - one of this
+        app's own shortcuts, say - moves the keyboard to that program while the key is
+        down, which GTK reports as losing focus, and it comes back when the key is let
+        go. That press is the very one to capture, and the grab's report of it arrives
+        just after the focus has gone. So the wait ends only after a moment, and at low
+        priority: behind the report, should one be waiting to be dispatched.
+        """
+        if self.capturing and self._leaving is None:
+            self._leaving = GLib.timeout_add(self.FOCUS_GRACE_MS, self._focus_gone,
+                                             priority=GLib.PRIORITY_LOW)
+        return False
+
+    def _focus_gone(self):
+        self._leaving = None
+        self.stop_capture()
+        return False
+
+    def _stay(self):
+        """Keep waiting: focus came back, or the wait ended some other way."""
+        if self._leaving is not None:
+            GLib.source_remove(self._leaving)
+            self._leaving = None
         return False
 
     def _base_keyval(self, event):
@@ -71,20 +121,14 @@ class ShortcutButton(Gtk.Button):
             self.stop_capture()
             return True
         if not state and event.keyval == Gdk.KEY_BackSpace:
-            self.capturing = False
-            self.set_accel("")
-            self.on_hint("")
-            self.on_change("")
+            self.take("")
             return True
         keyval = self._base_keyval(event)
         accel = shortcuts.from_keys(keyval, state)
         if accel is None:
             self.on_hint(shortcuts.refused(keyval, state))
             return True
-        self.capturing = False
-        self.set_accel(accel)
-        self.on_hint("")
-        self.on_change(accel)
+        self.take(accel)
         return True
 
 
@@ -104,6 +148,8 @@ class ShortcutsPage(Gtk.Box):
         self.staged = {name: shortcuts.canonical(chosen.get(name)) or ""
                        for name in hotkeys.action_names()}
         self.buttons, self.notes = {}, {}
+        self.waiting = None                 # the action whose button waits for a key
+        self.connect("destroy", lambda _w: self._waiting(None, False))
 
         mode = manager.mode if manager is not None else hotkeys.choose(config)[0]
         self.mode = mode
@@ -125,7 +171,8 @@ class ShortcutsPage(Gtk.Box):
             grid.attach(title, 0, row, 1, 1)
             button = ShortcutButton(self.staged[name],
                                     lambda accel, n=name: self._changed(n, accel),
-                                    self._hint)
+                                    self._hint,
+                                    lambda waiting, n=name: self._waiting(n, waiting))
             self.buttons[name] = button
             grid.attach(button, 1, row, 1, 1)
             clear = Gtk.Button.new_from_icon_name("edit-clear-symbolic",
@@ -184,6 +231,33 @@ class ShortcutsPage(Gtk.Box):
 
     def _hint(self, text):
         self.hint.set_text(text)
+
+    def _waiting(self, name, waiting):
+        """`name`'s button started or stopped waiting for a key; None: the page is gone.
+        One waits at a time, and while it does, the manager hands it a press of a key
+        that is already a shortcut (_take_bound)."""
+        if waiting:
+            for other, button in self.buttons.items():
+                if other != name and button.capturing:
+                    button.stop_capture()
+            self.waiting = name
+            if self.manager is not None:
+                self.manager.capture = self._take_bound
+        elif name is None or name == self.waiting:
+            self.waiting = None
+            if self.manager is not None and self.manager.capture == self._take_bound:
+                self.manager.capture = None
+
+    def _take_bound(self, action, accel):
+        """HotkeyManager.capture: `action`'s key, `accel`, was pressed while a button
+        waits. The button takes the key, and whichever action holds it here lets it go,
+        as when a key is given to a second action by pressing it (_changed). True: taken,
+        and the action is not run."""
+        button = self.buttons.get(self.waiting)
+        if button is None or not button.capturing:
+            return False
+        button.take(accel)
+        return True
 
     def _show_problems(self):
         if self.manager is None:

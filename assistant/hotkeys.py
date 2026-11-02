@@ -490,6 +490,37 @@ class HotkeyManager:
         self.wanted = {}
         self.problems = {}                  # action -> why it is not bound as asked
         self.error = None                   # the desktop could not be written
+        # capture(action, accel) -> bool, while Settings > Shortcuts waits for a key:
+        # see captured().
+        self.capture = None
+
+    def captured(self, action):
+        """Was `action` a press of one of our keys that a capture has taken? The app's
+        dispatch asks, and does not run an action that was.
+
+        While Settings > Shortcuts waits for a key, pressing one that is already a
+        shortcut never reaches it: on X11 the app's own grab takes the key, on Wayland
+        the desktop does, and the action runs instead. So the press is handed to the
+        capture, as the key bound to that action. Where the desktop runs `--action=NAME`
+        for each key (desktop, manual), that command is how a press arrives, through the
+        app's dispatch like the tray menu's items; the button stops waiting soon after
+        Settings loses focus to the panel, so the menu is not taken for a key. Elsewhere
+        presses come through _activated, and dispatch is left to run what it is given.
+        """
+        return self.mode in ("desktop", "manual") and self._hand_over(action)
+
+    def _activated(self, action):
+        """An X11 grab's or the portal's report of a press: run its action, unless a
+        capture takes the key. An idle callback."""
+        if not self._hand_over(action):
+            self.dispatch(action)
+        return False
+
+    def _hand_over(self, action):
+        capture = self.capture
+        if capture is None or action not in self.wanted:
+            return False
+        return bool(capture(action, self.wanted[action]))
 
     def start(self):
         """Bind the shortcuts chosen, by the mechanism choose() picks. Never raises.
@@ -529,7 +560,7 @@ class HotkeyManager:
 
         if self.mode == "x11" and self.wanted:
             try:
-                self.impl = X11Hotkeys(self.dispatch, self.wanted)
+                self.impl = X11Hotkeys(self._activated, self.wanted)
                 self.impl.start()
                 self.problems = dict(self.impl.failed)
             except Exception as e:
@@ -537,7 +568,8 @@ class HotkeyManager:
                 self.mode, self.detail = "off", f"X11 grab failed: {e}"
         elif self.mode == "portal" and self.wanted:
             try:
-                self.impl = PortalHotkeys(self.dispatch, self.wanted, self._portal_changed)
+                self.impl = PortalHotkeys(self._activated, self.wanted,
+                                          self._portal_changed)
                 self.impl.start()
             except Exception as e:
                 self.impl = None

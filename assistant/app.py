@@ -355,6 +355,8 @@ class Assistant:
         return self._start_privacy(uses)
 
     def dispatch(self, action):
+        if getattr(self.hotkeys, "captured", None) and self.hotkeys.captured(action):
+            return False                    # a key Settings > Shortcuts was waiting for
         handler = {
             "ask_anything": self.ask_anything,
             "translate_text": self.translate_text,

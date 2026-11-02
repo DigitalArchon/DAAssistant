@@ -987,6 +987,153 @@ class Page(TempDir):
         self.assertEqual(dialog.values()["hotkey_mode"], "auto")
 
 
+def pump(until=lambda: False, timeout=1.0):
+    """Run the main loop until `until()`, or for `timeout` seconds."""
+    import time
+    context = GLib.MainContext.default()
+    end = time.monotonic() + timeout
+    while not until() and time.monotonic() < end:
+        context.iteration(False)
+        time.sleep(0.005)
+
+
+class CapturingABoundKey(TempDir):
+    """A key that is already a shortcut never reaches the capture button - the app's own
+    X11 grab takes it, or the desktop does - so its activation is handed over instead."""
+
+    KEY = "<Control><Shift>5"
+
+    def manager(self, mode="x11"):
+        self.fired = []
+        config = self.config()
+        config.hotkeys = {"ocr_only": self.KEY}
+        manager = hotkeys.HotkeyManager(config, self.fired.append, run=FakeHost())
+        manager.mode, manager.wanted = mode, {"ocr_only": self.KEY}
+        return manager
+
+    def page(self, manager):
+        from assistant.ui.shortcuts import ShortcutsPage
+        page = ShortcutsPage(manager.config, manager)
+        window = Gtk.Window()
+        window.add(page)
+        self.addCleanup(window.destroy)
+        return page, window
+
+    def test_a_grab_or_the_portal_hands_the_press_to_a_waiting_capture(self):
+        manager = self.manager()
+        taken = []
+        manager.capture = lambda action, accel: taken.append((action, accel)) or True
+        manager._activated("ocr_only")
+        self.assertEqual((taken, self.fired), ([("ocr_only", self.KEY)], []))
+        manager.capture = lambda action, accel: False       # not taken after all: run
+        manager._activated("ocr_only")
+        manager.capture = None
+        manager._activated("ocr_only")
+        self.assertEqual(self.fired, ["ocr_only", "ocr_only"])
+
+    def test_the_x11_grabs_and_the_portal_report_presses_through_the_manager(self):
+        manager = self.manager()
+        manager.config.hotkey_mode = "x11"
+        taken = []
+        manager.capture = lambda action, accel: taken.append(accel) or True
+        with Patched(session_of(desktop="cinnamon", kind="x11")), \
+                mock.patch.object(hotkeys.X11Hotkeys, "start", return_value=[]):
+            manager.start()
+        GLib.idle_add(manager.impl.dispatch, "ocr_only")    # as _on_readable does
+        pump(lambda: taken)
+
+        # GNOME 48's portal: on "kde" start() would look for the old script's launchers
+        # in the real ~/.local/share/applications.
+        manager.config.hotkey_mode = "portal"
+        with Patched(session_of(desktop="gnome", portal=True)), \
+                mock.patch.object(hotkeys.PortalHotkeys, "start", return_value=True):
+            manager.start()
+        portal = manager.impl
+        portal.session_handle = "/org/freedesktop/portal/desktop/session/1_2/t"
+        portal._on_activated(None, None, None, None, "Activated", GLib.Variant(
+            "(osta{sv})", (portal.session_handle, "ocr_only", 0, {})))
+        pump(lambda: len(taken) > 1)
+        self.assertEqual(taken, [self.KEY, self.KEY])
+        self.assertEqual(self.fired, [])
+
+    def test_a_desktop_keybindings_action_reaches_the_capture_through_dispatch(self):
+        from assistant.app import Assistant
+        app = Assistant.__new__(Assistant)
+        app.hotkeys = self.manager("desktop")
+        app.config = app.hotkeys.config
+        ran = []
+        app.ocr_only = lambda: ran.append("ocr_only")
+        taken = []
+        app.hotkeys.capture = lambda action, accel: taken.append(accel) or True
+        app.dispatch("ocr_only")                # run-assistant --action=ocr_only
+        self.assertEqual((taken, ran), ([self.KEY], []))
+        # On X11 the presses come through the grab; an --action there is the tray
+        # menu, or typed, and runs whatever is waiting.
+        app.hotkeys.mode = "x11"
+        app.dispatch("ocr_only")
+        app.hotkeys.capture = None
+        app.hotkeys.mode = "desktop"
+        app.dispatch("ocr_only")
+        self.assertEqual((taken, ran), ([self.KEY], ["ocr_only", "ocr_only"]))
+
+    def test_the_waiting_button_takes_the_key_from_the_action_that_had_it(self):
+        manager = self.manager()
+        page, window = self.page(manager)
+        self.assertIsNone(manager.capture)
+        page.buttons["query_text"].start_capture()
+        self.assertIsNotNone(manager.capture)
+        manager._activated("ocr_only")          # the grab's report of the press
+        self.assertEqual(self.fired, [])
+        self.assertEqual(page.values()["hotkeys"], {"query_text": self.KEY})
+        self.assertEqual(page.buttons["query_text"].get_label(), "Ctrl+Shift+5")
+        self.assertEqual(page.buttons["ocr_only"].get_label(), "Disabled")
+        self.assertIn("went to Query clipboard text", page.notes["ocr_only"].get_text())
+        self.assertFalse(page.buttons["query_text"].capturing)
+        self.assertIsNone(manager.capture)      # done waiting: the key runs its action
+        manager._activated("ocr_only")
+        self.assertEqual(self.fired, ["ocr_only"])
+
+    def test_only_one_button_waits_and_closing_settings_lets_go(self):
+        manager = self.manager()
+        page, window = self.page(manager)
+        page.buttons["query_text"].start_capture()
+        page.buttons["ocr_only"].start_capture()
+        self.assertFalse(page.buttons["query_text"].capturing)
+        self.assertEqual(page.waiting, "ocr_only")
+        page.buttons["ocr_only"].stop_capture()             # Escape
+        self.assertIsNone(manager.capture)
+        page.buttons["query_text"].start_capture()
+        window.destroy()
+        self.assertIsNone(manager.capture)
+        manager._activated("ocr_only")
+        self.assertEqual(self.fired, ["ocr_only"])
+
+    def test_focus_taken_by_the_grab_does_not_end_the_wait_before_the_press(self):
+        from assistant.ui.shortcuts import ShortcutButton
+        manager = self.manager()
+        page, window = self.page(manager)
+        button = page.buttons["query_text"]
+        with mock.patch.object(ShortcutButton, "FOCUS_GRACE_MS", 20):
+            # The X server takes focus away as the grab starts, and the grab's report
+            # of the key follows: the press is still captured.
+            button.start_capture()
+            button._on_focus_out(button, None)
+            GLib.idle_add(manager._activated, "ocr_only")
+            pump(lambda: not button.capturing)
+            self.assertEqual(page.values()["hotkeys"], {"query_text": self.KEY})
+            # Focus that comes back keeps the wait; focus that stays away ends it.
+            button.start_capture()
+            button._on_focus_out(button, None)
+            button._stay()
+            pump(timeout=0.1)
+            self.assertTrue(button.capturing)
+            button._on_focus_out(button, None)
+            pump(lambda: not button.capturing)
+            self.assertFalse(button.capturing)
+            self.assertIsNone(manager.capture)
+        self.assertEqual(self.fired, [])
+
+
 class TrayMenu(TempDir):
     def test_keys_show_beside_their_actions(self):
         from assistant.app import Assistant

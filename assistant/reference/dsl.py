@@ -1,6 +1,7 @@
 """ABBYY Lingvo DSL dictionaries (.dsl, .dsl.dz), as GoldenDict reads them.
 
-A DSL file is text, usually UTF-16LE: a header of #NAME-style lines, then entries. An
+A DSL file is text, usually UTF-16LE - sometimes UTF-16BE or UTF-8, and in an older
+dictionary an 8-bit Windows code page: a header of #NAME-style lines, then entries. An
 entry is one or more headword lines starting in column 0, followed by body lines that
 start with a tab or space. The body carries Lingvo's own markup - [b], [i], [c color],
 [m1] for indentation, [ex] for examples, [ref] and <<...>> for cross-references, [s] for
@@ -46,15 +47,68 @@ UTF16BE = Encoding("utf-16-be", b"\x00\n", rb"\x00\n(?!\x00[\t \r\n])", 2,
                    codecs.BOM_UTF16_BE)
 UTF8 = Encoding("utf-8", b"\n", rb"\n(?![\t \r\n])", 1, codecs.BOM_UTF8)
 
+# Lingvo's names for the code page of an 8-bit DSL, which its #SOURCE_CODE_PAGE header
+# gives: Windows code pages.
+CODE_PAGES = {"latin": "cp1252", "cyrillic": "cp1251", "easterneuropean": "cp1250",
+              "greek": "cp1253", "turkish": "cp1254", "hebrew": "cp1255",
+              "arabic": "cp1256", "baltic": "cp1257", "vietnamese": "cp1258"}
+# What an 8-bit DSL that names no code page, or one of no known name, is read as.
+DEFAULT_CODE_PAGE = "cp1252"
+_SOURCE_CODE_PAGE = re.compile(rb'^[ \t]*#SOURCE_CODE_PAGE\b[ \t]*"?([^"\r\n]*)',
+                               re.M | re.I)
+# How much of a DSL is read to tell its encoding by: an 8-bit dictionary can run to a
+# page or two of plain ASCII before its first accented letter.
+SAMPLE = 64 * 1024
+_EIGHT_BIT = {}
 
-def detect(head):
+
+def eight_bit(code_page):
+    """An 8-bit code page as an Encoding. A byte is a character, so its lines begin
+    where UTF-8's do - after a newline byte that no tab, space or other line end
+    follows - and there is no byte-order mark to step over."""
+    if code_page not in _EIGHT_BIT:
+        _EIGHT_BIT[code_page] = Encoding(code_page, b"\n", rb"\n(?![\t \r\n])", 1, b"")
+    return _EIGHT_BIT[code_page]
+
+
+def _reads_as_utf8(sample):
+    """Whether `sample` is UTF-8, but for a character it cuts in two at its end."""
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(sample, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def detect(head, code_page=DEFAULT_CODE_PAGE):
+    """The Encoding of DSL text beginning with `head` - SAMPLE bytes, or all of a
+    shorter file.
+
+    A byte-order mark says. Without one, UTF-16 puts a zero in every other byte of the
+    header's ASCII: the odd bytes when little-endian, the even ones when big-endian.
+    Otherwise the text is UTF-8 if it reads as UTF-8, and if not, it is in an 8-bit
+    code page: the one its #SOURCE_CODE_PAGE header names, as GoldenDict reads it, or
+    else `code_page`. Read as UTF-8, a CP1251 dictionary had every Cyrillic headword
+    turned into U+FFFD. Plain ASCII reads as UTF-8 too, so a dictionary that names a
+    code page and has nothing but ASCII as far as `head` goes is taken at its word.
+    """
     if head.startswith(codecs.BOM_UTF16_LE):
         return UTF16LE
     if head.startswith(codecs.BOM_UTF16_BE):
         return UTF16BE
+    if head.startswith(codecs.BOM_UTF8):
+        return UTF8
     if len(head) >= 4 and head[1] == 0 and head[3] == 0:
         return UTF16LE                  # no BOM, but plainly little-endian UTF-16
-    return UTF8
+    if len(head) >= 4 and head[0] == 0 and head[2] == 0:
+        return UTF16BE                  # nor here, and big-endian
+    named = _SOURCE_CODE_PAGE.search(head)
+    if _reads_as_utf8(head) and not (named and head.isascii()):
+        return UTF8
+    if named:
+        name = re.sub(r"[^a-z]", "", named.group(1).decode("ascii", "ignore").lower())
+        code_page = CODE_PAGES.get(name, code_page)
+    return eight_bit(code_page)
 
 
 def icon_beside(stem):
@@ -73,7 +127,7 @@ class DSL:
         self.path = path
         self.compressed = path.endswith(".dz")
         self._dz = DictzipFile(path) if self.compressed else None
-        head = self._read(0, 8192)
+        head = self._read(0, SAMPLE)
         self.encoding = detect(head)
         self.name = self._header_name(head) or os.path.basename(path).split(".dsl")[0]
         self.icon = icon_beside(path[:path.lower().rfind(".dsl")])
@@ -90,7 +144,10 @@ class DSL:
                 data = f.read(64 * 1024)
         except OSError:
             return ""
-        text = data.decode(detect(data).name, "replace").lstrip("\ufeff")
+        # An 8-bit dictionary's annotation is in its code page, unless it names another.
+        eight = self.encoding not in (UTF16LE, UTF16BE, UTF8)
+        encoding = detect(data, self.encoding.name if eight else DEFAULT_CODE_PAGE)
+        text = data.decode(encoding.name, "replace").lstrip("\ufeff")
         return markup.about(re.sub(r"\A(?:[ \t]*#[^\n]*\n)+", "", text))   # #LANGUAGE lines
 
     def _read(self, offset, size):

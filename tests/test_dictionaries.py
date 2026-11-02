@@ -252,6 +252,111 @@ class DslFiles(unittest.TestCase):
         self.assertIn("a test creature", d.render("wug", d.read(*index["wug"]))[1])
 
 
+CYRILLIC_DSL = (
+    '#NAME "Выдуманный словарь"\n'
+    '#INDEX_LANGUAGE "Russian"\n'
+    '#CONTENTS_LANGUAGE "Russian"\n'
+    '#SOURCE_CODE_PAGE "Cyrillic"\n'
+    "\n"
+    "глорп\n"
+    "\t[m1]маленькое [i]выдуманное[/i] существо; см. <<флимбл>>\n"
+    "флимбл\n"
+    "\t[m1]бродить без цели\n"
+)
+
+
+class DslEncodings(unittest.TestCase):
+    """UTF-16 either way round, UTF-8, and the 8-bit code pages of older dictionaries."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, name, data):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def _entries(self, dictionary):
+        return {word: dictionary.render(word, dictionary.read(offset, size))[1]
+                for word, offset, size in dictionary.headwords()}
+
+    def test_an_8_bit_dsl_is_read_in_the_code_page_it_names(self):
+        path = self._write("cyrillic.dsl",
+                           CYRILLIC_DSL.replace("\n", "\r\n").encode("cp1251"))
+        d = dsl.DSL(path)
+        self.assertEqual(d.encoding.name, "cp1251")
+        self.assertEqual(d.name, "Выдуманный словарь")
+        entries = self._entries(d)
+        self.assertEqual(sorted(entries), ["глорп", "флимбл"])
+        self.assertEqual(entries["глорп"], "маленькое выдуманное существо; см. флимбл")
+        self.assertEqual(entries["флимбл"], "бродить без цели")
+
+    def test_and_is_looked_up_like_any_other(self):
+        folder = os.path.join(self.dir, "dicts")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "cyrillic.dsl"), "wb") as f:
+            f.write(CYRILLIC_DSL.encode("cp1251"))
+        library = Library(types.SimpleNamespace(dictionaries_dir=folder,
+                                                dictionaries_disabled=[]),
+                          cache_dir=os.path.join(self.dir, "cache"))
+        found = library.look_up("ГЛОРП")
+        self.assertEqual(found["results"][0]["dictionary"], "Выдуманный словарь")
+        entry, = found["results"][0]["entries"]
+        self.assertIn("<i>выдуманное</i>", entry["html"])
+
+    def test_lingvos_code_page_names(self):
+        for name, codec in (("Latin", "cp1252"), ("Cyrillic", "cp1251"),
+                            ("EasternEuropean", "cp1250"), ("Greek", "cp1253"),
+                            ("Turkish", "cp1254"), ("Hebrew", "cp1255"),
+                            ("Arabic", "cp1256"), ("Baltic", "cp1257"),
+                            ("Vietnamese", "cp1258")):
+            head = f'#NAME "x"\r\n#SOURCE_CODE_PAGE "{name}"\r\n\r\nw\r\n\t\xe9\r\n'
+            self.assertEqual(dsl.detect(head.encode("latin-1")).name, codec, name)
+
+    def test_one_that_names_no_code_page_is_latin(self):
+        path = self._write("latin.dsl",
+                           '#NAME "Latin One"\n\ncafé\n\ta place for coffee\n'
+                           .encode("cp1252"))
+        d = dsl.DSL(path)
+        self.assertEqual(d.encoding.name, "cp1252")
+        self.assertEqual(self._entries(d), {"café": "a place for coffee"})
+
+    def test_utf8_stays_utf8_whatever_its_header_says(self):
+        text = CYRILLIC_DSL.encode("utf-8")
+        self.assertIs(dsl.detect(text), dsl.UTF8)
+        self.assertIs(dsl.detect(b'#NAME "Plain"\n\nwug\n\ta word\n'), dsl.UTF8)
+
+    def test_a_code_page_named_ahead_of_pages_of_ascii_is_believed(self):
+        ascii_entries = "".join(f"word{i}\n\tplain sense {i}\n" for i in range(4000))
+        text = ('#NAME "Late"\n#SOURCE_CODE_PAGE "Cyrillic"\n\n' + ascii_entries
+                + "глорп\n\tвыдуманное\n")
+        self.assertGreater(len(ascii_entries), dsl.SAMPLE)
+        d = dsl.DSL(self._write("late.dsl", text.encode("cp1251")))
+        self.assertEqual(d.encoding.name, "cp1251")
+        self.assertEqual(self._entries(d)["глорп"], "выдуманное")
+
+    def test_its_annotation_is_read_in_its_code_page_too(self):
+        path = self._write("cyrillic.dsl", CYRILLIC_DSL.encode("cp1251"))
+        self._write("cyrillic.ann",
+                    "Выдуманный словарь, второе издание\n".encode("cp1251"))
+        self.assertEqual(dsl.DSL(path).about(), "Выдуманный словарь, второе издание")
+
+    def test_utf16_big_endian_without_a_byte_order_mark(self):
+        path = self._write("big.dsl", DSL_TEXT.replace("\n", "\r\n").encode("utf-16-be"))
+        d = dsl.DSL(path)
+        self.assertIs(d.encoding, dsl.UTF16BE)
+        self.assertEqual(d.name, "Invented Dictionary")
+        entries = self._entries(d)
+        self.assertEqual(sorted(entries), ["(to) flimble {about}", "café", "glorp",
+                                           "glorps", "zib"])
+        self.assertIn("The glorp sang.", entries["glorp"])
+        self.assertIn("\u0a20\u0100 here", entries["café"])
+
+
 class StarDictFiles(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

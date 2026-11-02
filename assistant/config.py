@@ -130,6 +130,9 @@ DEFAULTS = {
     # How tall the chat window's message box was last dragged, in pixels; 0 until it has
     # been. See ChatWindow._build_splitter.
     "chat_prompt_height": 0,
+    # The size of a conversation's text, as Ctrl+plus, Ctrl+minus and Ctrl+0 last left
+    # it: 1.0 is the theme's own. Kept for the next window.
+    "chat_zoom": 1.0,
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.

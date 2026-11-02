@@ -130,6 +130,12 @@ class SearchEncyclopediaWindow(ChatWindow):
             if search_now and query:
                 self._search(query)
 
+    def _zoom_views(self):
+        views = super()._zoom_views()
+        if getattr(self, "pane", None) is not None and self.pane.webview is not None:
+            views.append(self.pane.webview)
+        return views
+
     # ---- layout -------------------------------------------------------------
 
     def _layout(self, conversation):
@@ -138,6 +144,10 @@ class SearchEncyclopediaWindow(ChatWindow):
         self._result_rows = []
         self.pane = ArticlePane(self._encyclopedia, on_change=self._on_pane_change)
         self.pane.offer_lookups(self.config, self._look_up_elsewhere)
+        if self.pane.webview is not None:
+            # Ctrl+plus and Ctrl+minus size the article too: it is what is read here.
+            self.pane.webview.set_zoom_level(self._zoom_level())
+            self.pane.webview.connect("scroll-event", self._on_zoom_scroll)
 
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.set_margin_start(12)

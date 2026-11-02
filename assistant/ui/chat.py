@@ -77,6 +77,41 @@ COPY_BUTTON_JS = """
 """
 
 
+# A Copy button on each finished answer, copying it as Markdown - what it said, not
+# the page's rendering of it - through the copyAnswer handler, by its place among the
+# transcript's turns. The streaming answer, which is still being written, has none.
+ANSWER_COPY_JS = """
+(function () {
+  function decorate() {
+    document.querySelectorAll('body > .turn.assistant').forEach(function (turn) {
+      if (turn.querySelector('.cursor')) return;
+      var role = turn.querySelector('.role');
+      if (!role || role.querySelector('.copy-answer')) return;
+      var b = document.createElement('button');
+      b.className = 'copy-answer';
+      b.textContent = 'Copy';
+      b.title = 'Copy this answer as Markdown';
+      b.addEventListener('click', function () {
+        var turns = document.querySelectorAll('body > .turn');
+        window.webkit.messageHandlers.copyAnswer.postMessage(
+          String(Array.prototype.indexOf.call(turns, turn)));
+        b.textContent = 'Copied';
+        setTimeout(function () { b.textContent = 'Copy'; }, 1200);
+      });
+      role.appendChild(b);
+    });
+  }
+  decorate();
+  new MutationObserver(decorate).observe(
+    document.body, { childList: true, subtree: true });
+})();
+"""
+
+# The text sizes Ctrl+plus and Ctrl+minus step through.
+ZOOM_STEPS = (0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
+STOPPED_NOTE = "\n\n_(Stopped: the answer was cut short here.)_"
+
+
 SCREENSHOT_JS = """
 document.addEventListener('click', function (e) {
   var el = e.target.closest && e.target.closest('[data-shot]');
@@ -919,6 +954,8 @@ class ChatWindow(Gtk.Window):
     def _build_text_view(self):
         self.bubbles = bubbles.BubbleView(on_link=self._on_text_link,
                                           on_popup=self._on_text_popup)
+        self.bubbles.set_zoom(self._zoom_level())
+        self.bubbles.connect("scroll-event", self._on_zoom_scroll)
         self.webview = None
         if self.screenshot:
             self.bubbles.set_screenshot(
@@ -951,6 +988,12 @@ class ChatWindow(Gtk.Window):
         self._selection = ""
         lookups.track_selection(manager, WebKit2, self._on_selection)
         manager.connect("script-message-received::copyText", self._on_copy_code)
+        manager.register_script_message_handler("copyAnswer")
+        manager.connect("script-message-received::copyAnswer", self._on_copy_answer)
+        manager.add_script(WebKit2.UserScript(
+            ANSWER_COPY_JS,
+            WebKit2.UserContentInjectedFrames.TOP_FRAME,
+            WebKit2.UserScriptInjectionTime.END, None, None))
         manager.add_script(WebKit2.UserScript(
             COPY_BUTTON_JS,
             WebKit2.UserContentInjectedFrames.TOP_FRAME,
@@ -970,6 +1013,8 @@ class ChatWindow(Gtk.Window):
 
         self.webview = WebKit2.WebView(web_context=encscheme.context(),
                                        user_content_manager=manager)
+        self.webview.set_zoom_level(self._zoom_level())
+        self.webview.connect("scroll-event", self._on_zoom_scroll)
         self.webview.connect("load-changed", self._on_load_changed)
         self.webview.connect("web-process-terminated", self._on_web_process_gone)
         # Links to the browser, the view kept on the transcript, and a context menu
@@ -1166,6 +1211,69 @@ class ChatWindow(Gtk.Window):
         look_up = getattr(self.app, "look_up_selection", None)
         if look_up is not None:
             look_up(kind, what)
+
+    def _on_copy_answer(self, _manager, result):
+        """An answer's own Copy button: that answer, as the Markdown it was."""
+        try:
+            index = int(result.get_js_value().to_string())
+        except (AttributeError, ValueError):
+            return
+        turns = self._turns()
+        if not 0 <= index < len(turns):
+            return
+        turn = turns[index]
+        text = turn.get("export", turn.get("display", turn.get("content", "")))
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+        self.status.set_text("Copied the answer")
+
+    # ---- text size ----------------------------------------------------------
+
+    def _zoom_level(self):
+        try:
+            level = float(getattr(self.config, "chat_zoom", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            level = 1.0
+        return min(max(level, ZOOM_STEPS[0]), ZOOM_STEPS[-1])
+
+    def _zoom_views(self):
+        """The WebKit views Ctrl+plus and Ctrl+minus size: the transcript's."""
+        return [self.webview] if self.webview is not None else []
+
+    def _zoom(self, step):
+        """Ctrl+plus (1), Ctrl+minus (-1), Ctrl+0 (0): the conversation's text larger,
+        smaller or back to the theme's own - and kept for the next window."""
+        current = self._zoom_level()
+        if step == 0:
+            level = 1.0
+        elif step > 0:
+            level = next((z for z in ZOOM_STEPS if z > current + 0.001), ZOOM_STEPS[-1])
+        else:
+            level = next((z for z in reversed(ZOOM_STEPS) if z < current - 0.001),
+                         ZOOM_STEPS[0])
+        for view in self._zoom_views():
+            view.set_zoom_level(level)
+        if self.bubbles is not None:
+            self.bubbles.set_zoom(level)
+        self.config.chat_zoom = level
+        try:
+            self.config.save()
+        except OSError as e:
+            print(f"[chat] text size not kept: {e}")
+        self.status.set_text(f"Text size {round(level * 100)}%")
+
+    def _on_zoom_scroll(self, _widget, event):
+        """Ctrl and the wheel: the text size, as in a browser."""
+        if not event.state & Gdk.ModifierType.CONTROL_MASK:
+            return False
+        if event.direction == Gdk.ScrollDirection.UP:
+            self._zoom(1)
+        elif event.direction == Gdk.ScrollDirection.DOWN:
+            self._zoom(-1)
+        else:
+            found, _dx, dy = event.get_scroll_deltas()
+            if found and dy:
+                self._zoom(-1 if dy > 0 else 1)
+        return True
 
     def _on_copy_code(self, _manager, result):
         try:
@@ -1902,6 +2010,19 @@ class ChatWindow(Gtk.Window):
         if control and event.keyval in (Gdk.KEY_f, Gdk.KEY_F):
             self._find()
             return True
+        if control and event.keyval in (Gdk.KEY_w, Gdk.KEY_W):
+            self.destroy()
+            return True
+        if control and event.keyval in (Gdk.KEY_plus, Gdk.KEY_equal, Gdk.KEY_KP_Add):
+            self._zoom(1)
+            return True
+        if control and event.keyval in (Gdk.KEY_minus, Gdk.KEY_underscore,
+                                        Gdk.KEY_KP_Subtract):
+            self._zoom(-1)
+            return True
+        if control and event.keyval in (Gdk.KEY_0, Gdk.KEY_KP_0):
+            self._zoom(0)
+            return True
         if self.find_bar.is_open():
             if event.keyval == Gdk.KEY_F3:
                 self.find_bar.step(-1 if shift else 1)
@@ -1909,6 +2030,9 @@ class ChatWindow(Gtk.Window):
             if event.keyval == Gdk.KEY_Escape:
                 self.find_bar.close()
                 return True
+        if event.keyval == Gdk.KEY_Escape and self._cancel is not None:
+            self._stop()                # Escape stops an answer, as Stop does
+            return True
         if alt and event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right) and self._lookup:
             self._turn_page(-1 if event.keyval == Gdk.KEY_Left else 1)
             return True
@@ -2119,10 +2243,24 @@ class ChatWindow(Gtk.Window):
         # Note whether a streaming placeholder is on screen BEFORE _finish_stream
         # clears the flag - it decides replace-vs-append below.
         placeholder = self._streaming_text is not None
+        partial = (self._streaming_text or "").strip() if cancelled else ""
         self._finish_stream()
         if cancelled:
             self.status.set_text("Stopped")
             self._settle_question()
+            if partial:
+                # What had come is kept, said to be cut short, and carried into the
+                # conversation like any answer - not thrown away with the Stop.
+                turn = {"role": "assistant", "content": partial + STOPPED_NOTE,
+                        "model": self._streaming_model, "stopped": True}
+                if self.privacy is not None:
+                    turn["privacy"] = self._badge((
+                        "🔒 Stopped · unchecked", "warn",
+                        "Stopped before the reply was complete, so its signature was "
+                        "not checked. It came only from this conversation's attested "
+                        "models."))
+                self._append_turn(turn, replace_placeholder=placeholder)
+                return
             self._render(full=True)      # full redraw drops the placeholder
             return
         if not result:

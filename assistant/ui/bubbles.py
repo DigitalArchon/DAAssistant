@@ -29,6 +29,16 @@ LABELS = {"user": "YOU", "assistant": "ASSISTANT", "lookup": "LOOK UP",
 NEAR_END = 48
 
 
+def _theme_font_points():
+    """The size of the theme's own font, in points: what a zoom of 1.0 is."""
+    settings = Gtk.Settings.get_default()
+    name = (settings.get_property("gtk-font-name") or "") if settings else ""
+    try:
+        return float(name.rsplit(" ", 1)[-1])
+    except ValueError:
+        return 11.0
+
+
 class BubbleView(Gtk.ScrolledWindow):
     def __init__(self, on_link=None, on_popup=None):
         """`on_link(url)`: offered every link clicked; see markdown_text.configure.
@@ -36,6 +46,8 @@ class BubbleView(Gtk.ScrolledWindow):
         super().__init__()
         self.on_link = on_link
         self.on_popup = on_popup
+        # The text size (ChatWindow._zoom), one stylesheet for every turn's view.
+        self._zoom = Gtk.CssProvider()
         self.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.box.set_margin_start(14)
@@ -107,6 +119,8 @@ class BubbleView(Gtk.ScrolledWindow):
 
         view = Gtk.TextView()
         markdown_text.configure(view, self.on_link)
+        view.get_style_context().add_provider(self._zoom,
+                                              Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         if self.on_popup is not None:
             view.connect("populate-popup", self.on_popup)
         # The bubble supplies the padding; the view keeps two pixels at the bottom so
@@ -125,8 +139,24 @@ class BubbleView(Gtk.ScrolledWindow):
 
         self.box.pack_start(heading, False, False, 0)
         self.box.pack_start(bubble, False, False, 0)
-        return {"role": role, "premium": premium, "privacy": privacy, "label": label,
-                "heading": heading, "bubble": bubble, "view": view, "text": None}
+        row = {"role": role, "premium": premium, "privacy": privacy, "label": label,
+               "heading": heading, "bubble": bubble, "view": view, "text": None}
+        if role == "assistant":
+            # This answer alone, as the WebKit view's Copy on each answer does.
+            copy = Gtk.Button.new_with_label("Copy")
+            copy.set_relief(Gtk.ReliefStyle.NONE)
+            copy.set_tooltip_text("Copy this answer")
+            copy.get_style_context().add_class("copy-answer")
+            copy.connect("clicked", lambda _b: Gtk.Clipboard.get(
+                Gdk.SELECTION_CLIPBOARD).set_text(row["text"] or "", -1))
+            heading.pack_end(copy, False, False, 0)
+        return row
+
+    def set_zoom(self, zoom):
+        """The turns' text at `zoom` times the theme's own size."""
+        size = _theme_font_points() * zoom
+        self._zoom.load_from_data(
+            f"textview, textview text {{ font-size: {size:.1f}pt; }}".encode())
 
     def _drop_from(self, index):
         for row in self._rows[index:]:

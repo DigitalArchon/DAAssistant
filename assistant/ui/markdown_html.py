@@ -259,6 +259,12 @@ body {{
   font-size: 11px; font-weight: 700; letter-spacing: .07em;
   text-transform: uppercase; color: {muted}; margin-bottom: 6px;
 }}
+.role .copy-answer {{
+  float: right; font: 11px system-ui; letter-spacing: 0; text-transform: none;
+  padding: 1px 8px; border-radius: 6px; border: 1px solid rgba(128,128,128,.4);
+  background: rgba(128,128,128,.14); color: inherit; cursor: pointer; opacity: .55;
+}}
+.role .copy-answer:hover {{ opacity: 1; }}
 .badge {{
   display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 9px;
   background: {user_bg}; color: {fg}; font-size: 10px; letter-spacing: .04em;

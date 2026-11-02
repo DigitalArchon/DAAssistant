@@ -60,9 +60,14 @@ DSL_TEXT = (
 )
 
 
+def dsl_bytes(text=DSL_TEXT):
+    """A DSL as Lingvo writes one: UTF-16LE after a byte-order mark, CRLF line ends."""
+    return b"\xff\xfe" + text.replace("\n", "\r\n").encode("utf-16-le")
+
+
 def write_dsl(path, text=DSL_TEXT):
     with open(path, "wb") as f:
-        f.write(b"\xff\xfe" + text.replace("\n", "\r\n").encode("utf-16-le"))
+        f.write(dsl_bytes(text))
 
 
 def write_dictzip(path, data, chunk=64):
@@ -589,6 +594,75 @@ class Lookups(unittest.TestCase):
         text = dictionaries.as_markdown(found)
         self.assertIn("### Invented Dictionary", text)
         self.assertIn(r"\[not a tag\]", text)
+
+
+class ReplacedFiles(unittest.TestCase):
+    """A dictionary replaced while the app runs - a newer edition copied over it - is
+    read afresh, not through what was read of the old one as it opened."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+        self.library = Library(self.config, cache_dir=os.path.join(self.dir, "cache"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _touch_all(self, when):
+        for name in os.listdir(self.folder):
+            os.utime(os.path.join(self.folder, name), (when, when))
+
+    def test_a_dictzipped_dsl_comes_back_right(self):
+        path = os.path.join(self.folder, "edition.dsl.dz")
+        write_dictzip(path, dsl_bytes(), chunk=50)
+        found = self.library.look_up("glorp")
+        self.assertIn("imaginary", found["results"][0]["entries"][0]["text"])
+
+        # Other entries, another name, and chunks of another size: read through the
+        # old file's table of chunks, the new one gave garbage and zlib errors.
+        second = '#NAME "Second Edition"\n\n' + "\n".join(
+            f"word{i}\n\t[m1]sense {i} of the second edition" for i in range(40))
+        write_dictzip(path, dsl_bytes(second), chunk=37)
+        self._touch_all(2)
+        found = self.library.look_up("word30")
+        self.assertEqual([r["dictionary"] for r in found["results"]], ["Second Edition"])
+        self.assertEqual(found["results"][0]["entries"][0]["text"],
+                         "sense 30 of the second edition")
+        self.assertEqual(self.library.look_up("glorp")["results"], [])
+        self.assertEqual([name for _path, name in self.library.available()],
+                         ["Second Edition"])
+
+    def test_a_stardict_comes_back_right(self):
+        write_stardict(self.folder, "sd", [("alpha", b"<b>first</b> edition")],
+                       types_="m", compress=True, name="First Edition")
+        found = self.library.look_up("alpha")
+        self.assertIn("&lt;b&gt;first", found["results"][0]["entries"][0]["html"])
+
+        # HTML now, not plain text, with more in its .dict.dz.
+        write_stardict(self.folder, "sd", [("beta", b"filler " * 60),
+                                           ("alpha", b"<b>second</b> edition")],
+                       types_="h", compress=True, name="Second Edition")
+        self._touch_all(2)
+        found = self.library.look_up("alpha")
+        self.assertEqual(found["results"][0]["dictionary"], "Second Edition")
+        self.assertEqual(found["results"][0]["entries"][0]["html"],
+                         "<b>second</b> edition")
+
+    def test_one_that_would_not_open_is_tried_again_once_it_can(self):
+        ifo = write_stardict(self.folder, "sd", [("alpha", b"a")])
+        dict_path = ifo[:-len(".ifo")] + ".dict"
+        with open(dict_path, "rb") as f:
+            data = f.read()
+        os.unlink(dict_path)
+        self.assertEqual(self.library.available(), [])
+        with open(dict_path, "wb") as f:
+            f.write(data)
+        os.utime(self.folder, (2, 2))
+        self.assertEqual([name for _path, name in self.library.available()],
+                         ["Made-up StarDict"])
 
 
 class Ordering(unittest.TestCase):

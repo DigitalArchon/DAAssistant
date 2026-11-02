@@ -159,8 +159,14 @@ def open_dictionary(kind, path):
 
 
 def signature(dictionary):
+    return _signature(dictionary.files())
+
+
+def _signature(files):
+    """What a dictionary's files are known by, to its index and to the reader kept
+    open for it: their names, sizes and modification times."""
     parts = []
-    for path in dictionary.files():
+    for path in files:
         try:
             st = os.stat(path)
         except OSError:
@@ -186,7 +192,9 @@ class Library:
         self._readers_lock = threading.Lock()       # self._opened
         self._index_lock = threading.RLock()        # the index, and lookups in it
         self._db = None
-        self._opened = {}           # path -> dictionary object, or the error opening it
+        # path -> (the dictionary object, or the error opening it; the signature of
+        # its files when it was opened)
+        self._opened = {}
 
     # ---- the index --------------------------------------------------------
 
@@ -212,22 +220,23 @@ class Library:
         return os.path.expanduser(getattr(self.config, "dictionaries_dir", "") or "")
 
     def _all(self):
-        """Every dictionary in the folder that opens, in the user's order: the ones
-        Settings has placed, as placed, then the rest by name."""
+        """Every dictionary in the folder that opens, in the user's order - the ones
+        Settings has placed, as placed, then the rest by name - as (dictionary, the
+        signature of its files when it was opened)."""
         found = []
         for kind, path in discover(self.folder()):
-            dictionary = self._open(kind, path)
+            dictionary, opened_as = self._open(kind, path)
             if not isinstance(dictionary, Exception):
-                found.append(dictionary)
+                found.append((dictionary, opened_as))
         order = {path: i for i, path in
                  enumerate(getattr(self.config, "dictionaries_order", None) or [])}
-        return sorted(found, key=lambda d: (order.get(d.path, len(order)),
-                                            d.name.casefold()))
+        return sorted(found, key=lambda pair: (order.get(pair[0].path, len(order)),
+                                               pair[0].name.casefold()))
 
     def available(self):
         """[(path, name)] of every dictionary in the folder, enabled or not, in order -
         what Settings lists. Opening one reads its header only."""
-        return [(d.path, d.name) for d in self._all()]
+        return [(d.path, d.name) for d, _opened_as in self._all()]
 
     def listing(self):
         """[(path, name, icon path or None, about)] of the enabled dictionaries, in
@@ -235,22 +244,52 @@ class Library:
         return [(d.path, d.name, d.icon, d.about()) for d in self.enabled()]
 
     def _open(self, kind, path):
+        """(the dictionary at `path`, or the error opening it; the signature of its
+        files when it was opened).
+
+        Opened once and kept - until its files change. What a reader read as it
+        opened, it keeps: a .dz's table of chunks, a StarDict's sametypesequence,
+        .syn and name, a DSL's encoding and name. A file replaced while the app ran -
+        a newer edition copied over it - went on being read through what was read of
+        the old one: its entries garbled, zlib errors, the old name. So a reader whose
+        files are no longer as they were when it opened them is opened again. A file
+        that would not open is tried again once it changes, or once a file appears or
+        goes beside it - a StarDict's missing .dict, say.
+        """
         with self._readers_lock:
-            if path not in self._opened:
-                try:
-                    self._opened[path] = open_dictionary(kind, path)
-                except Exception as e:      # a broken file must not stop the others
-                    self._opened[path] = e
-            return self._opened[path]
+            cached = self._opened.get(path)
+            if cached is not None:
+                dictionary, opened_as = cached
+                if isinstance(dictionary, Exception):
+                    now = _signature([path, os.path.dirname(path)])
+                else:
+                    now = signature(dictionary)
+                if now == opened_as:
+                    return cached
+            try:
+                dictionary = open_dictionary(kind, path)
+                opened_as = signature(dictionary)
+            except Exception as e:      # a broken file must not stop the others
+                dictionary, opened_as = e, _signature([path, os.path.dirname(path)])
+            self._opened[path] = (dictionary, opened_as)
+            return dictionary, opened_as
 
     def enabled(self):
-        disabled = set(getattr(self.config, "dictionaries_disabled", None) or [])
-        return [d for d in self._all() if d.path not in disabled]
+        return [d for d, _opened_as in self._enabled()]
 
-    def _ensure(self, dictionary, status=None, position=None):
-        """The dictionary's id in the index, building its rows if they are stale."""
+    def _enabled(self):
+        """The enabled dictionaries, as _all() gives them."""
+        disabled = set(getattr(self.config, "dictionaries_disabled", None) or [])
+        return [(d, opened_as) for d, opened_as in self._all() if d.path not in disabled]
+
+    def _ensure(self, dictionary, sig, status=None, position=None):
+        """The dictionary's id in the index, building its rows if they are stale.
+
+        `sig` is the signature its files had when it was opened: its rows are read
+        through what it read then, so they are filed under that. Should its files
+        change even as it is indexed, the next lookup opens it again (see _open), finds
+        its rows filed under a signature not its own, and builds them again."""
         db = self._connection()
-        sig = signature(dictionary)
         row = db.execute("SELECT id, signature FROM dictionaries WHERE path = ?",
                          (dictionary.path,)).fetchone()
         if row and row[1] == sig:
@@ -286,11 +325,11 @@ class Library:
     def prepare(self, status=None):
         """Index whatever needs it; [(dictionary, id)] of everything usable."""
         with self._index_lock:
-            dictionaries = self.enabled()
+            dictionaries = self._enabled()
             ready = []
-            for number, dictionary in enumerate(dictionaries, 1):
+            for number, (dictionary, opened_as) in enumerate(dictionaries, 1):
                 try:
-                    ident = self._ensure(dictionary, status,
+                    ident = self._ensure(dictionary, opened_as, status,
                                          f" ({number} of {len(dictionaries)})")
                 except Exception as e:
                     print(f"[dictionaries] {dictionary.path}: {e}")

@@ -270,3 +270,26 @@ class TheViewStaysOnItsPage(unittest.TestCase):
             self.webkit.ContextMenuAction.RELOAD))
         hit = types.SimpleNamespace(context_is_link=lambda: False)
         self.assertTrue(self.guard._on_context_menu(self.view, menu, None, hit))
+
+
+@unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+class AnArticleFromAFolderWithASpace(unittest.TestCase):
+    def test_its_own_load_is_let_through_however_the_uri_is_spelled(self):
+        from assistant.ui import webpolicy
+        webkit = chat.WebKit2
+        guard = webpolicy.Guard(webkit, webkit.WebView())
+        guard.expect("file:///home/u/My%20DVD%20%5B2015%5D/data/")
+        for reported in ("file:///home/u/My%20DVD%20%5B2015%5D/data/",
+                         "file:///home/u/My DVD [2015]/data/"):
+            action = types.SimpleNamespace(
+                get_navigation_type=lambda: webkit.NavigationType.OTHER,
+                get_request=lambda r=reported: types.SimpleNamespace(get_uri=lambda: r))
+            decision = types.SimpleNamespace(get_navigation_action=lambda a=action: a,
+                                             ignore=lambda: self.fail("refused its own"))
+            self.assertFalse(guard._on_decide_policy(
+                None, decision, webkit.PolicyDecisionType.NAVIGATION_ACTION))
+
+    def test_the_pane_names_its_base_as_a_uri(self):
+        import pathlib
+        base = pathlib.Path("/home/u/My DVD [2015]/data").as_uri() + "/"
+        self.assertEqual(base, "file:///home/u/My%20DVD%20%5B2015%5D/data/")

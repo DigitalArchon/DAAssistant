@@ -19,6 +19,8 @@ Links are opened with hostenv.open_uri, so the browser gets the host's environme
 and a link nothing can open - mailto: with no mail program - is said, not raised.
 """
 
+from urllib.parse import unquote
+
 from .. import gtkcompat  # noqa: F401
 from gi.repository import Gio, GLib
 
@@ -69,7 +71,7 @@ class Guard:
 
     def expect(self, uri):
         """The view is about to load `uri` itself (load_html's base, or about:blank)."""
-        self._expected.add(uri or "about:blank")
+        self._expected.add(unquote(uri or "about:blank"))
 
     def open_external(self, uri):
         try:
@@ -88,7 +90,7 @@ class Guard:
         uri = action.get_request().get_uri() or ""
         kind = action.get_navigation_type()
         navigation = self.webkit.NavigationType
-        if decision_type == types.NAVIGATION_ACTION and uri in self._expected \
+        if decision_type == types.NAVIGATION_ACTION and unquote(uri) in self._expected \
                 and kind in (navigation.OTHER, navigation.RELOAD):
             return False                    # a page of ours, loading
         decision.ignore()

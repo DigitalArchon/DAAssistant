@@ -8,6 +8,8 @@ played by Ruffle. Search Encyclopedia is built around it.
 """
 
 import html
+import os
+import pathlib
 
 from .. import gtkcompat
 from gi.repository import Gdk, Gtk
@@ -157,7 +159,10 @@ class ArticlePane(Gtk.Box):
         self._highlight = highlight
         page = encyclopedia_html.document(title, label, body, self.dark)
         # file:// as the base: WebKit plays the DVD's films only from file addresses.
-        base = "file://" + (self.encyclopedia.dvd() or "/").rstrip("/") + "/"
+        # Spelled as a URI - a folder named "My DVD" is My%20DVD - for WebKit, and for
+        # the guard, which lets only this page's own load through.
+        base = pathlib.Path(os.path.abspath(self.encyclopedia.dvd() or "/")).as_uri()
+        base = base if base.endswith("/") else base + "/"
         self.guard.expect(base)
         self.webview.load_html(page, base)
 

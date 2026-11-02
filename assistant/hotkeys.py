@@ -36,6 +36,7 @@ from . import APP_ID, keybindings, shortcuts
 ACTIONS = [
     ("ask_anything", "Ask anything", "<Control><Shift>9"),
     ("translate_text", "Translate clipboard text", "<Control><Shift>1"),
+    ("translate_selection", "Translate selected text", "<Control><Shift>0"),
     ("ocr_translate", "Translate image selection", "<Control><Shift>2"),
     ("query_text", "Query clipboard text", "<Control><Shift>3"),
     ("query_image", "Query image selection", "<Control><Shift>4"),
@@ -49,7 +50,8 @@ ACTIONS = [
 ENCYCLOPEDIA_ACTIONS = ("search_encyclopedia", "ask_encyclopedia")
 
 # What versions before Settings > Shortcuts bound, which an existing install keeps.
-LEGACY_KEYS = {name: key for name, _, key in ACTIONS if name != "ask_anything"}
+LEGACY_KEYS = {name: key for name, _, key in ACTIONS
+               if name not in ("ask_anything", "translate_selection")}
 
 LABELS = {name: label for name, label, _ in ACTIONS}
 

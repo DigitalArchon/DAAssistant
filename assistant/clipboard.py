@@ -13,6 +13,10 @@ to tell us. Everything below exists to get an answer anyway:
               the focus rule. Needs the wl-clipboard package.
   klipper   - Plasma's clipboard manager, over D-Bus. Already running on any KDE desktop,
               so it is the one that needs nothing installed.
+
+The highlighted text - X11's PRIMARY selection, what a middle click pastes, which
+Wayland keeps too - is read the same way (get_selection), for Translate selected text:
+nothing has to be copied first.
 """
 
 import shutil
@@ -27,6 +31,12 @@ FALLBACKS = [
     (["wl-paste", "-n", "--type", "text"], "wl-paste"),
     (["xclip", "-selection", "clipboard", "-o"], "xclip"),
     (["xsel", "--clipboard", "--output"], "xsel"),
+]
+
+SELECTION_FALLBACKS = [
+    (["wl-paste", "-n", "--primary", "--type", "text"], "wl-paste"),
+    (["xclip", "-selection", "primary", "-o"], "xclip"),
+    (["xsel", "--primary", "--output"], "xsel"),
 ]
 
 KLIPPER = ["gdbus", "call", "--session", "--dest", "org.kde.klipper",
@@ -83,15 +93,34 @@ def get_text():
         if result.returncode == 0 and result.stdout and result.stdout.strip():
             return result.stdout, "text"
 
+    # A picture before Klipper: asked about a copied image, Klipper answers with a line
+    # describing it, which read as the text to translate.
+    if clipboard.wait_is_image_available() or get_image() is not None:
+        return None, "image"
+
     text = _klipper_text()
     if text:
         return text, "text"
 
-    if clipboard.wait_is_image_available() or get_image() is not None:
-        return None, "image"
     if clipboard.wait_is_uris_available():
         return None, "file"
     return None, "empty"
+
+
+def get_selection():
+    """The highlighted text, or None: GTK's primary selection, then the command-line
+    tools, which on Wayland can read it without focus as they read the clipboard."""
+    text = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).wait_for_text()
+    if text and text.strip():
+        return text
+    for argv, _name in SELECTION_FALLBACKS:
+        if not shutil.which(argv[0]):
+            continue
+        result = _run(argv)
+        if result is not None and result.returncode == 0 and result.stdout \
+                and result.stdout.strip():
+            return result.stdout
+    return None
 
 
 def unreadable_hint():

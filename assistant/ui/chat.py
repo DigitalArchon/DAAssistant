@@ -1069,6 +1069,7 @@ class ChatWindow(Gtk.Window):
         self.entry.set_margin_top(6)
         self.entry.set_margin_bottom(6)
         self.entry.connect("key-press-event", self._on_entry_key)
+        self.entry.connect("paste-clipboard", self._on_entry_paste)
         lookups.attach_to_textview(self.entry, self.config, self._look_up_elsewhere)
         # Files dropped on the message box are attached, not pasted in as their paths.
         self.entry.drag_dest_add_uri_targets()
@@ -1432,6 +1433,33 @@ class ChatWindow(Gtk.Window):
                 return
 
         next_file()
+
+    def attach_image(self, image, name):
+        """Attach a picture from elsewhere - the clipboard - through the black-out
+        editor, as a picture file is."""
+        def done(result, _boxes):
+            if self._destroyed:
+                return
+            if result is None:
+                self.status.set_text(f"{name} not attached")
+            else:
+                self._add_attachment(attachments.image_attachment(
+                    name, result, False, self.config))
+
+        self._redact(image, done, name)
+
+    def _on_entry_paste(self, entry):
+        """Ctrl+V, or Paste from the box's menu: a picture on the clipboard, and no
+        text, is attached - through the black-out editor - rather than pasting nothing."""
+        board = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        if board.wait_is_text_available() or not board.wait_is_image_available():
+            return
+        from .. import clipboard
+        image = clipboard.get_image()
+        if image is None:
+            return
+        entry.stop_emission_by_name("paste-clipboard")
+        self.attach_image(image, "Pasted picture")
 
     def _redact(self, image, on_done, name):
         """The black-out editor, for a picture about to be attached."""

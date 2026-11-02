@@ -358,6 +358,7 @@ class Assistant:
         handler = {
             "ask_anything": self.ask_anything,
             "translate_text": self.translate_text,
+            "translate_selection": self.translate_selection,
             "ocr_translate": self.ocr_translate,
             "query_text": self.query_text,
             "query_image": self.query_image,
@@ -408,8 +409,10 @@ class Assistant:
     # ---- capture plumbing -------------------------------------------------
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
-                       transcribe_first=False, system=None, answer_by_text=False):
+                       transcribe_first=False, system=None, answer_by_text=False,
+                       image=None):
         """Capture -> review -> send. `build(prompt)` returns (prompt_text, display).
+        `image`, a picture from the clipboard, is reviewed in place of a capture.
 
         The first step goes to the model chosen for its job, and the conversation then
         belongs to the answering model - text or premium, private versions of each in
@@ -444,7 +447,10 @@ class Assistant:
                                  web_search_default, transcribe_first, system, privacy,
                                  answer_by_text)
 
-        self.capture.select_region(on_image, on_error)
+        if image is not None:
+            on_image(image)             # a picture from the clipboard: nothing to capture
+        else:
+            self.capture.select_region(on_image, on_error)
 
     def _review_capture(self, image, title, ask_prompt, build, on_error,
                         web_search_default=None, transcribe_first=False, system=None,
@@ -663,15 +669,33 @@ class Assistant:
         return preflight
 
     def _start_clipboard(self, title, ask_prompt, build, web_search_default=None,
-                         system=None, job="answers"):
+                         system=None, job="answers", source="clipboard", picture=None):
         """Clipboard -> review -> send, to the answering model; `job` is what it does
-        with the text, for the review dialog to say ("translates it")."""
+        with the text, for the review dialog to say ("translates it").
+
+        `source` "selection" reads the highlighted text instead of the clipboard. A
+        picture on the clipboard goes to `picture(image)` - the operation's image twin,
+        reviewed as a capture would be - rather than being refused."""
         if not self._require_api_key():
             return
+        if source == "selection":
+            text = clipboard.get_selection()
+            if not text:
+                hint = clipboard.unreadable_hint()
+                self.notify("Nothing is highlighted. Select some text first"
+                            + (f". {hint}" if hint else ""), urgency="normal")
+                return
+            kind = "text"
+        else:
+            text, kind = clipboard.get_text()
+        if kind == "image" and picture is not None:
+            image = clipboard.get_image()
+            if image is not None:
+                picture(image)
+                return
         privacy = self._start_privacy((self._answer_role(),))
         if privacy is False:
             return
-        text, kind = clipboard.get_text()
         if kind != "text":
             message = {
                 "image": "The clipboard holds an image, not text",
@@ -730,7 +754,7 @@ class Assistant:
                               "_Transcribe all text in the selected region._"),
             web_search_default=False)
 
-    def ocr_translate(self):
+    def ocr_translate(self, image=None):
         language = self.config.default_language
 
         def build(extracted=None):
@@ -746,14 +770,14 @@ class Assistant:
 
         self._start_capture("OCR + Translate", ask_prompt=False, build=build,
                             web_search_default=False, transcribe_first=True,
-                            system=prompts.translate_system(language))
+                            system=prompts.translate_system(language), image=image)
 
-    def query_image(self):
+    def query_image(self, image=None):
         # Answered by the selected text model: with the image itself when it accepts
         # images, otherwise from the vision model's reading of it. See _image_answer.
         self._start_capture("Query image", ask_prompt=True,
                             build=lambda prompt, extracted=None: (prompt, prompt),
-                            answer_by_text=True)
+                            answer_by_text=True, image=image)
 
     def translate_text(self):
         language = self.config.default_language
@@ -766,7 +790,22 @@ class Assistant:
             # Translation works from the text it was given; a search only adds cost and
             # latency. Still available per request, and for follow-ups.
             web_search_default=False,
-            system=prompts.translate_system(language), job="translates it")
+            system=prompts.translate_system(language), job="translates it",
+            picture=lambda image: self.ocr_translate(image=image))
+
+    def translate_selection(self):
+        """Translate the highlighted text without copying it first: the primary
+        selection, what a middle click would paste."""
+        language = self.config.default_language
+        self._start_clipboard(
+            "Translate selection", ask_prompt=False,
+            build=lambda text, _p: (
+                prompts.translate_text(text),
+                f"_Translate the selected text into {language}._\n\n"
+                f"> {text[:400]}{'…' if len(text) > 400 else ''}"),
+            web_search_default=False,
+            system=prompts.translate_system(language), job="translates it",
+            source="selection")
 
     def query_text(self):
         language = self.config.default_language
@@ -774,7 +813,8 @@ class Assistant:
             "Query text", ask_prompt=True,
             build=lambda text, prompt: (prompts.query_text(text, prompt),
                                         prompt),
-            system=prompts.query_text_system(language))
+            system=prompts.query_text_system(language),
+            picture=lambda image: self.query_image(image=image))
 
     def look_up_selection(self, kind, what):
         """A word or a phrase selected and right-clicked, wherever the app shows text:

@@ -110,7 +110,8 @@ class StubAssistant:
         self._reviews = []
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
-                       transcribe_first=False, system=None, answer_by_text=False):
+                       transcribe_first=False, system=None, answer_by_text=False,
+                       image=None):
         self.started = {"title": title, "ask_prompt": ask_prompt, "build": build,
                         "web_search_default": web_search_default,
                         "transcribe_first": transcribe_first,

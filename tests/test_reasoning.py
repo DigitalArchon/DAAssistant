@@ -25,7 +25,7 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 
 from assistant import models, sealed
 from assistant.config import Config
-from assistant import websearch
+from assistant import llm, websearch
 from assistant.llm import (CUT_OFF_NOTE, FILTERED_NOTE, REASONING_ROOM, UNFINISHED_NOTE,
                            LLMClient, LLMError)
 
@@ -354,3 +354,65 @@ class TheFirstRequestKnowsItsModel(unittest.TestCase):
             models.ensure_listed(self.config, "TEE/glm-5.3")
             models.ensure_listed(self.config, "TEE/glm-5.3")
         self.assertEqual(fetched.call_count, 1)
+
+
+class ALongConversationFitsTheModel(unittest.TestCase):
+    """Every turn resends the whole conversation; one longer than the model takes
+    ended in the provider's context-length error."""
+
+    @staticmethod
+    def conversation(turns, words=400):
+        messages = [{"role": "system", "content": "Answer in English."},
+                    {"role": "user", "content": [
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}},
+                        {"type": "text", "text": "What does this error mean?"}]}]
+        for n in range(turns):
+            messages.append({"role": "assistant", "content": f"answer {n} " + "w " * words})
+            messages.append({"role": "user", "content": f"follow-up {n} " + "w " * words})
+        return messages
+
+    def test_what_fits_is_sent_whole(self):
+        messages = self.conversation(2)
+        self.assertEqual(llm.fit_context(messages, 100000), (messages, 0))
+
+    def test_the_oldest_between_go_first_a_question_and_answer_at_a_time(self):
+        from assistant import llm
+        messages = self.conversation(6)
+        budget = sum(llm.estimate_tokens(m) for m in messages) - 600
+        fitted, dropped = llm.fit_context(messages, budget)
+        self.assertEqual(dropped % 2, 0)
+        self.assertGreater(dropped, 0)
+        self.assertLessEqual(sum(llm.estimate_tokens(m) for m in fitted), budget)
+        # The system message and the capture's question stay, the latest question last.
+        self.assertEqual(fitted[0], messages[0])
+        self.assertEqual(fitted[1]["content"][0]["type"], "image_url")
+        self.assertIn("left out", fitted[1]["content"][-1]["text"])
+        self.assertEqual(fitted[-1], messages[-1])
+        roles = [m["role"] for m in fitted[1:]]
+        self.assertTrue(all(a != b for a, b in zip(roles, roles[1:])), roles)
+        self.assertEqual(fitted[2], messages[2 + dropped])
+
+    def test_the_latest_question_is_never_cut(self):
+        from assistant import llm
+        messages = self.conversation(1, words=5000)
+        fitted, dropped = llm.fit_context(messages, 10)
+        self.assertEqual((fitted, dropped), (messages, 0))
+
+    def test_the_payload_is_fitted_to_the_models_context_and_says_so(self):
+        from assistant import llm
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        config = Config(os.path.join(directory, "c.json"))
+        config.api_key = "k"
+        config.max_tokens = 1000
+        listed = [{"id": "small/model", "context_length": 4000}]
+        with mock.patch.object(models, "CACHE_DIR", directory), \
+                mock.patch.object(models, "CACHE_FILE", os.path.join(directory, "m.json")):
+            models.save_cache([models.normalise(e) for e in listed],
+                              models.models_url(config.api_url))
+            said = []
+            payload = LLMClient(config)._payload(
+                "small/model", self.conversation(8)[1:], status=said.append)
+        self.assertLessEqual(sum(llm.estimate_tokens(m) for m in payload["messages"]),
+                             int(4000 * llm.CONTEXT_MARGIN) - payload["max_tokens"])
+        self.assertTrue(said and "left out" in said[0])

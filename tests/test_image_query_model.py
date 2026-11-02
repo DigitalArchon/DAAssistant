@@ -47,14 +47,14 @@ class RecordingClient:
         self.transcription = transcription
 
     def complete(self, model, messages, image_base64=None, cancel=None,
-                 web_search=None, system=None):
+                 web_search=None, system=None, **_kwargs):
         self.calls.append({"kind": "complete", "model": model,
                            "image": bool(image_base64),
                            "prompt": messages[-1]["content"]})
         return self.transcription
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.calls.append({"kind": "stream", "model": model,
                            "image": bool(image_base64),
                            "messages": [dict(m) for m in messages]})

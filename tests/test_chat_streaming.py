@@ -49,7 +49,7 @@ class StubClient:
         self.calls = []
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         import time
         self.calls.append({"model": model, "web_search": web_search,
                            "messages": list(messages)})
@@ -255,7 +255,7 @@ class ChunksOnRequest:
         self.calls = 0
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.calls += 1
         sent = ""
         while True:

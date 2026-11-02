@@ -517,6 +517,17 @@ def sampling_for(config, model_id):
     return dict((model or {}).get("sampling") or {})
 
 
+def context_for(config, model_id):
+    """How many tokens `model_id` takes in all, prompt and reply, from the cached
+    catalogue; None when it does not say."""
+    model = resolve(cached_for(config, model_id) or [], model_id)
+    try:
+        length = int((model or {}).get("context_length") or 0)
+    except (TypeError, ValueError):
+        return None
+    return length or None
+
+
 def cached_for(config, model_id):
     """The cached list of the provider `model_id` is asked of, whatever its age."""
     source = providers.of(config, model_id)

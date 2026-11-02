@@ -1752,12 +1752,12 @@ class ChatWindow(Gtk.Window):
         prepared = self._prepare_answer()
 
         cancel = self._cancel
-        # Passed only to a private conversation, so the ordinary path - and every stub
-        # standing in for LLMClient - sees exactly the call it always has.
-        private_kwargs = {}
+        # The status line, for what the request has to say on its way - a web search
+        # that failed, earlier messages left out to fit the model - and, in a private
+        # conversation, its session and each step of attesting.
+        private_kwargs = {"status": lambda m: GLib.idle_add(self._set_status, m)}
         if privacy is not None:
-            private_kwargs = {"privacy": privacy,
-                              "status": lambda m: GLib.idle_add(self._set_status, m)}
+            private_kwargs["privacy"] = privacy
 
         def on_delta(_piece, full_text):
             # One redraw waiting at a time. Each renders the whole answer so far, and

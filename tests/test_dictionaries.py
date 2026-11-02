@@ -624,7 +624,7 @@ class StubClient:
         self.calls = []
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.calls.append({"messages": list(messages), "system": system,
                            "web_search": web_search})
         return "It is made up."

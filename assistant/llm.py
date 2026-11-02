@@ -231,6 +231,67 @@ def system_message(instructions):
     return {"role": "system", "content": instructions}
 
 
+# What a request costs in tokens, guessed without a tokenizer: UTF-8 bytes over three
+# - generous for English, about right for Chinese or Japanese, where a character is
+# three bytes and a token or so - and a picture as much as the larger models charge.
+BYTES_PER_TOKEN = 3
+IMAGE_TOKENS = 1600
+CONTEXT_MARGIN = 0.92           # of the model's context, the rest left for error
+LEFT_OUT_NOTE = ("\n\n[Some of the conversation that followed this message has been "
+                 "left out, to fit the model's context.]")
+
+
+def estimate_tokens(message):
+    content = message.get("content")
+    if isinstance(content, str):
+        return len(content.encode("utf-8")) // BYTES_PER_TOKEN + 4
+    total = 4
+    for part in content or ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "image_url":
+            total += IMAGE_TOKENS
+        else:
+            total += len(str(part.get("text") or "").encode("utf-8")) // BYTES_PER_TOKEN
+    return total
+
+
+def fit_context(messages, budget):
+    """`messages` cut to fit `budget` tokens, and how many were left out.
+
+    Every turn resends the whole conversation, so a long one ended in the provider's
+    context-length error. The first question stays - it carries the capture or the
+    material the conversation is about - and so does the latest one with everything
+    after it (the search results); what goes is the oldest of what lies between, a
+    question and its answer at a time, so that the turns still alternate. The first
+    question then says that some of what followed it was left out.
+    """
+    if not budget or budget <= 0:
+        return messages, 0
+    sizes = [estimate_tokens(m) for m in messages]
+    total = sum(sizes)
+    if total <= budget:
+        return messages, 0
+    users = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    if len(users) < 2:
+        return messages, 0
+    first, last = users[0], users[-1]
+    cut = first + 1
+    while total > budget and cut + 1 < last:
+        total -= sizes[cut] + sizes[cut + 1]
+        cut += 2
+    dropped = cut - first - 1
+    if not dropped:
+        return messages, 0
+    head = dict(messages[first])
+    content = head.get("content")
+    if isinstance(content, list):
+        head["content"] = list(content) + [{"type": "text", "text": LEFT_OUT_NOTE.strip()}]
+    else:
+        head["content"] = (content or "") + LEFT_OUT_NOTE
+    return messages[:first] + [head] + messages[cut:], dropped
+
+
 def error_message(error):
     """A provider's error object as words, or None when there is none."""
     if not error:
@@ -479,7 +540,8 @@ class LLMClient:
         raise LLMError(last_error or "Request failed", model=payload.get("model"))
 
     def _payload(self, model, messages, image_base64=None, stream=False,
-                 web_search=None, system=None, search_context=None, max_tokens=None):
+                 web_search=None, system=None, search_context=None, max_tokens=None,
+                 status=None):
         catalogue.ensure_listed(self.config, model)
         msgs = attach_image(strip_internal_keys(messages), image_base64)
         head = system_message(system)
@@ -509,6 +571,13 @@ class LLMClient:
         stops = self._provider(model).stops(model)
         if stops:
             payload["stop"] = stops
+        # Within the model's context, the reply's room and a margin kept aside.
+        context = catalogue.context_for(self.config, model)
+        if context:
+            budget = int(context * CONTEXT_MARGIN) - int(payload.get("max_tokens") or 0)
+            payload["messages"], dropped = fit_context(payload["messages"], budget)
+            if dropped and status is not None:
+                status(f"{dropped} earlier messages left out, to fit {model}'s context")
         return payload
 
     @staticmethod
@@ -624,7 +693,7 @@ class LLMClient:
             return self.stream(model, messages, image_base64, cancel, web_search=False,
                                system=system, max_tokens=max_tokens)
         payload = self._payload(model, messages, image_base64, False, web_search, system,
-                                max_tokens=max_tokens)
+                                max_tokens=max_tokens, status=status)
         response = self._post(payload, False, cancel)
         if response is None:
             return None
@@ -779,7 +848,7 @@ class LLMClient:
             return None
 
         payload = self._payload(model, messages, image_base64, True, web_search, system,
-                                search_context, max_tokens=max_tokens)
+                                search_context, max_tokens=max_tokens, status=status)
         response = self._post(payload, True, cancel)
         if response is None:
             return None
@@ -844,7 +913,7 @@ class LLMClient:
         # name: plain ids, so that nothing they carry can send them anywhere else.
         model = str(model)
         payload = self._payload(model, messages, image_base64, True, system=system,
-                                max_tokens=max_tokens)
+                                max_tokens=max_tokens, status=say)
         if kind == privacy_module.E2EE:
             try:
                 client = privacy.sealed_client()

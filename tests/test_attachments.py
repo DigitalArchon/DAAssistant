@@ -385,12 +385,12 @@ class RecordingClient:
         self.streamed, self.read = [], []
 
     def complete(self, model, messages, image_base64=None, cancel=None,
-                 web_search=None, system=None):
+                 web_search=None, system=None, **_kwargs):
         self.read.append({"model": model, "messages": messages})
         return "## Text\nA RED SQUARE"
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.streamed.append({"model": model, "messages": messages})
         return "An answer."
 

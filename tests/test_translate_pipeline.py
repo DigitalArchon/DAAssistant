@@ -35,14 +35,14 @@ class RecordingClient:
         self.calls = []
 
     def complete(self, model, messages, image_base64=None, cancel=None,
-                 web_search=None, system=None):
+                 web_search=None, system=None, **_kwargs):
         self.calls.append({"kind": "complete", "model": model,
                            "image": bool(image_base64), "web_search": web_search,
                            "messages": messages})
         return "TRANSCRIBED TEXT FROM IMAGE"
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.calls.append({"kind": "stream", "model": model,
                            "image": bool(image_base64), "web_search": web_search,
                            "system": system,

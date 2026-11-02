@@ -701,7 +701,7 @@ class StubClient:
         return "Here you are:\n" + json.dumps(self.plan if kind == "plan" else self.check)
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               web_search=None, system=None):
+               web_search=None, system=None, **_kwargs):
         self.calls.append({"kind": "answer", "messages": list(messages), "system": system})
         return self.answer
 

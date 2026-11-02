@@ -253,7 +253,11 @@ class ConfigFileKeybindings:
         return self.path.replace(os.path.expanduser("~"), "~", 1)
 
     def block(self, bindings, labels, actions):
-        """The lines for `bindings`, markers included; "" when there are none."""
+        """The lines for `bindings`, markers included; "" when there are none.
+
+        Hyprland's config language starts a comment at any # that is not doubled, inside
+        shell quotes or not, so a # in the launcher's path is written ## - or the bind
+        stopped there, and ran a command cut off in the middle of the path."""
         lines = []
         for action in actions:
             accel = bindings.get(action)
@@ -261,8 +265,8 @@ class ConfigFileKeybindings:
                 continue
             if self.desktop == "hyprland":
                 mods, key = shortcuts.hyprland(accel)
-                lines.append(f"bind = {mods}, {key}, exec, {command(action)}"
-                             f"  # {labels[action]}")
+                run = command(action).replace("#", "##")
+                lines.append(f"bind = {mods}, {key}, exec, {run}  # {labels[action]}")
             else:
                 lines.append(f"bindsym {shortcuts.sway(accel)} exec {command(action)}"
                              f"  # {labels[action]}")

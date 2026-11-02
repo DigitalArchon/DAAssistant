@@ -18,7 +18,7 @@ from .reference.encyclopedia import Encyclopedia
 from .reference.dictionaries import Library
 from .ui.chat import ChatWindow
 from .ui.dialogs import CaptureReviewDialog, SettingsDialog, TextReviewDialog
-from .ui.tray import Tray
+from .ui.tray import NO_TRAY, Tray
 
 if gtkcompat.has_notify():
     from gi.repository import Notify
@@ -76,6 +76,9 @@ class Assistant:
         # Applies to every window the app opens: chat, settings, the selector.
         Gtk.Window.set_default_icon_name(app_icon.name())
         self.tray = Tray(APP_ID, APP_NAME, self.menu)
+        # Asked a little later: a session that is still starting may not have its panel
+        # - or the shell's extension - up yet.
+        GLib.timeout_add_seconds(5, self._check_tray)
 
         # One notice for all of it: each notification replaces the last, so a keyring
         # problem shown first was gone the moment the first-run hint arrived.
@@ -125,6 +128,13 @@ class Assistant:
                     print(f"[models] catalogue not refreshed: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _check_tray(self):
+        """Say so when nothing on this desktop will show the tray icon: the app would
+        otherwise seem not to have started at all."""
+        if self.tray.unseen():
+            self.notify(NO_TRAY, urgency="normal")
+        return False
 
     def _first_run_hint(self, problems=()):
         hint = (f"{providers.unready(self.config) or 'Not set up yet.'} "

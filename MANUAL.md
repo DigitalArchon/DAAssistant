@@ -964,8 +964,12 @@ name itself comes from `~/.config/gtk-3.0/settings.ini` rather than an XSettings
 which on KDE is written by `kde-gtk-config` - so the same machine can be themed on X11
 and not on Wayland. `GTK_THEME=Adwaita:dark` overrides the lot.
 
-**Nothing appears in the system tray.** GNOME needs the AppIndicator extension. `--probe`
-reports which tray backend was selected.
+**Nothing appears in the system tray.** GNOME needs the AppIndicator extension: stock
+GNOME has no tray at all (Fedora: install `gnome-shell-extension-appindicator`, then turn
+it on in the Extensions app), and Ubuntu 26.04 ships its own switched off. On Wayland the
+app says so itself, a few seconds after it starts, and `--probe` reports it as `Tray host`
+along with the tray backend selected. Until there is a tray, the shortcuts work, and
+`--action=settings` opens Settings.
 
 **The clipboard always reads as empty on Wayland.** See [Clipboard](#clipboard):
 nothing can be read without focus. On KDE this goes through Klipper, so check Klipper is

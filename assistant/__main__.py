@@ -49,6 +49,12 @@ def probe():
         print(f"Tray backend   : {gtkcompat.load_indicator()[1]}")
         print(f"Tray icon      : {resolved}"
               f"{'' if resolved == icon.NAME else ' (bundled icons not found)'}")
+        from .ui import tray
+        shown = tray.watcher_present()
+        if shown is not None:
+            print(f"Tray host      : {'yes' if shown else 'none - the icon will not show'}"
+                  + ("" if shown or session.session_type() != "wayland" else
+                     "; on GNOME, turn on the AppIndicator extension"))
         # WebKit is tried for real, and without a display GTK aborts the process.
         print(f"WebKit view    : {gtkcompat.webkit_status()}")
     from . import bundle

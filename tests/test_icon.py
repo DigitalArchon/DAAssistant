@@ -127,3 +127,49 @@ class TheTrayUsesIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NothingShowsTheTray(unittest.TestCase):
+    """Stock GNOME, and Ubuntu 26.04 with its extension off: no indicator is shown, and
+    with it goes the menu - the app has to say so, or it seems not to have started."""
+
+    def tray(self, kind):
+        from unittest import mock
+        fake = Tray.__new__(Tray)
+        fake.kind = kind
+        return fake, mock
+
+    def test_an_indicator_on_wayland_with_no_watcher_is_unseen(self):
+        from assistant.ui import tray as tray_module
+        fake, mock = self.tray("appindicator")
+        with mock.patch.object(tray_module, "watcher_present", return_value=False), \
+                mock.patch.object(tray_module.session, "session_type", return_value="wayland"):
+            self.assertTrue(fake.unseen())
+
+    def test_with_a_watcher_or_on_x11_or_not_knowing_it_is_not_said(self):
+        from assistant.ui import tray as tray_module
+        fake, mock = self.tray("appindicator")
+        for present, session in ((True, "wayland"), (None, "wayland"), (False, "x11")):
+            with mock.patch.object(tray_module, "watcher_present", return_value=present), \
+                    mock.patch.object(tray_module.session, "session_type",
+                                      return_value=session):
+                self.assertFalse(fake.unseen(), (present, session))
+        fake, mock = self.tray("xapp")
+        with mock.patch.object(tray_module, "watcher_present", return_value=False), \
+                mock.patch.object(tray_module.session, "session_type", return_value="wayland"):
+            self.assertFalse(fake.unseen())
+
+    def test_the_app_says_how_to_get_one_and_what_works_meanwhile(self):
+        from unittest import mock
+        from assistant import app as app_module
+        assistant = app_module.Assistant.__new__(app_module.Assistant)
+        assistant.tray = mock.Mock(unseen=mock.Mock(return_value=True))
+        assistant.notify = mock.Mock()
+        self.assertFalse(assistant._check_tray())
+        message = assistant.notify.call_args[0][0]
+        self.assertIn("AppIndicator", message)
+        self.assertIn("--action=settings", message)
+        assistant.tray.unseen.return_value = False
+        assistant.notify.reset_mock()
+        assistant._check_tray()
+        assistant.notify.assert_not_called()

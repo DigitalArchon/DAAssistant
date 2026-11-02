@@ -8,9 +8,35 @@ works under Wayland.
 """
 
 from .. import gtkcompat
-from gi.repository import Gtk
+from gi.repository import Gio, GLib, Gtk
 
-from .. import icon as app_icon
+from .. import icon as app_icon, session
+
+# What shows StatusNotifierItem icons - an indicator's - on the session bus: Plasma, the
+# GNOME Shell AppIndicator extension, Cinnamon's and XFCE's panels, waybar, quickshell.
+WATCHER = "org.kde.StatusNotifierWatcher"
+
+# Said when nothing will show the icon, and with it the menu, which is otherwise the way
+# in: stock GNOME has no tray at all, and Ubuntu 26.04 ships its extension switched off.
+NO_TRAY = ("DA Assistant is running, but nothing on this desktop shows tray icons, so "
+           "its icon and menu cannot appear. On GNOME, turn on the AppIndicator "
+           "extension in the Extensions app (on Fedora, install "
+           "gnome-shell-extension-appindicator first). Your shortcuts work meanwhile, "
+           "and running DA Assistant with --action=settings opens Settings.")
+
+
+def watcher_present():
+    """Whether anything on the session bus shows indicator icons; None when the bus
+    cannot be asked."""
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                              "org.freedesktop.DBus", "NameHasOwner",
+                              GLib.Variant("(s)", (WATCHER,)), GLib.VariantType("(b)"),
+                              Gio.DBusCallFlags.NONE, 2000, None)
+    except GLib.Error:
+        return None
+    return bool(reply.unpack()[0])
 
 
 class Tray:
@@ -56,6 +82,13 @@ class Tray:
             self._impl.set_tooltip_text(title)
             self._impl.connect("popup-menu", self._on_popup)
             self._impl.connect("activate", self._on_activate)
+
+    def unseen(self):
+        """Whether nothing will show this icon. Only known for an indicator on Wayland:
+        on X11 one with no watcher falls back to the X11 tray, and the other backends
+        are that tray themselves."""
+        return (self.kind == "appindicator" and session.session_type() == "wayland"
+                and watcher_present() is False)
 
     def _on_popup(self, icon, button, activate_time):
         self.menu.popup(None, None, Gtk.StatusIcon.position_menu, icon,

@@ -14,7 +14,7 @@ from gi.repository import Gdk, Gtk
 
 from ..reference import encyclopedia_html
 from ..reference.encyclopedia import citation_of, text_of
-from . import encscheme, webpolicy
+from . import encscheme, lookups, webpolicy
 
 if gtkcompat.has_webkit():
     from gi.repository import WebKit2
@@ -65,8 +65,12 @@ class ArticlePane(Gtk.Box):
             # Links between articles followed here, the rest in the browser, and the
             # view never taken off the article (webpolicy). The window around it adds
             # its own context menu items through self.guard.extra.
-            self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=self._on_web_link)
+            self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=self._on_web_link,
+                                         extra=self._menu_extra)
             self.guard.expect("about:blank")
+            self._selection = ""
+            lookups.track_selection(self.webview.get_user_content_manager(), WebKit2,
+                                    lambda text: setattr(self, "_selection", text))
             settings = self.webview.get_settings()
             settings.set_enable_developer_extras(False)
             # Left on: WebKit's own controls for films are scripts. The page's policy
@@ -175,6 +179,19 @@ class ArticlePane(Gtk.Box):
                 view.get_find_controller().search(
                     text, WebKit2.FindOptions.CASE_INSENSITIVE
                     | WebKit2.FindOptions.WRAP_AROUND, 1)
+
+    def offer_lookups(self, config, look_up):
+        """Right-click a selection in the article to look it up (ui/lookups.py):
+        `look_up(kind, what)` opens the window."""
+        self._lookup_config, self._look_up = config, look_up
+        if self.webview is None:
+            lookups.attach_to_textview(self.textview, config, look_up)
+
+    def _menu_extra(self, menu, hit):
+        look_up = getattr(self, "_look_up", None)
+        if look_up is not None and hit is not None and hit.context_is_selection():
+            lookups.add_to_webkit_menu(WebKit2, menu, self._lookup_config,
+                                       self._selection, look_up)
 
     def _on_web_link(self, uri, _kind):
         """Another of the encyclopedia's pages, opened here; True for those."""

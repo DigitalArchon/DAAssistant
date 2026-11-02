@@ -13,8 +13,8 @@ from urllib.parse import quote, unquote
 from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
-from . import (bubbles, find, markdown_html, markdown_text, screenshot as screenshot_view,
-               webpolicy)
+from . import (bubbles, find, lookups, markdown_html, markdown_text,
+               screenshot as screenshot_view, webpolicy)
 from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
                 providers)
 from ..llm import LLMError
@@ -917,7 +917,8 @@ class ChatWindow(Gtk.Window):
             return self._build_text_view()
 
     def _build_text_view(self):
-        self.bubbles = bubbles.BubbleView(on_link=self._on_text_link)
+        self.bubbles = bubbles.BubbleView(on_link=self._on_text_link,
+                                          on_popup=self._on_text_popup)
         self.webview = None
         if self.screenshot:
             self.bubbles.set_screenshot(
@@ -945,6 +946,10 @@ class ChatWindow(Gtk.Window):
         encscheme.install(getattr(self.app, "encyclopedia", None) or self._encyclopedia)
         manager = WebKit2.UserContentManager()
         manager.register_script_message_handler("copyText")
+        # What is selected, as the page says it changes: the context menu offers to look
+        # it up (ui/lookups.py), and cannot ask the page itself.
+        self._selection = ""
+        lookups.track_selection(manager, WebKit2, self._on_selection)
         manager.connect("script-message-received::copyText", self._on_copy_code)
         manager.add_script(WebKit2.UserScript(
             COPY_BUTTON_JS,
@@ -1064,6 +1069,7 @@ class ChatWindow(Gtk.Window):
         self.entry.set_margin_top(6)
         self.entry.set_margin_bottom(6)
         self.entry.connect("key-press-event", self._on_entry_key)
+        lookups.attach_to_textview(self.entry, self.config, self._look_up_elsewhere)
         # Files dropped on the message box are attached, not pasted in as their paths.
         self.entry.drag_dest_add_uri_targets()
         self.entry.connect("drag-data-received", self._on_entry_drop)
@@ -1140,7 +1146,25 @@ class ChatWindow(Gtk.Window):
         self.attach_files([GLib.filename_from_uri(uri)[0]])
 
     def _context_menu_extra(self, menu, hit):
-        """Items of this window's own for the transcript's context menu."""
+        """Items of this window's own for the transcript's context menu: the lookups,
+        for a selection right-clicked."""
+        if hit is not None and hit.context_is_selection():
+            lookups.add_to_webkit_menu(WebKit2, menu, self.config, self._selection,
+                                       self._look_up_elsewhere)
+
+    def _on_text_popup(self, view, menu):
+        """A turn's right-click menu in the plain-text view: the lookups too."""
+        lookups.add_to_gtk_menu(menu, self.config, lookups.selected_text(view),
+                                self._look_up_elsewhere)
+
+    def _on_selection(self, text):
+        self._selection = text
+
+    def _look_up_elsewhere(self, kind, what):
+        """A selection right-clicked and looked up: in a window of its own."""
+        look_up = getattr(self.app, "look_up_selection", None)
+        if look_up is not None:
+            look_up(kind, what)
 
     def _on_copy_code(self, _manager, result):
         try:

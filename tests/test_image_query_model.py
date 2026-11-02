@@ -96,6 +96,8 @@ class StubAssistant:
     _ocr = Assistant._ocr
     _capture_plan = Assistant._capture_plan
     _watch_review = Assistant._watch_review
+    _offer_lookups = Assistant._offer_lookups
+    look_up_selection = Assistant.look_up_selection
     _transcribe_preflight = Assistant._transcribe_preflight
     _start_privacy = Assistant._start_privacy
     _confirm_privacy = Assistant._confirm_privacy

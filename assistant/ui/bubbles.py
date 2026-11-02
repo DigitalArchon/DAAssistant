@@ -30,10 +30,12 @@ NEAR_END = 48
 
 
 class BubbleView(Gtk.ScrolledWindow):
-    def __init__(self, on_link=None):
-        """`on_link(url)`: offered every link clicked; see markdown_text.configure."""
+    def __init__(self, on_link=None, on_popup=None):
+        """`on_link(url)`: offered every link clicked; see markdown_text.configure.
+        `on_popup(view, menu)`: each turn's text view's right-click menu, to add to."""
         super().__init__()
         self.on_link = on_link
+        self.on_popup = on_popup
         self.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.box.set_margin_start(14)
@@ -105,6 +107,8 @@ class BubbleView(Gtk.ScrolledWindow):
 
         view = Gtk.TextView()
         markdown_text.configure(view, self.on_link)
+        if self.on_popup is not None:
+            view.connect("populate-popup", self.on_popup)
         # The bubble supplies the padding; the view keeps two pixels at the bottom so
         # a final line with a paragraph background is not clipped by a rounded corner.
         view.set_left_margin(0)

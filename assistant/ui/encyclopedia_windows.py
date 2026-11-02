@@ -58,7 +58,7 @@ def open_reader(app, encyclopedia, target, highlight=None):
 
 class SearchEncyclopediaWindow(ChatWindow):
     def __init__(self, app, encyclopedia, query=None, target=None, highlight=None,
-                 privacy=None):
+                 privacy=None, search_now=False):
         super().__init__(app, "Search Encyclopedia", [], web_search=False,
                          system=prompts.encyclopedia_system(app.config.default_language),
                          privacy=privacy, encyclopedia=encyclopedia)
@@ -127,6 +127,8 @@ class SearchEncyclopediaWindow(ChatWindow):
             self.search_entry.set_text(query or "")
             self.search_entry.grab_focus()
             self.search_entry.select_region(0, -1)
+            if search_now and query:
+                self._search(query)
 
     # ---- layout -------------------------------------------------------------
 
@@ -135,6 +137,7 @@ class SearchEncyclopediaWindow(ChatWindow):
         self._titles = {}
         self._result_rows = []
         self.pane = ArticlePane(self._encyclopedia, on_change=self._on_pane_change)
+        self.pane.offer_lookups(self.config, self._look_up_elsewhere)
 
         bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         bar.set_margin_start(12)

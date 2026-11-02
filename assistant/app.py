@@ -503,6 +503,7 @@ class Assistant:
                                      ask_prompt=ask_prompt, on_recrop=on_recrop,
                                      web_search_default=web_search_default,
                                      privacy=privacy, plan=plan_for(privacy))
+        self._offer_lookups(getattr(dialog, "prompt_view", None))
         self._watch_review(dialog, route, lambda: ("vision", self._answer_role()),
                            plan_for)
 
@@ -701,6 +702,8 @@ class Assistant:
                                   config=self.config,
                                   web_search_default=web_search_default,
                                   privacy=privacy, plan=plan_for(privacy))
+        self._offer_lookups(getattr(dialog, "textview", None),
+                            getattr(dialog, "prompt_view", None))
         self._watch_review(dialog, route, lambda: (self._answer_role(),), plan_for)
 
     # ---- the five operations ---------------------------------------------
@@ -773,13 +776,29 @@ class Assistant:
                                         prompt),
             system=prompts.query_text_system(language))
 
-    def look_up_word(self):
+    def look_up_selection(self, kind, what):
+        """A word or a phrase selected and right-clicked, wherever the app shows text:
+        looked up in a window of its own (ui/lookups.py)."""
+        if kind == "dictionary":
+            self.look_up_word(word=what)
+        elif kind == "encyclopedia":
+            self.search_encyclopedia(query=what, new_window=True)
+
+    def _offer_lookups(self, *textviews):
+        """The right-click lookups in these text views' menus too."""
+        from .ui import lookups
+        for view in textviews:
+            if isinstance(view, Gtk.TextView):
+                lookups.attach_to_textview(view, self.config, self.look_up_selection)
+
+    def look_up_word(self, word=None):
         """A dictionary window, GoldenDict-style, that can answer questions.
 
         The lookup itself never leaves this machine, so it needs no API key; questions
         asked about it go to the answering model with the entries as context - privately
-        in Privacy Mode, like any other conversation. The word comes from the clipboard
-        when it holds one, as GoldenDict's clipboard scan does.
+        in Privacy Mode, like any other conversation. The word is `word` when one was
+        right-clicked, and otherwise comes from the clipboard when it holds one, as
+        GoldenDict's clipboard scan does.
         """
         if not self.config.dictionaries_dir:
             self.notify("Choose your dictionaries folder in Settings > Reference first",
@@ -793,7 +812,7 @@ class Assistant:
                    system=prompts.lookup_system(self.config.default_language),
                    privacy=privacy, lookup=self.dictionaries.look_up,
                    dictionary_list=self.dictionaries.listing,
-                   lookup_word=self._word_from_clipboard())
+                   lookup_word=word or self._word_from_clipboard())
 
     def _encyclopedia_ready(self):
         if self.encyclopedia.available():
@@ -803,19 +822,22 @@ class Assistant:
         self.show_settings()
         return False
 
-    def search_encyclopedia(self, target=None, highlight=None):
+    def search_encyclopedia(self, target=None, highlight=None, query=None,
+                            new_window=False):
         """Read the encyclopedia, and ask about what you tag. One window, kept: a
         citation in an Ask Encyclopedia answer opens its article here, at what was
         quoted, rather than in a window of its own each time.
 
         The clipboard waits in the search box, selected, rather than being searched for
-        at once: Enter takes it, typing replaces it.
+        at once: Enter takes it, typing replaces it. A `query` - a phrase right-clicked
+        elsewhere - is searched for at once, in a `new_window`, which is the one kept
+        from then on.
         """
         from .ui.encyclopedia_windows import SearchEncyclopediaWindow
         if not self._encyclopedia_ready():
             return
         reader = self._reader
-        if reader is not None and not reader._destroyed:
+        if reader is not None and not reader._destroyed and not new_window:
             if target is not None:
                 reader.open(target, highlight)
             else:
@@ -824,11 +846,11 @@ class Assistant:
         privacy = self._start_privacy((self._answer_role(),))
         if privacy is False:
             return
-        copied = None if target else self._word_from_clipboard(
+        copied = query if query else None if target else self._word_from_clipboard(
             limit=120, strip=" \"'()[]{}«»“”‘’")
         self._reader = SearchEncyclopediaWindow(self, self.encyclopedia, query=copied,
                                                 target=target, highlight=highlight,
-                                                privacy=privacy)
+                                                privacy=privacy, search_now=bool(query))
 
     def ask_encyclopedia(self):
         """Ask a question and have it answered from the encyclopedia - planned, searched,

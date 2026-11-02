@@ -35,6 +35,8 @@ class StubApp:
     translate_text = Assistant.translate_text
     query_text = Assistant.query_text
     _watch_review = Assistant._watch_review
+    _offer_lookups = Assistant._offer_lookups
+    look_up_selection = Assistant.look_up_selection
     _refresh_reviews = Assistant._refresh_reviews
     _confirm_privacy = Assistant._confirm_privacy
     _start_privacy = Assistant._start_privacy

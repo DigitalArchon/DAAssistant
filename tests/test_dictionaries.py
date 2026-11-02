@@ -14,6 +14,7 @@ import threading
 import types
 import unittest
 import zlib
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -324,7 +325,54 @@ class StarDictFiles(unittest.TestCase):
 
 class Folding(unittest.TestCase):
     def test_case_diacritics_and_spacing_do_not_matter(self):
-        self.assertEqual(fold("  Café  au   Lait"), "cafe au lait")
+        self.assertEqual(fold("  Café  au   Lait"), "cafeaulait")
+        self.assertEqual(fold("café au lait"), fold("CAFEAULAIT"))
+
+    def test_typographic_apostrophes_quotes_and_dashes_are_the_plain_ones(self):
+        # As text copied from a web page or a PDF has them.
+        for apostrophe in "’‘ʼ′´`":
+            self.assertEqual(fold(f"don{apostrophe}t"), fold("don't"), apostrophe)
+        self.assertEqual(fold("o’clock"), fold("o'clock"))
+        for dash in "‐‑‒–—−":
+            self.assertEqual(fold(f"e{dash}mail"), fold("e-mail"), dash)
+        self.assertEqual(fold("“quoted”"), fold('"quoted"'))
+
+    def test_punctuation_and_spacing_do_not_matter(self):
+        self.assertEqual(fold("e-mail"), fold("email"))
+        self.assertEqual(fold("o'clock"), "oclock")
+        self.assertEqual(fold("ice cream"), fold("ice-cream"))
+        self.assertEqual(fold("e\u00admail"), "email")          # a soft hyphen
+        self.assertEqual(fold("zero\u200bwidth"), "zerowidth")  # a zero-width space
+
+    def test_letters_nfkd_leaves_whole_are_spelt_out(self):
+        self.assertEqual(fold("Łódź"), fold("Lodz"))
+        self.assertEqual(fold("encyclopædia"), fold("encyclopaedia"))
+        self.assertEqual(fold("ŒUVRE"), "oeuvre")
+        for letter, spelt in (("ø", "o"), ("đ", "d"), ("Đ", "d"), ("ħ", "h"),
+                              ("ı", "i"), ("þ", "th"), ("Þ", "th"), ("ð", "d")):
+            self.assertEqual(fold(f"x{letter}y"), f"x{spelt}y", letter)
+
+    def test_letters_and_digits_of_every_script_stay(self):
+        self.assertEqual(fold("Глорп-2"), "глорп2")
+        self.assertEqual(fold("Ζώο"), "ζωο")
+        self.assertEqual(fold("字典"), "字典")
+        # A vowel sign is part of the word, not an accent on it.
+        self.assertNotEqual(fold("काम"), fold("कम"))
+        # Symbols stay, as in GoldenDict.
+        self.assertEqual(fold("C++"), "c++")
+
+    def test_a_headword_of_punctuation_alone_keeps_a_key(self):
+        self.assertEqual(fold("!"), "!")
+        self.assertEqual(fold("?!"), "?!")
+        self.assertEqual(fold("…"), fold("..."))
+        self.assertEqual(fold("—"), fold("-"))
+        self.assertEqual(fold("’"), fold("'"))
+        self.assertEqual(fold("  "), "")
+
+    def test_a_key_folds_to_itself(self):
+        for word in ("don’t", "Łódź", "?!", "Café au lait", "Глорп-2"):
+            self.assertEqual(fold(fold(word)), fold(word), word)
+            self.assertEqual(fold(dictionaries.plain(word)), fold(word), word)
 
     def test_stems_undo_common_inflections(self):
         self.assertIn("study", stems("studies"))
@@ -332,6 +380,101 @@ class Folding(unittest.TestCase):
         self.assertIn("big", stems("biggest"))
         self.assertIn("make", stems("making"))
         self.assertIn("glorp", stems("glorps"))
+        # Spelt as written, for saying what was found instead.
+        self.assertIn("ice cream", stems("Ice Creams"))
+        self.assertIn("e-mail", stems("e-mails"))
+        self.assertIn("john", stems("John’s"))
+
+
+TYPOGRAPHY_DSL = (
+    '#NAME "Typography"\n'
+    "\n"
+    "don't\n"
+    "\t[m1]made-up sense of do not\n"
+    "o'clock\n"
+    "\t[m1]made-up sense of the hour\n"
+    "email\n"
+    "\t[m1]made-up sense of mail sent electronically\n"
+    "Lodz\n"
+    "\t[m1]made-up sense of a place\n"
+    "encyclopaedia\n"
+    "\t[m1]made-up sense of a reference work\n"
+    "?!\n"
+    "\t[m1]made-up sense of surprise\n"
+    "we'll\n"
+    "\t[m1]made-up sense of we will\n"
+    "well\n"
+    "\t[m1]made-up sense of in a good way\n"
+)
+
+
+class TypographyLookups(unittest.TestCase):
+    """What is copied from a web page or a PDF finds what a dictionary spells plainly."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        write_dsl(os.path.join(self.folder, "typography.dsl"), TYPOGRAPHY_DSL)
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+        self.library = Library(self.config, cache_dir=os.path.join(self.dir, "cache"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def headwords(self, word):
+        return [entry["headword"] for result in self.library.look_up(word)["results"]
+                for entry in result["entries"]]
+
+    def test_typographic_apostrophes_find_the_plain_ones(self):
+        self.assertEqual(self.headwords("don’t"), ["don't"])
+        self.assertEqual(self.headwords("o’clock"), ["o'clock"])
+        self.assertEqual(self.headwords("dont"), ["don't"])
+
+    def test_hyphens_and_letters_nfkd_leaves_alone_do_not_matter(self):
+        self.assertEqual(self.headwords("e-mail"), ["email"])
+        self.assertEqual(self.headwords("e–mail"), ["email"])
+        self.assertEqual(self.headwords("Łódź"), ["Lodz"])
+        self.assertEqual(self.headwords("encyclopædia"), ["encyclopaedia"])
+
+    def test_the_stem_fallback_works_through_them_too(self):
+        found = self.library.look_up("encyclopædias")
+        self.assertEqual(found["found"], "encyclopaedia")
+        self.assertTrue(found["results"])
+        found = self.library.look_up("e-mails")
+        self.assertEqual(found["found"], "e-mail")
+        self.assertEqual([entry["headword"] for entry in found["results"][0]["entries"]],
+                         ["email"])
+
+    def test_and_so_do_the_suggestions(self):
+        for typed, expected in (("e-ma", "email"), ("o’clo", "o'clock"),
+                                ("encyclopæ", "encyclopaedia")):
+            found = self.library.look_up(typed)
+            self.assertEqual(found["results"], [], typed)
+            self.assertIn(expected, found["suggestions"], typed)
+
+    def test_a_headword_of_punctuation_alone_is_found(self):
+        self.assertEqual(self.headwords("?!"), ["?!"])
+
+    def test_a_words_own_entries_come_before_those_it_only_folds_to(self):
+        self.assertEqual(self.headwords("well"), ["well", "we'll"])
+        self.assertEqual(self.headwords("we’ll"), ["we'll", "well"])
+
+    def test_an_index_made_the_old_way_is_built_again_once(self):
+        def old_fold(word):
+            return " ".join((word or "").casefold().split())
+
+        with mock.patch.object(dictionaries, "SCHEMA", 2), \
+                mock.patch.object(dictionaries, "fold", old_fold):
+            self.library.look_up("email")
+        statuses = []
+        self.assertEqual([e["headword"] for r in self.library.look_up(
+            "e-mail", statuses.append)["results"] for e in r["entries"]], ["email"])
+        self.assertTrue(any(s.startswith("Indexing") for s in statuses))
+        statuses.clear()
+        self.library.look_up("e-mail", statuses.append)
+        self.assertFalse(any(s.startswith("Indexing") for s in statuses))
 
 
 class Lookups(unittest.TestCase):

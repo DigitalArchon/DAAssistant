@@ -7,7 +7,8 @@ a folder is the slow one - about a second per hundred megabytes - and every look
 that is an indexed query.
 
 Keys are folded the way GoldenDict folds them: case and diacritics do not matter, and
-neither do runs of whitespace, so "Cafe" finds "café".
+neither do punctuation and spacing, so "Cafe" finds "café", "email" finds "e-mail", and
+"don’t", copied from a web page with its typographic apostrophe, finds "don't".
 """
 
 import os
@@ -21,29 +22,91 @@ from .stardict import StarDict
 
 CACHE_DIR = paths.CACHE_DIR
 INDEX_FILE = "dictionaries.sqlite"
-SCHEMA = 2
+# Part of every dictionary's signature, so raised whenever the index is made
+# differently - 3: keys without punctuation or spacing (fold) - and each dictionary is
+# then indexed again, once, at its next lookup.
+SCHEMA = 3
 
 # Entries shown per dictionary for one word. A homograph-rich word ("set", "run") has a
 # dozen in some dictionaries; past this many they are rarely the one wanted.
 MAX_ENTRIES = 12
 MAX_SUGGESTIONS = 24
 
+# What text copied from a web page or a PDF has where a dictionary has the plain
+# character: typographic apostrophes, quotation marks and dashes.
+_TYPOGRAPHY = str.maketrans({**dict.fromkeys("’‘ʼ′´`", "'"),
+                             **dict.fromkeys("“”„‟«»", '"'),
+                             **dict.fromkeys("‐‑‒–—−", "-")})
+# Letters that are not a letter and an accent, so NFKD leaves them whole, which readers
+# and other dictionaries write as plain letters - "encyclopaedia" for "encyclopædia",
+# "Lodz" for "Łódź". Lower case only: they are spelt out after case folding.
+_LETTERS = {"æ": "ae", "œ": "oe", "ø": "o", "ł": "l", "đ": "d", "ħ": "h", "ı": "i",
+            "þ": "th", "ð": "d"}
+# What a key leaves out besides accents: punctuation, spacing, and the invisible
+# formatting characters - a soft hyphen, a zero-width space - that copied text carries.
+_IGNORED = {"Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Zs", "Zl", "Zp", "Cc", "Cf"}
+# Typography that Unicode does not count as punctuation: the modifier letter
+# apostrophe, the grave accent typed for one, the minus sign typed for a hyphen.
+_IGNORED_TOO = set("ʼ`−")
+
+
+class _KeyTable(dict):
+    """str.translate's table for fold, filled in as characters are first met - Unicode
+    has a million of them, and a key is made of every headword in every dictionary.
+    One of _LETTERS becomes its plain letters; an accent, a punctuation mark, a space
+    or a formatting character goes; anything else - the letters and digits of every
+    script, and symbols, which GoldenDict keeps too ("C++") - stays as it is."""
+
+    def __missing__(self, code):
+        char = chr(code)
+        if char in _LETTERS:
+            value = _LETTERS[char]
+        elif (char in _IGNORED_TOO or unicodedata.combining(char)
+              or unicodedata.category(char) in _IGNORED):
+            value = None
+        else:
+            value = code
+        self[code] = value
+        return value
+
+
+_KEY = _KeyTable()
+
+
+def plain(word):
+    """`word` with case, accents, typography and spacing evened out, and nothing else:
+    "Don’t  Stop" is "don't stop". What a lookup says it found, what tells a word's own
+    entries from those it only folds to, and the key of a headword that is nothing but
+    punctuation."""
+    text = unicodedata.normalize("NFKD", (word or "").translate(_TYPOGRAPHY)).casefold()
+    text = "".join(_LETTERS.get(c, c) for c in text if not unicodedata.combining(c))
+    return " ".join(text.split())
+
 
 def fold(word):
-    """The index key for a headword or a query."""
-    text = unicodedata.normalize("NFKD", word or "")
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    return " ".join(text.casefold().split())
+    """The index key for a headword or a query, as GoldenDict makes one: case and
+    accents do not matter, and neither do punctuation and spacing.
+
+    So "e-mail" finds "email", and text copied from a web page or a PDF finds what the
+    dictionary spells plainly - "don’t" and "o’clock", with their typographic
+    apostrophes, find "don't" and "o'clock". The letters NFKD leaves whole are spelt
+    out ("encyclopædia" is "encyclopaedia", "Łódź" is "lodz"); letters and digits are
+    kept in every script. A headword of punctuation alone ("!", "…") would have no key
+    at all that way, and keeps its plain() one.
+    """
+    text = unicodedata.normalize("NFKD", word or "").casefold().translate(_KEY)
+    return text or plain(word)
 
 
 def stems(word):
-    """Likely dictionary forms of an inflected English word, most likely first.
+    """Likely dictionary forms of an inflected English word, most likely first, spelt
+    as plain() spells them - fold each for its key.
 
     Not a morphological analyser - GoldenDict uses Hunspell for that - but it turns the
     common inflections back into a headword: runs, running, ran is beyond it, but
     "studies", "stopped" and "biggest" are not.
     """
-    w = fold(word)
+    w = plain(word)
     out = []
 
     def add(candidate):
@@ -228,12 +291,20 @@ class Library:
 
     # ---- lookups ----------------------------------------------------------
 
-    def _entries(self, ident, keys):
+    def _entries(self, ident, keys, word=None):
+        """One dictionary's entries filed under `keys`, in its own order - except that,
+        given the `word` looked up, those headed by that very word, as plain() spells
+        it, come first. A key leaves out punctuation and spacing, so "well" is filed
+        with "we'll", and "resign" with "re-sign": GoldenDict too shows a word's own
+        entries before the ones it only folds to."""
         marks = ",".join("?" * len(keys))
         rows = self._connection().execute(
             f"SELECT headword, offset, size FROM headwords "
             f"WHERE dictionary = ? AND key IN ({marks}) ORDER BY rowid",
             (ident, *keys)).fetchall()
+        if word is not None:
+            wanted = plain(word)
+            rows.sort(key=lambda row: plain(row[0]) != wanted)     # stable
         seen, out = set(), []
         for headword, offset, size in rows:
             if (offset, size) in seen:
@@ -242,11 +313,11 @@ class Library:
             out.append((headword, offset, size))
         return out[:MAX_ENTRIES]
 
-    def _gather(self, ready, keys):
+    def _gather(self, ready, keys, word=None):
         results = []
         for dictionary, ident in ready:
             entries = []
-            for headword, offset, size in self._entries(ident, keys):
+            for headword, offset, size in self._entries(ident, keys, word):
                 try:
                     html, text = dictionary.render(headword,
                                                    dictionary.read(offset, size))
@@ -291,11 +362,11 @@ class Library:
             ready = self.prepare(status)
             if status:
                 status(f"Looking up “{word}”…")
-            results = self._gather(ready, [fold(word)])
+            results = self._gather(ready, [fold(word)], word)
             found = word
             if not results:
                 for stem in stems(word):
-                    results = self._gather(ready, [stem])
+                    results = self._gather(ready, [fold(stem)], stem)
                     if results:
                         found = stem
                         break

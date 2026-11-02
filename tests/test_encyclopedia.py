@@ -15,6 +15,7 @@ import threading
 import types
 import unittest
 import zipfile
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -289,6 +290,41 @@ class Import(DvdCase):
         with self.assertRaises(EncyclopediaError):
             encyclopedia.import_from(self.dvd, cancel=cancel)
         self.assertFalse(encyclopedia.available())
+
+    def test_a_dvd_folder_named_with_brackets_finds_its_films(self):
+        # Searched for as a pattern, "[2015]" stood for one of four characters, and
+        # no film was found.
+        dvd = os.path.join(self.dir, "Encyclopedia [2015] *DVD?")
+        os.makedirs(dvd)
+        make_dvd(dvd)
+        meta = import_dvd(dvd, os.path.join(self.data, "b.sqlite"))
+        self.assertEqual(meta["media"], 2)
+
+    def test_a_database_whose_path_has_uri_characters_opens(self):
+        data = os.path.join(self.dir, "data #1 ?50%")
+        encyclopedia = Encyclopedia(self.config, data_dir=data)
+        encyclopedia.import_from(self.dvd)
+        self.assertTrue(encyclopedia.available())
+        self.assertEqual(encyclopedia.article(1)["title"], "Zorblax")
+        # Nor is an empty database made where the path was cut at the "#".
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "data ")))
+
+    def test_a_database_that_cannot_be_read_is_let_go_of(self):
+        import sqlite3
+        encyclopedia = Encyclopedia(self.config, data_dir=self.data)
+        os.makedirs(self.data)
+        sqlite3.connect(encyclopedia.path).close()      # a database, but no import
+        opened, connect = [], sqlite3.connect
+
+        def recording(*args, **kwargs):
+            opened.append(connect(*args, **kwargs))
+            return opened[-1]
+
+        with mock.patch.object(sqlite3, "connect", recording):
+            self.assertIsNone(encyclopedia.status())
+        self.assertEqual(len(opened), 1)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            opened[0].execute("SELECT 1")               # it was closed
 
     def test_an_import_from_an_older_version_is_not_read(self):
         encyclopedia = self.imported()

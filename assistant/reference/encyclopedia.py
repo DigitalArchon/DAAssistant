@@ -20,15 +20,16 @@ every later reading split articles with the same function, sections_of, so a sec
 row number in the index always points at the same text.
 """
 
+import glob
 import html as html_module
 import os
+import pathlib
 import re
 import sqlite3
 import threading
 import time
 import unicodedata
 from collections import Counter
-from glob import glob
 
 from .axion import AxionError, Table, unpack  # noqa: F401  (AxionError: for callers)
 
@@ -559,7 +560,9 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
         db.executemany("INSERT INTO images VALUES (?, ?, ?)", rows)
         counts["images"] = len(rows)
 
-        found = sorted(glob(os.path.join(dvd, "MEDIA*_DATA", "multimedia", "*")))
+        # Escaped: a folder named "... [2015]" was a pattern, and matched no film.
+        found = sorted(glob.glob(os.path.join(glob.escape(dvd), "MEDIA*_DATA",
+                                              "multimedia", "*")))
         db.executemany("INSERT OR IGNORE INTO media VALUES (?, ?)",
                        [(os.path.basename(p), os.path.relpath(p, dvd)) for p in found])
         counts["media"] = len(found)
@@ -663,9 +666,15 @@ class Encyclopedia:
                 if not os.path.exists(self.path):
                     raise EncyclopediaError("The encyclopedia has not been imported yet "
                                             "- see Settings > Reference")
-                db = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True,
-                                     check_same_thread=False)
-                meta = dict(db.execute("SELECT key, value FROM meta"))
+                # Percent-encoded: in a URI "#" begins a fragment, "?" the query and "%"
+                # an escape, so a path with one in it named another file, or none.
+                uri = pathlib.Path(os.path.abspath(self.path)).as_uri() + "?mode=ro"
+                db = sqlite3.connect(uri, uri=True, check_same_thread=False)
+                try:
+                    meta = dict(db.execute("SELECT key, value FROM meta"))
+                except BaseException:
+                    db.close()                  # not left open behind the error
+                    raise
                 if meta.get("schema") != str(SCHEMA):
                     db.close()
                     raise EncyclopediaError("The encyclopedia import is from an older "

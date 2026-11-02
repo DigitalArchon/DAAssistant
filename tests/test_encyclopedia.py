@@ -456,6 +456,102 @@ class Quotes(unittest.TestCase):
     def test_a_word_or_two_in_quotes_is_a_term_not_a_quotation(self):
         self.assertEqual(self.check('the "Eternal City" [1]'), [])
 
+    def test_a_passages_title_or_heading_is_a_name_not_a_quotation(self):
+        # The model is shown each passage under its title and heading in quotation
+        # marks, and names it so: not found in any passage's text, it was marked ⚠.
+        passages = [dict(self.PASSAGES[0], title="Zorblax migration routes",
+                         heading="Causes of the crossing"),
+                    dict(self.PASSAGES[1], title="Moonberry", heading="Diet")]
+        answer = ('The article “Zorblax migration routes” [1], in its section "Causes '
+                  'of the crossing", says they "cross the glimmer sea" [1]. See also '
+                  '"Zorblax migration" [1].')
+        self.assertEqual([c["quote"] for c in check_quotes(answer, passages)],
+                         ["cross the glimmer sea"])
+
+    def test_the_users_own_question_quoted_back_is_not_checked(self):
+        question = 'Why do zorblaxes "hum all the way across" the sea?'
+        answer = ('You ask why they "hum all the way across": the passages say only that '
+                  'they cross "humming as they go" [1], not "why do zorblaxes hum".')
+        self.assertEqual([c["quote"] for c in check_quotes(answer, self.PASSAGES,
+                                                           question=question)],
+                         ["humming as they go"])
+        self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 3)
+
+    def test_what_an_answer_adds_of_its_own_is_not_checked(self):
+        answer = ('They "cross the glimmer sea" [1].\n\n## Not from the encyclopedia\n\n'
+                  'Folklore has it that "a zorblax never hums alone".')
+        self.assertEqual([c["quote"] for c in check_quotes(answer, self.PASSAGES)],
+                         ["cross the glimmer sea"])
+        for heading in ("**Not from the encyclopedia**",
+                        "### *Not from the Encyclopedia:*",
+                        "Not from the encyclopedia (from general knowledge)"):
+            answer = (f'"cross the glimmer sea" [1]\n{heading}\n'
+                      f'"a zorblax never hums alone"')
+            self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 1, heading)
+        # A sentence that only begins with the words is not that heading.
+        answer = ('"cross the glimmer sea" [1]\nNot from the encyclopedia, but often '
+                  'heard, is that "a zorblax never hums alone".')
+        self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 2)
+
+    IRON = [{"text": 'In old age he was known as "the Iron Zorblax" to all.'}]
+
+    def test_quotation_marks_inside_a_quotation_do_not_matter(self):
+        for answer in ("He “was known as ‘the Iron Zorblax’” [1].",
+                       "He «was known as ‹the Iron Zorblax›» [1].",
+                       "He „was known as ‚the Iron Zorblax‘“ [1]."):
+            check, = check_quotes(answer, self.IRON)
+            self.assertTrue(check["ok"], answer)
+
+    def test_dashes_and_the_spaces_around_them_do_not_matter(self):
+        passages = [{"text": "They cross the sea—and the land beyond—in the winters of "
+                             "1914–18."}]
+        for quote in ("the sea — and the land", "the sea-and the land",
+                      "the land beyond − in the winters", "the winters of 1914 - 18"):
+            check, = check_quotes(f'"{quote}" [1]', passages)
+            self.assertTrue(check["ok"], quote)
+
+    def test_a_spaced_ellipsis_marks_words_left_out_too(self):
+        for ellipsis in (". . .", "[. . .]", "[...]", "(…)", "(...)"):
+            self.assertTrue(self.check(f'"Every winter {ellipsis} humming as they go" [1]')
+                            [0][3], ellipsis)
+
+    def test_german_and_french_quotation_marks_are_quotations_too(self):
+        for answer in ("Sie „cross the glimmer sea“ [1].",
+                       "Sie „cross the glimmer sea” [1].",
+                       "Sie »cross the glimmer sea« [1].",
+                       "Ils « cross the glimmer sea » [1].",
+                       "Ils «cross the glimmer sea» [1].",
+                       "Ils «\u202fcross the glimmer sea\u202f» [1]."):
+            self.assertEqual(self.check(answer),
+                             [("cross the glimmer sea", [1], 1, True)], answer)
+
+    def test_a_quotation_that_quotes_inside_itself_is_read_whole(self):
+        # Cut at the inner closing mark, only its first half was checked, and its
+        # citation was lost.
+        for answer in ('“he was known as "the Iron Zorblax" to all” [1]',
+                       '"he was known as “the Iron Zorblax” to all" [1]',
+                       "„he was known as »the Iron Zorblax« to all“ [1]",
+                       "« he was known as “the Iron Zorblax” to all » [1]"):
+            check, = check_quotes(answer, self.IRON)
+            self.assertTrue(check["quote"].startswith("he was known as"), answer)
+            self.assertTrue(check["quote"].endswith("to all"), answer)
+            self.assertEqual((check["cited"], check["ok"]), ([1], True), answer)
+            self.assertEqual(check["end"], len(answer))
+
+    def test_only_what_was_checked_is_counted(self):
+        from assistant.ui import markdown_html
+        passages = [{"article": 1, "title": "Zorblax migration routes", "library": "EB",
+                     "heading": "Winter", "pictures": [], "films": [],
+                     "text": self.PASSAGES[0]["text"]}]
+        answer = ('Asked "where do zorblaxes go", the article "Zorblax migration routes" '
+                  '[1] says they "cross the glimmer sea" [1] and "fly to the moon each '
+                  'spring" [1].\n\n**Not from the encyclopedia**\n\n"A zorblax never hums '
+                  'alone," it is said.')
+        checks = check_quotes(answer, passages, question="Where do zorblaxes go?")
+        self.assertEqual([c["ok"] for c in checks], [True, False])
+        self.assertIn("1 of 2 found word for word",
+                      markdown_html.sources_html(passages, [1], 0, checks))
+
     def near(self, answer):
         return [c["near"] for c in check_quotes(answer, self.PASSAGES)]
 
@@ -1002,6 +1098,22 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertIn('headed "Not from the encyclopedia"', system)
             self.assertNotIn("Strict:", system)
             self.assertIn("child of about eight to eleven", system)
+        finally:
+            window.destroy()
+
+    def test_what_is_not_from_the_encyclopedia_is_not_checked_or_counted(self):
+        self.client.answer = ('They "cross the glimmer sea" [1].\n\n'
+                              '## Not from the encyclopedia\n\n'
+                              'It is said that "a zorblax never hums alone".')
+        window = self._window(question="Where do zorblaxes migrate?")
+        try:
+            window.strict_switch.set_active(False)
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            _question, answer, sources = window.conversation
+            self.assertEqual([c["ok"] for c in answer["checks"]], [True])
+            self.assertNotIn("⚠", answer["export"])
+            self.assertIn("1 of 1 found word for word", sources["html"])
         finally:
             window.destroy()
 

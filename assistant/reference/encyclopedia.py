@@ -72,17 +72,39 @@ def read_json(text):
     return {}
 
 
-_QUOTED = re.compile(r'[“"]([^”"\n]{3,}?)[”"]((?:\s*\[\d+(?:\s*[,–-]\s*\d+)*\])*)')
-_ELLIPSIS = re.compile(r"\s*(?:\.\.\.|…|\[…\]|\[\.\.\.\])\s*")
+# A quotation and the citations after it. Answers are written in the user's language,
+# so in its quotation marks: “English”, "straight", „German“ (or „Polish”), «French»,
+# with spaces inside or without, and »German«. Each opening mark is closed only by its
+# own closing mark, so a quotation that quotes inside itself in marks of another kind
+# is read whole - cut at the inner closing mark, only its first half was checked, and
+# its citations were lost. Pairs too short to be quotations are read too, so that
+# their closing marks are not taken for the opening of another.
+_QUOTED = re.compile(
+    r'(?:“([^”\n]*)”|"([^"\n]*)"|„([^“”\n]*)[“”]|«([^»\n]*)»|»([^«\n]*)«)'
+    r'((?:\s*\[\d+(?:\s*[,–-]\s*\d+)*\])*)')
+# Words left out of a quotation: "…" or "...", spaced (". . .") or not, bare or in
+# square or round brackets.
+_ELLIPSIS = re.compile(r"\s*(?:[\[(]\s*(?:…|\.(?:\s*\.){2})\s*[\])]|…|\.(?:\s*\.){2})\s*")
+# Quotation marks of every kind are left out when quotations are compared, so that
+# “was known as ‘the Iron Duke’” is word for word in 'was known as "the Iron Duke"';
+# every dash is a hyphen, whatever the spaces around it ("Europe — and" is
+# "Europe—and").
+_QUOTE_MARKS = "\"'“”‘’„‚‟‛«»‹›"
+_DASHES = "‐‑‒–—―−"
+_PLAIN = str.maketrans({**dict.fromkeys(_QUOTE_MARKS, " "),
+                        **dict.fromkeys(_DASHES, "-")})
+_SPACED_DASH = re.compile(r" ?- ?")
+# Where an answer that is not Strict puts what is not from the encyclopedia (see
+# prompts.ask_encyclopedia_rules): a line of its own - a Markdown heading, in bold,
+# or plain - beginning with these words.
+_OWN_KNOWLEDGE = re.compile(r"^[ \t>#*_]*not from the encyclopa?edia\b[^\n]{0,40}$",
+                            re.I | re.M)
 
 
 def _plain(text):
     """Text as quotations are compared: case, quote marks, dashes and spacing aside."""
-    text = unicodedata.normalize("NFKC", text or "").casefold()
-    for curly, straight in (("’", "'"), ("‘", "'"), ("“", '"'), ("”", '"'),
-                            ("–", "-"), ("—", "-")):
-        text = text.replace(curly, straight)
-    return " ".join(text.split())
+    text = unicodedata.normalize("NFKC", text or "").casefold().translate(_PLAIN)
+    return _SPACED_DASH.sub("-", " ".join(text.split()))
 
 
 def _contains(passage, quote):
@@ -106,10 +128,15 @@ def _contains(passage, quote):
 NEAREST_SHARE = 0.5
 
 
+# A word, as nearest() counts them: what lies between spaces and dashes, so that
+# "Europe—and" is the same two words as "Europe — and".
+_WORD = re.compile(rf"[^\s{_DASHES}-]+")
+
+
 def _words(text):
     """[(word as quotations are compared, start, end)] of `text`."""
     out = []
-    for match in re.finditer(r"\S+", text or ""):
+    for match in _WORD.finditer(text or ""):
         word = _plain(match.group()).strip(".,;:!?'\"()[]-")
         if word:
             out.append((word, match.start(), match.end()))
@@ -163,22 +190,36 @@ def nearest(passage, quote):
     return passage[stretch[0][1]:stretch[-1][2]].strip(".,;:!?"), best_score / total
 
 
-def check_quotes(answer, passages):
+def check_quotes(answer, passages, question=None):
     """Every quotation in `answer`, checked against the passages it was given.
 
     [{quote, cited: [numbers after it], found: the passage it is in or None, ok,
     start, end: where its citations end in `answer`, near}]. ok: word for word in a
-    passage it cites - or, citing none, in any. A quotation of a word or two is a term,
-    not a quotation of the source, and is left alone. near, for one not ok: where to
-    see it - {passage, text: the passage's own words} where it was found, or else came
-    closest (see nearest), the passages it cites first; None if none came close.
+    passage it cites - or, citing none, in any. near, for one not ok: where to see it -
+    {passage, text: the passage's own words} where it was found, or else came closest
+    (see nearest), the passages it cites first; None if none came close.
+
+    Not everything in quotation marks is quoted from the passages, and what is not is
+    left alone - not checked, not marked, not counted among the quotations checked: a
+    word or two, which is a term; a passage's title or section heading, or part of
+    one, which the model is shown in quotation marks (research_context) and names the
+    passage by; the user's own `question`, or words of it, quoted back; and anything
+    under the heading "Not from the encyclopedia", where an answer that is not Strict
+    says what it adds of its own.
     """
+    answer = answer or ""
+    names = [name for passage in passages
+             for name in (passage.get("title"), passage.get("heading")) if name]
+    own = _OWN_KNOWLEDGE.search(answer)
     out = []
-    for match in _QUOTED.finditer(answer or ""):
-        quote = match.group(1).strip()
-        if len(quote.split()) < 3:
+    for match in _QUOTED.finditer(answer):
+        if own and match.start() >= own.start():
+            break
+        quote = next(part for part in match.groups()[:5] if part is not None).strip()
+        if (len(quote.split()) < 3 or any(_contains(name, quote) for name in names)
+                or (question and _contains(question, quote))):
             continue
-        numbers = [n for n in cited(match.group(2)) if 1 <= n <= len(passages)]
+        numbers = [n for n in cited(match.group(6)) if 1 <= n <= len(passages)]
         found = None
         for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
             if _contains(passages[n - 1]["text"], quote):

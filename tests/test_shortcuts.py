@@ -471,6 +471,98 @@ class ConfigFileWriter(TempDir):
         writer.apply({}, LABELS, NAMES)                 # nothing to add: nothing to say
         self.assertFalse(os.path.exists(os.path.join(self.dir, "none.conf")))
 
+    def test_an_end_marker_an_editor_has_touched_still_ends_the_block(self):
+        for end in ("# --- end DA Assistant hotkeys --- \n",
+                    "    # --- end DA Assistant hotkeys ---\n",
+                    "\t# --- end DA Assistant hotkeys ---\t \n"):
+            with self.subTest(end=end):
+                writer, path = self.writer(self.OLD_BLOCK.replace(
+                    "# --- end DA Assistant hotkeys ---\n", end)
+                    + "bind = SUPER, Q, exec, kitty\n")
+                writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+                text = self.read(path)
+                self.assertIn("bind = SUPER, Q, exec, kitty\n", text)
+                self.assertNotIn("/old/run-assistant", text)
+                self.assertEqual(text.count("end DA Assistant hotkeys"), 1)
+
+    def test_a_block_with_no_end_leaves_the_file_and_its_backup_alone(self):
+        unended = ("monitor=,preferred,auto,1\n"
+                   + self.OLD_BLOCK.replace("# --- end DA Assistant hotkeys ---\n", "")
+                   + "bind = SUPER, Q, exec, kitty\n")
+        for text in (unended, unended + self.OLD_BLOCK):
+            with self.subTest(text=text):
+                writer, path = self.writer(text)
+                with open(path + ".da-assistant.bak", "w") as f:
+                    f.write("the good copy\n")
+                for step in (lambda: writer.apply({"ocr_only": "F5"}, LABELS, NAMES),
+                             lambda: writer.remove(NAMES)):
+                    with self.assertRaises(OSError) as raised:
+                        step()
+                    self.assertIn("line 2", str(raised.exception))
+                    self.assertEqual(self.read(path), text)
+                    self.assertEqual(self.read(path + ".da-assistant.bak"),
+                                     "the good copy\n")
+                self.assertEqual(self.host.calls, [])
+                self.assertEqual(sorted(os.listdir(self.dir)),
+                                 ["hyprland.conf", "hyprland.conf.da-assistant.bak"])
+
+    def test_a_config_that_is_a_link_is_written_through_it(self):
+        dotfiles = os.path.join(self.dir, "dotfiles")
+        os.makedirs(dotfiles)
+        real = os.path.join(dotfiles, "hyprland.conf")
+        with open(real, "w") as f:
+            f.write("bind = SUPER, Q, exec, kitty\n")
+        link = os.path.join(self.dir, "hyprland.conf")
+        os.symlink(real, link)
+        writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost(), link)
+        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.readlink(link), real)
+        self.assertIn("--action=ocr_only", self.read(real))
+        self.assertEqual(self.read(link + ".da-assistant.bak"),
+                         "bind = SUPER, Q, exec, kitty\n")
+        self.assertFalse(os.path.islink(link + ".da-assistant.bak"))
+        self.assertEqual(os.listdir(dotfiles), ["hyprland.conf"])     # no temporary left
+        writer.remove(NAMES)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(self.read(real), "bind = SUPER, Q, exec, kitty\n")
+
+    @unittest.skipIf(os.geteuid() == 0, "root writes read-only files all the same")
+    def test_a_link_into_somewhere_read_only_says_so_and_writes_nothing(self):
+        store = os.path.join(self.dir, "store")
+        os.makedirs(store)
+        real = os.path.join(store, "hyprland.conf")
+        with open(real, "w") as f:
+            f.write("bind = SUPER, Q, exec, kitty\n")
+        os.chmod(real, 0o444)
+        os.chmod(store, 0o555)
+        self.addCleanup(os.chmod, store, 0o755)
+        link = os.path.join(self.dir, "hyprland.conf")
+        os.symlink(real, link)
+        host = FakeHost()
+        writer = keybindings.ConfigFileKeybindings("hyprland", host, link)
+        with self.assertRaises(OSError) as raised:
+            writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        self.assertIn(f"a link to {os.path.realpath(real)}, cannot be written",
+                      str(raised.exception))
+        self.assertEqual(self.read(real), "bind = SUPER, Q, exec, kitty\n")
+        self.assertFalse(os.path.exists(link + ".da-assistant.bak"))
+        self.assertEqual(host.calls, [])
+
+    def test_bytes_that_are_not_utf8_come_through_unchanged(self):
+        latin1 = b"# Configur\xe9 \xa9 2019\nbind = SUPER, Q, exec, kitty\n"
+        writer, path = self.writer("")
+        with open(path, "wb") as f:
+            f.write(latin1)
+        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        with open(path, "rb") as f:
+            written = f.read()
+        self.assertTrue(written.startswith(latin1), written)
+        self.assertIn(b"--action=ocr_only", written)
+        writer.remove(NAMES)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), latin1)
+
 
 class KdeLegacy(TempDir):
     def test_the_old_launchers_are_removed(self):
@@ -609,6 +701,64 @@ class Manager(TempDir):
         self.assertIn("does not exist", manager.error)
         self.assertIsNone(manager.trigger_label("ocr_only"))
         self.assertEqual(self.config().hotkeys_installed, {})       # tried again next time
+
+    def test_a_config_with_latin1_in_it_is_written_and_the_app_starts(self):
+        # Read as strict UTF-8 it raised UnicodeDecodeError out of start(), which runs
+        # in the app's constructor: the app stopped at every start.
+        os.makedirs(os.path.join(self.dir, "hypr"))
+        path = os.path.join(self.dir, "hypr", "hyprland.conf")
+        latin1 = b"# Configur\xe9 en 2019\nbind = SUPER, Q, exec, kitty\n"
+        with open(path, "wb") as f:
+            f.write(latin1)
+        config = self.config()
+        config.hotkeys = {"ocr_only": "F5"}
+        with Patched(session_of(desktop="hyprland")), \
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            manager = self.manager(config, FakeHost())
+            manager.start()
+        self.assertIsNone(manager.error)
+        with open(path, "rb") as f:
+            written = f.read()
+        self.assertTrue(written.startswith(latin1), written)
+        self.assertIn(b"--action=ocr_only", written)
+
+    def test_nothing_a_desktop_writer_raises_gets_out_of_start(self):
+        class Raising:
+            def __init__(self, failure):
+                self.failure = failure
+
+            def describe(self):
+                return "~/.config/hypr/hyprland.conf"
+
+            def apply(self, *_args):
+                raise self.failure
+
+            remove = apply
+
+        failures = (UnicodeDecodeError("utf-8", b"\xe9", 0, 1, "invalid continuation byte"),
+                    RuntimeError("the compositor said no"))
+        for failure in failures:
+            for earlier in (None, {"mechanism": "desktop:sway"}):
+                with self.subTest(failure=type(failure).__name__, earlier=earlier):
+                    config = self.config()
+                    config.hotkeys = {"ocr_only": "F5"}
+                    config.hotkeys_installed = earlier
+                    changed = []
+                    with Patched(session_of(desktop="hyprland")), \
+                            mock.patch.object(keybindings, "writer",
+                                              return_value=Raising(failure)), \
+                            mock.patch("assistant.errors.record") as record:
+                        manager = hotkeys.HotkeyManager(
+                            config, lambda action: None,
+                            on_change=lambda: changed.append(True), run=FakeHost())
+                        manager.start()                         # does not raise
+                    self.assertEqual(changed, [True])
+                    if isinstance(failure, ValueError):          # expected and caught
+                        self.assertFalse(record.called)
+                        self.assertIn("invalid continuation byte", manager.error)
+                    else:                                        # unforeseen: logged
+                        self.assertEqual(manager.error, "the compositor said no")
+                        self.assertIn("RuntimeError", record.call_args[0][0])
 
 
 class X11Grabs(TempDir):

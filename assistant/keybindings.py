@@ -276,17 +276,72 @@ class ConfigFileKeybindings:
                           *lines, END])
 
     @staticmethod
-    def strip(text):
-        """`text` without our block - or blocks, should an old script have left two."""
-        out, inside = [], False
-        for line in text.splitlines(keepends=True):
-            if line.startswith(BEGIN):
-                inside = True
-            elif inside and line.rstrip("\n") == END:
-                inside = False
-            elif not inside:
+    def strip(text, where="the config"):
+        """`text` without our block - or blocks, should an old script have left two.
+
+        Only a whole block is taken out: a BEGIN line and the END line after it, END
+        known whatever space an editor has left around it. A BEGIN with no END after it
+        raises OSError. Where that block stops is anybody's guess, and taking everything
+        after BEGIN, as this once did, took the user's own lines with it - after which
+        the next save backed the damaged file up over the only good copy.
+        """
+        out, begun = [], None
+        for number, line in enumerate(text.splitlines(keepends=True), 1):
+            if line.lstrip().startswith(BEGIN):
+                if begun is not None:
+                    break                   # a second BEGIN before the first one's END
+                begun = number
+            elif begun is None:
                 out.append(line)
+            elif line.strip() == END:
+                begun = None
+        if begun is not None:
+            raise OSError(f"{where}: the {NAME} block that begins on line {begun} has no "
+                          f'"{END}" line to end it, so nothing was changed. Put that '
+                          f"line back where the block ends, or delete the block")
         return "".join(out).rstrip("\n") + ("\n" if out else "")
+
+    def _read(self):
+        """The file's text, every byte of it. A config need not be UTF-8 throughout - a
+        comment written in Latin-1 years ago - and such bytes are carried through to the
+        file written back unchanged (surrogateescape). Read strictly, one raised
+        UnicodeDecodeError, which nothing expected, and the app stopped at every start."""
+        with open(self.path, encoding="utf-8", errors="surrogateescape") as f:
+            return f.read()
+
+    def _write(self, text):
+        """Make `text` the file's contents, keeping what it held as the backup.
+
+        Through a symbolic link, not over it: a config kept in a dotfiles repository -
+        GNU Stow, chezmoi, home-manager - is a link to the real file, and replacing the
+        link with a file of its own cut the config off from the repository. So the new
+        copy is written beside the real file, and the rename that swaps it in stays in
+        that one directory; the backup is kept beside the link, where it always was. A
+        file that cannot be written - home-manager's are in the read-only Nix store -
+        is said to be so, and nothing is written at all.
+        """
+        real = os.path.realpath(self.path)
+        where = self.describe()
+        if os.path.islink(self.path):
+            where += f", a link to {real},"
+        if not os.access(real, os.W_OK):
+            raise OSError(f"{where} cannot be written; nothing was changed")
+        tmp = real + ".da-assistant.tmp"
+        try:
+            try:
+                with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
+                    f.write(text)
+                os.chmod(tmp, os.stat(real).st_mode & 0o7777)
+            except OSError as e:
+                raise OSError(f"{where} cannot be written ({e.strerror or e}); nothing "
+                              f"was changed") from None
+            shutil.copy2(self.path, self.path + ".da-assistant.bak")
+            os.replace(tmp, real)
+        finally:
+            try:
+                os.unlink(tmp)              # left over only if something failed
+            except OSError:
+                pass
 
     def apply(self, bindings, labels, actions):
         if not os.path.exists(self.path):
@@ -294,30 +349,21 @@ class ConfigFileKeybindings:
                 return
             raise OSError(f"{self.describe()} does not exist; add the lines from "
                           f"Settings > Shortcuts to your config yourself")
-        with open(self.path, encoding="utf-8") as f:
-            before = f.read()
+        before = self._read()
         block = self.block(bindings, labels, actions)
-        after = self.strip(before)
+        after = self.strip(before, self.describe())
         if block:
             after = after + ("\n" if after else "") + block + "\n"
         if after == before:
             return
-        shutil.copy2(self.path, self.path + ".da-assistant.bak")
-        tmp = self.path + ".da-assistant.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(after)
-        os.chmod(tmp, os.stat(self.path).st_mode & 0o7777)
-        os.replace(tmp, self.path)
+        self._write(after)
         if self.desktop == "hyprland":
             self.run(["hyprctl", "reload"])
         else:
             self.run(["swaymsg", "reload"])
 
     def remove(self, actions):
-        if os.path.exists(self.path):
-            with open(self.path, encoding="utf-8") as f:
-                if BEGIN not in f.read():
-                    return
+        if os.path.exists(self.path) and BEGIN in self._read():
             self.apply({}, {}, actions)
 
 

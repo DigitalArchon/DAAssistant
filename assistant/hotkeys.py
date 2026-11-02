@@ -451,6 +451,16 @@ class PortalHotkeys:
             self.bus = None
 
 
+def _log(what):
+    """The exception being handled, into the error log as an unhandled one would go."""
+    import traceback
+    from datetime import datetime
+
+    from . import errors
+    errors.record(f"\n----- {datetime.now().isoformat(timespec='seconds')}\n{what}\n"
+                  f"{traceback.format_exc()}")
+
+
 class HotkeyManager:
     """Binds config.hotkeys by the mechanism choose() picks, and says how it went."""
 
@@ -467,6 +477,24 @@ class HotkeyManager:
         self.error = None                   # the desktop could not be written
 
     def start(self):
+        """Bind the shortcuts chosen, by the mechanism choose() picks. Never raises.
+
+        It runs inside Assistant.__init__, so anything escaping it stopped the app from
+        starting at all - and at every start after, while the cause was still there: a
+        compositor config it could not read, say. What went wrong is kept in `error`,
+        which Settings > Shortcuts shows, and written to the error log."""
+        try:
+            self._start()
+        except Exception as e:
+            self.error = str(e) or type(e).__name__
+            print(f"[hotkeys] shortcuts not set up: {self.error}")
+            _log("The shortcuts could not be set up:")
+        try:
+            self.on_change()
+        except Exception:
+            _log("Showing the shortcuts' keys failed:")
+
+    def _start(self):
         from . import session
 
         # start() runs again whenever the shortcuts change, so nothing may be left
@@ -501,7 +529,6 @@ class HotkeyManager:
                 self.mode, self.detail = "off", f"portal failed: {e}"
         elif self.mode == "desktop":
             self._install(target, desktop)
-        self.on_change()
 
     def _record(self, value):
         self.config.hotkeys_installed = value
@@ -526,7 +553,7 @@ class HotkeyManager:
         try:
             if found is not None:
                 found.remove(names)
-        except OSError as e:
+        except (OSError, ValueError) as e:
             print(f"[hotkeys] earlier shortcuts not removed: {e}")
             return
         self._record({})
@@ -541,7 +568,7 @@ class HotkeyManager:
         try:
             keybindings.writer(desktop, self.run).apply(self.wanted, LABELS,
                                                         action_names())
-        except OSError as e:
+        except (OSError, ValueError) as e:
             self.error = str(e)
             return
         self._record(record)

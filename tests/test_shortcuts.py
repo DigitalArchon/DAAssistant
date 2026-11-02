@@ -761,6 +761,70 @@ class Manager(TempDir):
                         self.assertIn("RuntimeError", record.call_args[0][0])
 
 
+class FakeXDisplay:
+    """A python-xlib Display with a keyboard of the test's own, which records the grabs
+    made on its root window and is never connected to anything."""
+
+    KEYBOARD = {0x6c6: 41, 0x7e1: 38, 0xfe52: 35, 0x1008ff1d: 148}   # keysym -> keycode
+
+    def __init__(self, *_args):
+        self.asked, self.grabs = [], []
+        self.root = self
+
+    def screen(self):
+        return self
+
+    def keysym_to_keycode(self, keysym):
+        self.asked.append(keysym)
+        return self.KEYBOARD.get(keysym, 0)
+
+    def grab_key(self, keycode, mask, *_args, **_kw):
+        self.grabs.append((keycode, mask))
+
+    def ungrab_key(self, *_args):
+        pass
+
+    def sync(self):
+        pass
+
+    def close(self):
+        pass
+
+    def fileno(self):
+        return -1
+
+
+class X11Keysyms(unittest.TestCase):
+    """A key's X keysym comes from GDK, whose key values are keysyms. python-xlib's own
+    table has only Latin-1 and the miscellany, and gave 0 for all of these."""
+
+    def test_keys_beyond_latin1_have_their_keysyms(self):
+        for name, keysym in (("Cyrillic_ef", 0x6c6), ("Greek_alpha", 0x7e1),
+                             ("dead_circumflex", 0xfe52), ("EuroSign", 0x20ac),
+                             ("XF86Calculator", 0x1008ff1d), ("F5", 0xffc2), ("1", 0x31)):
+            self.assertEqual(hotkeys.X11Hotkeys.keysym(name), keysym, name)
+        self.assertEqual(hotkeys.X11Hotkeys.keysym("NoSuchKey"), 0)
+
+    def test_they_are_grabbed_and_only_a_key_the_keyboard_lacks_is_missing(self):
+        if not hotkeys.X11Hotkeys.available():
+            self.skipTest("needs python-xlib")
+        wanted = {"ocr_only": "<Control>Cyrillic_ef", "query_text": "<Alt>Greek_alpha",
+                  "translate_text": "<Super>dead_circumflex",
+                  "look_up_word": "<Control>XF86Calculator",
+                  "ask_anything": "<Control>EuroSign"}
+        with mock.patch("Xlib.display.Display", FakeXDisplay), \
+                mock.patch.object(hotkeys.GLib, "io_add_watch", return_value=None):
+            grabber = hotkeys.X11Hotkeys(lambda action: None, wanted)
+            bound = grabber.start()
+            keyboard = grabber.display
+            grabber.stop()
+        self.assertEqual(sorted(bound), ["look_up_word", "ocr_only", "query_text",
+                                         "translate_text"])
+        self.assertEqual(grabber.failed, {"ask_anything": "no such key on this keyboard"})
+        self.assertIn(0x20ac, keyboard.asked)       # asked for, and not on this keyboard
+        self.assertIn(148, {code for code, _mask in keyboard.grabs})
+
+
 class X11Grabs(TempDir):
     """Real grabs on the test's own X display; keys pressed through XTEST."""
 

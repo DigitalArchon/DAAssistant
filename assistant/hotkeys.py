@@ -27,7 +27,8 @@ and CapsLock in the event state, so a single grab would leave every key dead wit
 NumLock on.
 """
 
-from gi.repository import GLib
+from . import gtkcompat  # noqa: F401  (pins GI versions)
+from gi.repository import Gdk, GLib
 
 from . import APP_ID, keybindings, shortcuts
 
@@ -172,8 +173,21 @@ class X11Hotkeys:
             mask |= bits[mod]
         return mask
 
+    @staticmethod
+    def keysym(name):
+        """The X keysym of a key's name - "F5", "Cyrillic_ef", "XF86Calculator" - or 0.
+
+        GDK's key values are X keysyms, and its names are the ones the config holds
+        (shortcuts.py), so GDK is asked. python-xlib's XK.string_to_keysym knows only
+        its Latin-1 and miscellany tables, and gave 0 for Cyrillic and Greek letters,
+        dead keys, the euro sign and every XF86 key: each such shortcut was reported as
+        "no such key on this keyboard" and never bound.
+        """
+        keyval = Gdk.keyval_from_name(name)
+        return 0 if keyval in (0, Gdk.KEY_VoidSymbol) else keyval
+
     def start(self):
-        from Xlib import X, XK, display, error
+        from Xlib import X, display, error
 
         self.display = display.Display()
         self.root = self.display.screen().root
@@ -183,7 +197,8 @@ class X11Hotkeys:
 
         for action, accel in self.wanted.items():
             mods, key = shortcuts.parts(accel)
-            keycode = self.display.keysym_to_keycode(XK.string_to_keysym(key))
+            keysym = self.keysym(key)
+            keycode = self.display.keysym_to_keycode(keysym) if keysym else 0
             if not keycode:
                 self.failed[action] = "no such key on this keyboard"
                 continue

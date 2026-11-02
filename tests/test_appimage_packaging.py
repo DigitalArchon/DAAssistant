@@ -369,6 +369,19 @@ class FallbacksFillOnlyGaps(unittest.TestCase):
         self.assertEqual(path, [os.path.join(self.fallback, "typelibs", "cairo-1.0")])
         self.assertNotIn("GI_TYPELIB_PATH", hostenv.host_env())
 
+    def test_the_hosts_own_search_path_comes_first(self):
+        """A typelib the host provides through GI_TYPELIB_PATH - /usr/local, Nix - is
+        the one used; the bundled ones only fill in after it."""
+        os.environ[hostenv.KEYS] = "SSL_CERT_FILE"
+        os.environ["GI_TYPELIB_PATH"] = "/usr/local/lib/girepository-1.0:/nix/typelibs"
+        bundle.fill_gaps(self.fallback, host_dirs=(self.host,))
+        bundled = [os.path.join(self.fallback, "typelibs", name)
+                   for name in ("Missing-1.0", "cairo-1.0")]
+        self.assertEqual(os.environ["GI_TYPELIB_PATH"].split(":"),
+                         ["/usr/local/lib/girepository-1.0", "/nix/typelibs"] + bundled)
+        self.assertEqual(hostenv.host_env()["GI_TYPELIB_PATH"],
+                         "/usr/local/lib/girepository-1.0:/nix/typelibs")
+
     def test_outside_the_appimage_it_does_nothing(self):
         os.environ.pop(hostenv.KEYS, None)
         self.assertEqual(bundle.fill_gaps(), [])

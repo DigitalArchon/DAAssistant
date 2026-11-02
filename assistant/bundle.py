@@ -11,7 +11,8 @@ apart from GTK, though, and not every host has them:
   - typelibs: GLib's own (Debian's gir1.2-glib-2.0), the base ones GTK's refer to
     (xlib, cairo, freetype: Arch ships them apart), GTK's own (Debian's gir1.2-gtk-3.0),
     the tray indicator's and libnotify's. Only those the host lacks are added to the
-    search path, for this process only.
+    search path, after anything the host's own GI_TYPELIB_PATH names, and for this
+    process only.
   - the libraries behind the indicator's and libnotify's typelibs. Without the
     indicator, Plasma on Wayland shows no tray icon at all. Each is loaded only where the
     host has no copy of its own, and a typelib whose libraries will not load is left out,
@@ -97,8 +98,11 @@ def fill_gaps(directory=None, host_dirs=HOST_TYPELIB_DIRS):
             _used.append(name)
     if added:
         from . import hostenv
+        # After the host's own search path, not before: a typelib the host provides
+        # through GI_TYPELIB_PATH (/usr/local, Nix) was shadowed by ours.
         current = os.environ.get("GI_TYPELIB_PATH")
-        hostenv.set_for_self("GI_TYPELIB_PATH", ":".join(added + ([current] if current else [])))
+        hostenv.set_for_self("GI_TYPELIB_PATH", ":".join(([current] if current else [])
+                                                         + added))
     return _used
 
 

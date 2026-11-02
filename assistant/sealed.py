@@ -31,20 +31,21 @@ no code from nano-gpt:
    back to the plain endpoint: llm.py refuses a private/ model everywhere but here.
 
 The attestation is redone before a request once it is five minutes old (the proxy's
-figure: laptop sleep, a key rotated underneath us), and once more when the enclave says
-the key has changed.
+figure: laptop sleep, a key rotated underneath us), counted on a clock that runs on
+while the machine sleeps (dcap.since_boot), and once more when the enclave says the
+key has changed.
 """
 
 import hashlib
 import json
 import secrets
 import threading
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from . import models
+from .dcap import since_boot
 from .privacy import E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode
 
 RELAY_PATH = "/api/v1/private/tinfoil"
@@ -208,7 +209,7 @@ def attestation_for(model, verified):
 class Enclave:
     """The attested enclave one conversation seals to. Thread-safe."""
 
-    def __init__(self, relay, verifier=tinfoil_verify, clock=time.monotonic):
+    def __init__(self, relay, verifier=tinfoil_verify, clock=since_boot):
         self.relay = relay
         # Ours, not nano-gpt's: see the module docstring. One per conversation, never
         # written anywhere.

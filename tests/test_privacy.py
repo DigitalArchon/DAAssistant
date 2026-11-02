@@ -720,6 +720,72 @@ class IntelsChainRules(unittest.TestCase):
                 self.signed_tcb_info(name)
 
 
+@unittest.skipUnless(hasattr(time, "CLOCK_BOOTTIME"), "no CLOCK_BOOTTIME here")
+class ClocksThatCountSleep(unittest.TestCase):
+    """The end-to-end encrypted enclave's five-minute attestation, Intel's collateral
+    and NVIDIA's keys were aged by time.monotonic, which stops while the machine is
+    suspended: a laptop that slept for hours took them all for as fresh as when it
+    went to sleep. Here the boot clock moves on while the monotonic one stands still,
+    as across a suspend."""
+
+    def setUp(self):
+        self.boot = 1000.0
+        real = time.clock_gettime
+
+        def clock_gettime(clock):
+            return self.boot if clock == time.CLOCK_BOOTTIME else real(clock)
+
+        for patch in (mock.patch.object(time, "clock_gettime", clock_gettime),
+                      mock.patch.object(time, "monotonic", return_value=50.0)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def sleep(self, hours):
+        self.boot += hours * 3600
+
+    def test_the_boot_clock_is_read_and_the_monotonic_one_only_without_it(self):
+        self.assertEqual(dcap.since_boot(), 1000.0)
+        with mock.patch.object(dcap, "_BOOTTIME", None):
+            self.assertEqual(dcap.since_boot(), 50.0)
+        with mock.patch.object(time, "clock_gettime", side_effect=OSError):
+            self.assertEqual(dcap.since_boot(), 50.0)
+
+    def test_the_sealed_enclave_is_attested_again_after_a_sleep(self):
+        verified = []
+        enclave = sealed.Enclave(sealed.relay_url(API_URL),
+                                 verifier=lambda relay, secret: verified.append(1) or 1)
+        enclave.current()
+        enclave.current()
+        self.assertEqual(len(verified), 1)
+        self.sleep(2)
+        enclave.current()
+        self.assertEqual(len(verified), 2)
+
+    def test_intels_collateral_is_fetched_again_after_a_sleep(self):
+        dcap._cache.clear()
+        self.addCleanup(dcap._cache.clear)
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(200, None, content=b"collateral")
+        for _ in range(2):
+            self.assertEqual(dcap._fetch(session, dcap.ROOT_CRL_URL)[0], b"collateral")
+        self.assertEqual(session.get.call_count, 1)
+        self.sleep(2)
+        dcap._fetch(session, dcap.ROOT_CRL_URL)
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_nvidias_keys_are_fetched_again_after_a_sleep(self):
+        nras._keys.update(at=0.0, keys={})
+        self.addCleanup(nras._keys.update, at=0.0, keys={})
+        session = mock.Mock()
+        session.get.return_value = FakeResponse(200, {"keys": [{"kid": "k1"}]})
+        for _ in range(2):
+            self.assertIn("k1", nras._jwks(session))
+        self.assertEqual(session.get.call_count, 1)
+        self.sleep(2)
+        nras._jwks(session)
+        self.assertEqual(session.get.call_count, 2)
+
+
 # ---- the session ---------------------------------------------------------------------
 
 class InstanceEvidence:

@@ -34,8 +34,9 @@ Checked live against TEE/glm-5.3-flash's quote (Sept 2026): version 4, ECDSA-256
 attestation key, TDX; PCK Platform CA; FMSPC 20a06f000000; TDX module TDX_03; every
 status UpToDate.
 
-Collateral is cached for an hour: it is the same for every quote from a platform, and
-Intel reissues it monthly.
+Collateral is cached for an hour, on a clock that runs on while the machine sleeps
+(since_boot): it is the same for every quote from a platform, and Intel reissues it
+monthly.
 """
 
 import hashlib
@@ -340,6 +341,25 @@ def _common_name(cert):
 
 # ---- collateral ---------------------------------------------------------------------
 
+_BOOTTIME = getattr(time, "CLOCK_BOOTTIME", None)
+
+
+def since_boot():
+    """Seconds on a clock that keeps counting while the machine is suspended, for
+    telling when something fetched or proved has grown old: Intel's collateral here,
+    NVIDIA's keys (nras.py), an attestation (privacy.py, sealed.py).
+
+    time.monotonic stops while the machine sleeps, so a laptop that slept for hours
+    would take an attestation made before it for a few minutes old. Linux's
+    CLOCK_BOOTTIME does not stop; where there is none, monotonic is what there is."""
+    if _BOOTTIME is not None:
+        try:
+            return time.clock_gettime(_BOOTTIME)
+        except OSError:
+            pass
+    return time.monotonic()
+
+
 _cache = {}
 _cache_lock = threading.Lock()
 
@@ -349,7 +369,7 @@ def _fetch(session, url, params=None):
     key = (url, tuple(sorted((params or {}).items())))
     with _cache_lock:
         hit = _cache.get(key)
-        if hit is not None and time.monotonic() - hit[0] < COLLATERAL_TTL:
+        if hit is not None and since_boot() - hit[0] < COLLATERAL_TTL:
             return hit[1], hit[2]
     try:
         response = session.get(url, params=params, timeout=TIMEOUT_SECONDS)
@@ -360,7 +380,7 @@ def _fetch(session, url, params=None):
     content = response.content
     headers = dict(response.headers)
     with _cache_lock:
-        _cache[key] = (time.monotonic(), content, headers)
+        _cache[key] = (since_boot(), content, headers)
     return content, headers
 
 

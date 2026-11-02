@@ -36,6 +36,8 @@ import time
 
 import requests
 
+from .dcap import since_boot
+
 JWKS_URL = "https://nras.attestation.nvidia.com/.well-known/jwks.json"
 ISSUER = "https://nras.attestation.nvidia.com"
 TIMEOUT_SECONDS = 30
@@ -61,7 +63,7 @@ _keys_lock = threading.Lock()
 
 def _jwks(session, refresh=False):
     with _keys_lock:
-        if not refresh and _keys["keys"] and time.monotonic() - _keys["at"] < KEYS_TTL:
+        if not refresh and _keys["keys"] and since_boot() - _keys["at"] < KEYS_TTL:
             return _keys["keys"]
     try:
         response = session.get(JWKS_URL, timeout=TIMEOUT_SECONDS)
@@ -72,7 +74,7 @@ def _jwks(session, refresh=False):
         raise KeysUnavailable("NVIDIA's signing keys could not be read")
     keys = {k["kid"]: k for k in body["keys"] if isinstance(k, dict) and k.get("kid")}
     with _keys_lock:
-        _keys.update(at=time.monotonic(), keys=keys)
+        _keys.update(at=since_boot(), keys=keys)
     return keys
 
 

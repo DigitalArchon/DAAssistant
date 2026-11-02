@@ -9,12 +9,21 @@ substitution for children.
 
 Outside an AppImage there is nothing to undo, so it returns None, which subprocess
 reads as "inherit my environment".
+
+The AppImage runtime sets a few variables of its own, naming the image and its mount:
+APPIMAGE, APPDIR, OWD, ARGV0. They describe this app, not the host program being run,
+and an AppImage-packaged browser that inherited them would take them for its own, so
+children never see them.
+
+open_uri() is the same promise for links: the browser a link opens in is a host program
+too, started with the environment it would have had anyway.
 """
 
 import os
 
 PREFIX = "APPIMAGE_HOST_"
 KEYS = "APPIMAGE_HOST_ENV_KEYS"
+RUNTIME = ("APPIMAGE", "APPDIR", "OWD", "ARGV0")
 
 
 def set_for_self(name, value):
@@ -43,4 +52,23 @@ def host_env():
         if saved is not None:
             env[key] = saved
     env.pop(KEYS, None)
+    for key in RUNTIME:
+        env.pop(key, None)
     return env
+
+
+def open_uri(uri):
+    """Open `uri` with the desktop's handler for it - a link in the browser, mailto: in
+    the mail program - started with the host's environment. Raises GLib.Error when
+    nothing can open it (no mail program for mailto:, say)."""
+    from gi.repository import Gio
+    env = host_env()
+    context = None
+    if env is not None:
+        context = Gio.AppLaunchContext()
+        for key in set(os.environ) - set(env):
+            context.unsetenv(key)
+        for key, value in env.items():
+            if os.environ.get(key) != value:
+                context.setenv(key, value)
+    Gio.AppInfo.launch_default_for_uri(uri, context)

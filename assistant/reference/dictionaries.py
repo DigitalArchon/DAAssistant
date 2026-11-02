@@ -15,10 +15,11 @@ import sqlite3
 import threading
 import unicodedata
 
+from .. import paths
 from .dsl import DSL, spellings
 from .stardict import StarDict
 
-CACHE_DIR = os.path.expanduser("~/.cache/da-assistant")
+CACHE_DIR = paths.CACHE_DIR
 INDEX_FILE = "dictionaries.sqlite"
 SCHEMA = 2
 

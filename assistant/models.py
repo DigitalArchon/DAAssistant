@@ -23,9 +23,9 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import netguard, privacy, providers
+from . import netguard, paths, privacy, providers
 
-CACHE_DIR = os.path.expanduser("~/.cache/da-assistant")
+CACHE_DIR = paths.CACHE_DIR
 CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
 CACHE_TTL = 6 * 3600
 # Bumped when what is cached changes shape or scope: 2 added the private/ models, which

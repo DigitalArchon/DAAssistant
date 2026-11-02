@@ -18,8 +18,11 @@ import re
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import bundle, hostenv
 
@@ -68,6 +71,68 @@ class HostEnvironmentHandback(unittest.TestCase):
         os.environ.pop("APPIMAGE_HOST_GI_TYPELIB_PATH")
         hostenv.set_for_self("GI_TYPELIB_PATH", "/mnt/appimage/fallback")
         self.assertNotIn("GI_TYPELIB_PATH", hostenv.host_env())
+
+    def test_the_runtimes_own_variables_are_not_handed_on(self):
+        os.environ[hostenv.KEYS] = "SSL_CERT_FILE"
+        for key in ("APPIMAGE", "APPDIR", "OWD", "ARGV0"):
+            os.environ[key] = f"/mnt/{key.lower()}"
+        env = hostenv.host_env()
+        for key in ("APPIMAGE", "APPDIR", "OWD", "ARGV0"):
+            self.assertNotIn(key, env)
+
+    def test_a_link_opens_with_the_host_environment(self):
+        os.environ[hostenv.KEYS] = "SSL_CERT_FILE"
+        os.environ["SSL_CERT_FILE"] = "/mnt/appimage/cacert.pem"
+        os.environ["APPIMAGE_HOST_SSL_CERT_FILE"] = "/etc/host.pem"
+        os.environ["APPIMAGE"] = "/home/u/DA.AppImage"
+        launched = []
+
+        class Context:
+            def __init__(self):
+                self.set, self.unset = {}, set()
+
+            def setenv(self, key, value):
+                self.set[key] = value
+
+            def unsetenv(self, key):
+                self.unset.add(key)
+
+        def launch(uri, context):
+            launched.append((uri, context))
+
+        from gi.repository import Gio
+        with mock.patch.object(Gio, "AppLaunchContext", Context), \
+                mock.patch.object(Gio.AppInfo, "launch_default_for_uri", launch):
+            hostenv.open_uri("https://example.org/")
+        uri, context = launched[0]
+        self.assertEqual(uri, "https://example.org/")
+        self.assertEqual(context.set["SSL_CERT_FILE"], "/etc/host.pem")
+        self.assertIn("APPIMAGE", context.unset)
+        self.assertIn(hostenv.KEYS, context.unset)
+
+    def test_outside_an_appimage_a_link_opens_with_ours(self):
+        os.environ.pop(hostenv.KEYS, None)
+        launched = []
+        from gi.repository import Gio
+        with mock.patch.object(Gio.AppInfo, "launch_default_for_uri",
+                               lambda uri, context: launched.append(context)):
+            hostenv.open_uri("mailto:someone@example.org")
+        self.assertEqual(launched, [None])
+
+
+class TheSuitesOwnCache(unittest.TestCase):
+    """Everything the app writes to its cache goes under paths.CACHE_DIR, and the tests
+    point that somewhere of their own (tests/support.py)."""
+
+    def test_every_cache_path_is_under_the_suites_cache(self):
+        import support
+        from assistant import errors, imaging, models, paths, webkitguard
+        from assistant.reference import dictionaries
+        self.assertTrue(paths.CACHE_DIR.startswith(support.CACHE))
+        for path in (errors.LOG_FILE, webkitguard.STATE_FILE, models.CACHE_FILE,
+                     dictionaries.CACHE_DIR):
+            self.assertTrue(path.startswith(paths.CACHE_DIR), path)
+        self.assertIn("paths.CACHE_DIR", open(imaging.__file__).read())
 
     def test_unrelated_variables_are_passed_through(self):
         os.environ[hostenv.KEYS] = "LD_LIBRARY_PATH"

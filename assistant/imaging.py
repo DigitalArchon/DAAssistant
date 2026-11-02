@@ -29,6 +29,7 @@ from io import BytesIO
 
 from PIL import Image
 
+from . import paths
 from .config import DEFAULTS
 
 MAX_UPSCALE = 3.0
@@ -146,7 +147,7 @@ def prepare_for_vision(img, config=None, save_debug_copy=False):
 
 def _save_debug(png_bytes):
     """Write the exact bytes being sent, so a contaminated capture can be inspected."""
-    d = os.path.expanduser("~/.cache/da-assistant/captures")
+    d = os.path.join(paths.CACHE_DIR, "captures")
     os.makedirs(d, mode=0o700, exist_ok=True)
     # These are pictures of the screen. makedirs leaves a directory that already exists
     # as it found it, and the ones made before this were 0775.

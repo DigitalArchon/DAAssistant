@@ -54,6 +54,11 @@ DEFAULTS = {
     # premium_text_model does outside Privacy Mode.
     "private_premium_model": "TEE/glm-5.3",
     "private_vision_model": "TEE/qwen3.6-27b",
+    # Refuse an enclave that proved less than it could - no GPU evidence, an Intel TCB
+    # that is not UpToDate, Intel's or NVIDIA's services out of reach, an older release
+    # - rather than sending with an amber banner; and after a reply whose signature did
+    # not match, send nothing more until the enclave has been attested again.
+    "privacy_strict": False,
     # Global shortcuts, set in Settings > Shortcuts: {action: "<Control><Shift>1"}. None
     # are bound on a new install. See assistant/hotkeys.py.
     "hotkeys": {},

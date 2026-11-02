@@ -13,8 +13,9 @@ import os
 import sys
 import traceback
 
-LOG_DIR = os.path.join(
-    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "da-assistant")
+from . import paths
+
+LOG_DIR = paths.CACHE_DIR
 LOG_FILE = os.path.join(LOG_DIR, "errors.log")
 MAX_BYTES = 256 * 1024
 

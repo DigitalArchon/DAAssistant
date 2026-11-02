@@ -18,6 +18,8 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import llm, models, providers, websearch
 from assistant.config import Config

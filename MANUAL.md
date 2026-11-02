@@ -11,6 +11,7 @@ Everything DA Assistant does, and how. For installing it and a first run, see th
 - [Look up word](#look-up-word)
 - [Search Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)
 - [Global shortcuts](#global-shortcuts)
+- [Your own actions](#your-own-actions)
 - [Starting automatically](#starting-automatically)
 - [What it uses from the system](#what-it-uses-from-the-system)
 - [Where things are kept](#where-things-are-kept)
@@ -19,14 +20,16 @@ Everything DA Assistant does, and how. For installing it and a first run, see th
 
 ## The operations
 
-Eight operations, from the tray menu or a global shortcut you choose (see [Global
-shortcuts](#global-shortcuts)) - the last two only once you turn them on (see [Search
-Encyclopedia and Ask Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)). No
-shortcut is set until you choose one; these are the suggested keys:
+Nine operations, and [actions of your own](#your-own-actions), from the tray menu or a
+global shortcut you choose (see [Global shortcuts](#global-shortcuts)) - the
+encyclopedia's two only once you turn them on (see [Search Encyclopedia and Ask
+Encyclopedia](#search-encyclopedia-and-ask-encyclopedia)). No shortcut is set until you
+choose one; these are the suggested keys:
 
 | Action | Suggested key | What it does |
 |---|---|---|
 | Translate clipboard text | `Ctrl+Shift+1` | Translates the clipboard into your target language |
+| Translate selected text | `Ctrl+Shift+0` | Translates the text you have highlighted, without copying it first |
 | Translate image selection | `Ctrl+Shift+2` | Transcribes a screen region, then translates it |
 | Query clipboard text | `Ctrl+Shift+3` | Ask a question about the clipboard |
 | Query image selection | `Ctrl+Shift+4` | Ask a question about a screen region |
@@ -40,6 +43,16 @@ type a question, attach files if you like (see [Attachments](#attachments)), and
 answered by your answering model, privately in Privacy Mode. Its suggested key is
 `Ctrl+Shift+9`.
 
+**Translate selected text** reads what is highlighted - X11's primary selection, what a
+middle click pastes - so a word or a paragraph only has to be selected. On Wayland, where
+a tray app cannot read it without focus, it needs `wl-clipboard`, as the clipboard does.
+A translation's review dialog has **Translate into**, which starts on your language
+(Settings > General) and takes any other for that one request.
+
+A **picture on the clipboard** is not refused: Translate clipboard text hands it to
+Translate image selection's pipeline, and Query clipboard text to Query image
+selection's, each reviewed as a capture is, black-out and all.
+
 Answers open in a chat window that streams as it generates, renders Markdown properly
 (tables, code blocks with syntax highlighting, URLs as links that open in your browser)
 and accepts follow-up questions. The window follows an answer down as it comes in; scroll
@@ -51,7 +64,25 @@ seconds after. **Ctrl+F** finds text in the conversation: every match is marked,
 or F3 goes to the next and Shift+Enter to the one before, Escape closes it. In Search
 Encyclopedia it searches the article when that is where you were reading.
 Drag the bar above the message box to give it more room or less; the height you leave it
-at is kept for the next window.
+at is kept for the next window. Each answer has a **Copy** of its own, copying it as the
+Markdown it was. **Ctrl+plus** and **Ctrl+minus** (or Ctrl and the wheel) make the text
+larger or smaller, **Ctrl+0** puts it back, and the size is kept for the next window;
+**Ctrl+W** closes the window, and **Escape** stops an answer, as Stop does. A stopped
+answer keeps what had come, marked as cut short, and the conversation carries on from it.
+
+A long conversation is fitted to the model: every turn resends everything, and once that
+is more than the model takes, the oldest exchanges after the first question - which holds
+the capture or the material - are left out, the status line says so, and the model is
+told. An answer that ended short of finishing says how: cut off at the token limit, by
+the provider's content filter, by an error the provider reported part way (in its own
+words), or by a connection that ended.
+
+**Right-click to look things up.** Select a word or a phrase anywhere the app shows text -
+an answer, a dictionary's entries, an article, the message box - and right-click it:
+**Look up in the dictionary** opens Look up word on it, and **Search the encyclopedia**
+a Search Encyclopedia window searching for it, each a window of its own. Each is offered
+only where there is something to look in. Links in an answer open in your browser; the
+view itself never leaves the conversation.
 A conversation about a screen region shows the
 capture above it, as you took it, to view full size or save as a PNG; saved as Markdown,
 the capture is written beside the `.md` under the same name and linked from it. Until you
@@ -113,8 +144,9 @@ Web search can be switched on or off for each individual request, from the **Sea
 web** box on the send dialog. The three operations that cannot benefit from it —
 translate clipboard text, translate image selection and OCR — start with it off
 regardless of your default, since they work from text already in front of the model. The chat window's header carries a matching magnifier for
-follow-ups, beside the model menu. Both start from your saved defaults and never write
-back to them.
+follow-ups, beside the model menu. The send dialog starts from your saved default, and the
+magnifier from the send dialog's choice - so off for a translation or OCR's follow-ups,
+whatever your default - and neither writes back to it.
 
 **Privacy Mode**, from the tray menu or **Settings > Privacy**, sends everything to two
 models of your choosing that run in an attested trusted execution environment instead:
@@ -157,6 +189,8 @@ to take it off again. A message can be pictures alone.
   message in a fenced block under the file's name; nothing else of the file is sent.
   Files that are neither text nor a supported picture are refused, and the status line
   says why.
+- **Pasted pictures**: Ctrl+V in the message box, or Paste from its menu, with a picture
+  on the clipboard and no text attaches the picture, through the same black-out editor.
 
 Attached pictures go with the conversation the way a capture does: a model that accepts
 images is given each picture, and for one that cannot, the vision model reads each
@@ -190,6 +224,10 @@ path follows it. For another endpoint, its base (`https://host/v1`) and its full
 Only the providers your models use have to be set up. With all three on Ollama no key is
 wanted at all - but then there is no web search, which runs on NanoGPT with its key
 whichever provider answers, and no Privacy Mode.
+
+A **Tor onion service** may be plain `http://`, since Tor encrypts it end to end; it is
+reached through Tor's SOCKS port, set as the [proxy](#requests) (`socks5h://127.0.0.1:9050`
+as a rule).
 
 **Test connection** asks the text model a one-word question. If the premium or vision
 model is on another provider, that provider is asked for its model list instead, which
@@ -240,7 +278,13 @@ given the image. Any other model is one menu away in the chat window.
 
 The list comes from the provider (NanoGPT's `/v1/models?detailed=true`, OpenRouter's
 `/api/v1/models`, an Ollama server's `/api/tags`) and is cached for six hours, one file
-per provider; the refresh button re-fetches it.
+per provider; the refresh button re-fetches it. It is fetched again in the background
+when Settings is saved, and a request whose provider has no list at all fetches it first:
+how a request is shaped - a model's reasoning effort, an Ollama model's own temperature,
+whether it sees images - comes from it.
+
+The default premium model is `anthropic/claude-sonnet-5.5`. A settings file still on the
+old default, `gpt-5-chat-latest`, which NanoGPT no longer lists, is moved to it.
 
 ## Reasoning effort
 
@@ -288,25 +332,36 @@ first step's and its answering model's, then any chosen along the way.
   - the Intel TDX quote must bind the key that signs replies to that nonce;
   - the quote is verified the way Intel's own Quote Verification Library does it: its PCK
     certificate chain up to Intel's SGX Root CA (pinned in the app, not taken from the
-    quote), the quoting enclave's report, the quote's signature, Intel's revocation lists,
-    and Intel's signed TCB information for the platform, its TDX module and its quoting
-    enclave. A debug TD is refused;
-  - the GPU evidence, made with the same nonce, goes to NVIDIA's attestation service, and
-    its answer is checked in turn: every token's ES384 signature against NVIDIA's
-    published keys, the nonce, the validity window, each GPU's token against the digest
-    the overall verdict lists, and each GPU's measurements, secure boot and debug state.
+    quote), every certificate that signed another a CA allowed to (its basic constraints,
+    path length and key usage), the quoting enclave's report, the quote's signature,
+    Intel's revocation lists, and Intel's TCB information for the platform, its TDX
+    module and its quoting enclave, signed by Intel's TCB signing certificate. A debug TD
+    is refused;
+  - the GPU evidence, made with the same nonce, goes to NVIDIA's attestation service with
+    the app's own nonce, whatever nano-gpt's copy names, and its answer is checked in
+    turn: every token's ES384 signature against NVIDIA's published keys, the nonce, the
+    validity window, each GPU's token against the digest the overall verdict lists, and
+    each GPU's measurements, secure boot and debug state. If NVIDIA's keys cannot be
+    fetched, the signatures go unchecked, but the nonce and the validity window are still
+    held to.
 
-  Every reply is then checked to be signed by the attested key. Your text still passes
+  Every reply is then checked to be signed by the attested key. The enclave is attested
+  again before the next message once its attestation is 15 minutes old - time the
+  computer spent asleep counts - and the banner follows it. Your text still passes
   nano-gpt's gateway in the clear on its way in - attestation proves where the model
   runs, not that nano-gpt cannot read the request.
 - **`private/` models** are nano-gpt's Private Mode: **end-to-end encrypted**. The body is
   sealed on this machine to a key only the attested enclave holds (Tinfoil's router,
   measured by AMD SEV-SNP or Intel TDX, its release checked against Sigstore), and the
-  reply comes back sealed. nano-gpt relays ciphertext: it sees your account, the model,
+  reply comes back sealed. Only a successful (2xx) reply is opened; any other, a
+  redirect included, is refused unread. The enclave is attested again before a message
+  once its attestation is five minutes old, time asleep included. nano-gpt relays
+  ciphertext: it sees your account, the model,
   timing, sizes and cost, never the text. It costs 5% more than the `TEE/` twin.
 
 The defaults, `TEE/glm-5.3-flash` and `TEE/qwen3.6-27b`, attested fully with GPU evidence
-and signed their replies when checked (Sept 2026), and need nothing installed. **Check
+and signed their replies when checked (Sept 2026), and need nothing installed but
+Python's cryptography package, which the AppImage carries. **Check
 attestation** in Settings attests both enclaves on the spot, which is free; **Test
 connection** sends the private text model one short request, checked end to end.
 
@@ -319,7 +374,8 @@ What you see:
   once it has proved itself (**TEE attested**, or **End-to-end encrypted**), amber if it
   proved less than it could - no GPU evidence, an Intel TCB status other than
   `UpToDate` (named as Intel names it), Intel's or NVIDIA's services out of reach, or an
-  enclave running an older release - and red if it was refused. **Details…** lists everything that was checked, and what
+  enclave running an older release (with **Strict** on, such an enclave is refused
+  instead) - and red if it was refused. **Details…** lists everything that was checked, and what
   was not. The status line follows each step: attesting, sending, receiving, checking the
   signature.
 - **On every turn**, a badge: your messages read *Sent to attested TEE* or *Sealed
@@ -333,12 +389,34 @@ afterwards. Its model menu can reach only TEE models, and it has no web search -
 query is made from your text and would carry it to a search provider in the clear. A compose dialog opened in
 Privacy Mode sends privately even if the mode is switched off before you press Send.
 
+Privacy only ever tightens. **Switching Privacy Mode on makes the conversations already
+open private from their next message** - the encyclopedia's reader among them, so that a
+citation followed from a private answer is read and asked about privately: each shows the
+banner, its model menu offers the private models, and its web search goes. What it sent
+before went where it went, and those turns carry no badge; an answer already on its way
+comes from where it was asked. A window whose private models cannot be used sends nothing
+until they can, or Privacy Mode is switched off again - it never falls back to the
+ordinary models - and the tray says how many conversations went private, or are waiting.
+
 Nothing is ever sent if an enclave cannot be attested. A `TEE/` model is refused with the
 reason if it offers no attestation, if its quote does not bind the nonce, fails a
 signature, chains to anything but Intel's root, is revoked or comes from a debug TD, if
-Intel has revoked its TCB or lists none it meets, or if NVIDIA's verdict is unsigned, for
-another nonce, out of date or negative. So is an operation started with a non-TEE model
-configured. It never falls back to the ordinary models.
+Intel has revoked its TCB or lists none it meets, if its chain passes through a
+certificate that is not a CA allowed to sign it, if its TCB information is signed by
+anything but Intel's TCB signing certificate, or if NVIDIA's verdict is unsigned, for
+another nonce, out of date or negative - even with NVIDIA's keys out of reach, its nonce
+and time are checked - or if Python's cryptography package is not installed, without
+which none of these signatures can be checked. So is an operation started with a non-TEE
+model configured. It never falls back to the ordinary models.
+
+**Strict** (Settings > Privacy, off by default) asks for everything. An enclave that
+proved less than it could - anything that would turn the banner amber - is refused, with
+what it lacked named, and nothing is sent. After an answer whose signature did not match,
+or that came back unsigned from a model whose attestation named the key it signs with,
+that model is attested again before it is sent anything more; if it attests well, the
+conversation carries on. Chutes' models, which sign no replies, are not attested again
+for that. Like the models, Strict is fixed when a conversation starts. **Check
+attestation** follows the box as ticked.
 
 nano-gpt retires Private Mode models from time to time, and the enclave - Tinfoil's
 router, whatever the model - would still attest. So before a `private/` model is first
@@ -374,7 +452,8 @@ the record hashes the bodies as nano-gpt's gateway saw them, which match nothing
 can reproduce, hence "signed" rather than "verified" - and which software the TEE runs:
 its measurements are proved genuine by Intel's chain, but not compared with a known
 build. The signature checks need Python's `cryptography` package (`python3-cryptography`;
-the AppImage carries it); without it the banner says *signatures unchecked*.
+the AppImage carries it). Without it no `TEE/` model can be attested, so none is used:
+Settings and Diagnostics say so, and nothing is sent to one.
 
 **End-to-end encryption needs Tinfoil's client.** The AppImage carries it. Running from
 source, install it once:
@@ -399,7 +478,8 @@ The implementation is ported from StoryLoom, which talks to the same models.
 
 The search runs on NanoGPT, with its API key, whichever [provider](#providers) answers
 the question; without that key nothing is searched and the model answers from what it
-has.
+has. A search that could not run is said - in the status line, and at the end of the
+answer, which then comes from what the model already knew.
 
 Three levels of control, narrowest first:
 
@@ -407,7 +487,8 @@ Three levels of control, narrowest first:
   count or capture size. This is the one that governs the message you are composing.
 - **Per follow-up** — the magnifier in the chat window header, which applies to follow-up
   questions in that conversation.
-- **Default** — **Settings > Web search**, which seeds the other two.
+- **Default** — **Settings > Web search**, which seeds the send dialog; the header's
+  magnifier takes the send dialog's choice.
 
 The first message is already streaming by the time the chat window appears, so the send
 dialog is what decides whether that message searches; the header toggle picks up from the
@@ -489,7 +570,13 @@ British usage?" - and the answering model is given the entries, the latest few l
 worth, to answer from and quote.
 
 - **Dictionaries**: DSL (`.dsl`, `.dsl.dz`, as GoldenDict and Lingvo use) and StarDict
-  (`.ifo` with its `.idx`/`.dict`, compressed or not). Choose the folder under
+  (`.ifo` with its `.idx`/`.dict`, compressed or not). Their file names may be in
+  capitals, as dictionaries copied from Windows often are (`X.DSL.DZ`; `X.IFO` with
+  `X.IDX` and `X.DICT.DZ`). A DSL may be UTF-16, UTF-8, or, as older Lingvo dictionaries
+  are, in the Windows code page its `#SOURCE_CODE_PAGE` header names: `Latin`
+  (Windows-1252), `Cyrillic` (1251), `EasternEuropean` (1250), `Greek` (1253), `Turkish`
+  (1254), `Hebrew` (1255), `Arabic` (1256), `Baltic` (1257) or `Vietnamese` (1258); one
+  that names none is read as Windows-1252. Choose the folder under
   **Settings > Reference**, where each dictionary found can be ticked or unticked, and
   dragged by its handle to its place - or nudged with its arrows: results come in that
   order. Dragging near the top or bottom of the list scrolls it. Lingvo's `_abrv`
@@ -513,12 +600,21 @@ worth, to answer from and quote.
   with; press it again to bring them back. Only that window is affected.
 - **The files are read in place**; nothing is copied. The first lookup indexes the
   headwords into `~/.cache/da-assistant/dictionaries.sqlite` - about 15 seconds and
-  120 MB for 2 GB of dictionaries - and a dictionary is indexed again only when its
-  files change.
-- **Matching** ignores case, accents and spacing, finds DSL headwords with or without
-  their optional parts, and falls back to the stem of a common inflection
-  ("studies" -> "study"). With no match, headwords starting with what you typed are
-  offered instead.
+  120 MB for 2 GB of dictionaries - and other windows do not wait for it. A dictionary
+  is indexed again only when its files change: one replaced while the app runs, a newer
+  edition copied over it, is read afresh at the next lookup. The first lookup after
+  updating from 3.4 indexes every dictionary once more, for the new matching.
+- **Matching** ignores case, accents, punctuation and spacing, as GoldenDict's does:
+  "e-mail" finds "email", "Łódź" finds "Lodz" and "encyclopædia" finds "encyclopaedia",
+  and a word copied from a web page or a PDF with its curly apostrophe or long dash
+  ("don’t", "o’clock") finds the plain one. Letters and digits count in every script, and
+  a headword that is nothing but punctuation ("?!") is found as written. A word's own
+  entries come before those it only matches loosely ("well" before "we'll"). DSL
+  headwords are found with or without their optional parts, and a common inflection
+  falls back to its stem ("studies" -> "study"). With no match, headwords starting with
+  what you typed are offered instead.
+- **Questions wait for a lookup**: one sent while a lookup is still running waits for it,
+  so that its answer lands on the page it was asked about.
 - The word comes from the clipboard when it holds a word or a short phrase, and is
   looked up at once.
 - The lookup never leaves this machine and needs no API key. Questions about it are
@@ -571,13 +667,21 @@ main Encyclopedia first, a Student from the Student Encyclopedia, a Young reader
 each falling back on the others - and in words for that reader. The defaults for both are
 under **Settings > Reference**.
 
-Every quotation in an answer is then checked against the passage it cites. One not found
-there word for word is marked ⚠ where it stands, and listed under the answer. Click the
+Every quotation in an answer is then checked against the passage it cites, in whatever
+quotation marks the answer's language uses: “…”, "…", „…“, «…» or »…«. Word for word
+means the same words in the same order, case, spacing, quotation marks and dashes aside
+("Europe — and" is "Europe—and"), with an ellipsis ("…", "...", ". . .", "[…]") where
+words are left out. What is in quotation marks but not quoted from the passages is left
+alone, and not counted among the quotations checked: a word or two, a passage's title or
+section heading, your question quoted back, and whatever is under *Not from the
+encyclopedia*. A quotation not found word for word is marked ⚠ where it stands, and
+listed under the answer. Click the
 ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
 passage's own words highlighted - where it was found under another number, or where the
 passage comes closest to it, so you can see straight away what the source really says.
 A ⚠ that is not a link is a quotation nothing in the passages comes near. Each
-citation is a link: it opens the article in Search Encyclopedia at what was quoted, found
+citation is a link: it opens the article in Search Encyclopedia at what was quoted,
+highlighted in the passage's own words, found
 and highlighted on the page. Under the answer are its sources - those cited first, the
 rest folded away, each with its article's contributors - and the pictures and films of
 the sections it cited, each with its credit. A copied question
@@ -620,11 +724,13 @@ the database is built on your machine from your copy.
 
 Set them in **Settings > Shortcuts**: click an action's button and press the combination,
 Escape to cancel, Backspace (or the clear button) for none. **Use suggested keys** fills
-in `Ctrl+Shift+1` to `9`; **Clear all** empties the list. A combination needs Ctrl, Alt
+in `Ctrl+Shift+1` to `0`; **Clear all** empties the list. A combination needs Ctrl, Alt
 or Super, or must be a function key, so that a shortcut never takes a plain key from
 every program; `Ctrl+Alt+F1` to `F12` are refused, since they switch to a text console
-and never reach any program. Giving a key to a second action takes it from the first.
-Nothing is bound until you press Save, and a new install has none.
+and never reach any program. Giving a key to a second action takes it from the first,
+and that goes for a key that is bound right now: pressed while a button waits, it goes to
+the button, and its action does not run. Nothing is bound until you press Save, and a new
+install has none. [Your own actions](#your-own-actions) are listed here too, once saved.
 
 A Wayland program cannot listen for keys on its own, so how they are bound depends on
 the session. The page says which applies; **Settings > Advanced > Shortcuts by** can
@@ -635,7 +741,7 @@ force one if the automatic choice is wrong.
 | X11 - Cinnamon, MATE, XFCE, KDE or GNOME on Xorg | The app grabs the keys itself while it runs | A key another program holds is marked "taken by another program" |
 | Wayland with a GlobalShortcuts portal - KDE Plasma 6, GNOME 48 and later | The desktop binds them. The keys you choose are suggestions; it may ask you to confirm them, and keeps them until you change them in its own shortcut settings | The key the desktop actually bound, beside each action and in the tray menu. **Change in system settings…** opens its dialog where the portal supports that |
 | Wayland on GNOME before 48 or Cinnamon | Written into the desktop's custom keyboard shortcuts as `DA Assistant: …`, each running `run-assistant --action=NAME` | They appear in the desktop's own keyboard settings too |
-| Hyprland, Sway | Written into `~/.config/hypr/hyprland.conf` or `~/.config/sway/config`, between `# --- DA Assistant hotkeys` marker lines, and the compositor reloaded. A backup of the file is kept beside it as `.da-assistant.bak`; a config that does not exist is not created | |
+| Hyprland, Sway | Written into `~/.config/hypr/hyprland.conf` or `~/.config/sway/config`, between `# --- DA Assistant hotkeys` marker lines, and the compositor reloaded. A backup of the file is kept beside it as `.da-assistant.bak`; a config that does not exist is not created. A config that is a link (GNU Stow, chezmoi, home-manager) is written through the link and stays one; one that cannot be written, such as home-manager's in the Nix store, is left as it is, and Settings says so. If the marker lines no longer pair up, nothing is written until they do; Settings names the line the block begins on | |
 | Anything else | Nothing is written | The commands to bind by hand, with a Copy button |
 
 Hyprland has a portal too, but it binds nothing until you write `global` binds into its
@@ -655,11 +761,31 @@ start rewrites them. When something else takes over - you switch shortcuts off, 
 into an X11 session after a Wayland one - what was written into the desktop is taken back
 out.
 
+A key the desktop binds runs `run-assistant --action=NAME`. With the app not running,
+that starts it, and does the action once it is up.
+
 Upgrading from 3.0: the keys you had working stay, and anything `install-hotkeys.sh`
 wrote is taken over or, on KDE, removed in favour of the portal. The script itself is
-gone, and so is `--install-hotkeys`.
+gone, and so is `--install-hotkeys`. Up to 3.4.0 a Hyprland or Sway config that was a
+link was replaced by a file of its own, and the file it pointed to was left as it was:
+put the link back, and the next start writes the block through it.
 
 Run `--probe` any time to see which mechanism is in use.
+
+## Your own actions
+
+**Settings > Actions** holds up to six actions of your own: a name, a prompt, and what it
+works on - the clipboard text, the text you have highlighted, or a screen region. Each
+is in the tray menu under its name, and can have a shortcut in Settings > Shortcuts once
+it is saved; take one out and its key goes with it.
+
+In the prompt, `{text}` stands for the text; without it, the text goes after the prompt.
+The text is reviewed before it is sent, as Query clipboard text's is. A screen region is
+reviewed with the prompt as its question, to send as it is or change first, and is
+answered as Query image selection is; a picture on the clipboard is treated as a region.
+Answers come from your answering model, privately in Privacy Mode, and take follow-ups
+like any other. **Add the examples** puts in three to start from: Summarise, Proofread,
+and Explain this screen.
 
 ## Starting automatically
 
@@ -690,6 +816,11 @@ from source, every package the [README](README.md#from-source) lists is optional
   key is not remembered between runs.
 - End-to-end encrypted Privacy Mode needs one more thing that no distribution packages;
   see [Privacy Mode](#privacy-mode).
+- Without `python3-cryptography`, Privacy Mode's `TEE/` models cannot be attested, and
+  nothing is sent to them.
+- A SOCKS [proxy](#requests) needs PySocks and socksio: `python3-socks python3-socksio`
+  (Debian, Ubuntu), `python3-pysocks python3-socksio` (Fedora), `python-pysocks
+  python-socksio` (Arch). The AppImage carries both.
 
 ### Screenshots
 
@@ -701,7 +832,7 @@ desktop — that is the preferred path. Otherwise install your desktop's native 
 | KDE Plasma | `spectacle` |
 | GNOME | `gnome-screenshot` |
 | Hyprland / Sway | `grim` and `slurp` |
-| Cinnamon | built in (`org.Cinnamon` D-Bus) |
+| Cinnamon | built in (`org.Cinnamon` D-Bus), the whole screen only: the region is chosen in a window of ours |
 
 KDE Plasma is the exception to "nothing extra": its portal's *Request screenshot* dialog
 offers full screen, current screen and active window, and no rectangular region at all,
@@ -717,15 +848,27 @@ Clipboard fallbacks, used when GTK's own clipboard read comes back empty:
 KDE. On Wayland these are not optional extras: a client is only offered the clipboard
 while it holds keyboard focus, which a tray app never does, so GTK returns nothing on
 every read. KDE is covered by Klipper without installing anything; elsewhere on Wayland,
-install `wl-clipboard`.
+install `wl-clipboard`. The highlighted text, for Translate selected text, is read the
+same way: GTK on X11, else `wl-paste --primary`, `xclip` or `xsel`; Klipper does not
+offer it, so on KDE Wayland that one needs `wl-clipboard` too.
 
 ### Requests
 
 Requests to NanoGPT are gzipped above 16 KB — every turn resends the conversation and any
 capture, and the body has to finish uploading before the model is dispatched. No other
-provider is sent a gzipped body: Ollama answers one with HTTP 400. Claude models are
-also sent `promptCaching`, since they cache nothing unless asked; other routes cache
-implicitly.
+provider is sent a gzipped body: Ollama answers one with HTTP 400.
+
+**Prompt caching** (Settings > Advanced, off by default) asks a Claude model to keep the
+conversation so far, for five minutes or an hour, so that the next request in the same
+conversation - a follow-up, the capture again and all - is read from the cache. The
+cache is written through the latest question, which is where the next turn's request
+differs from this one's: before any search results, which change. Writing costs more
+than the input it keeps (1.25 times for five minutes, twice for an hour) and reading far
+less (a tenth; Sonnet 5.5 a twentieth), so it pays in long conversations about a picture
+and costs extra in short ones - measured in Sept 2026, before the breakpoint could be
+placed, it was a 24% surcharge. On NanoGPT explicit caching is billed pay-as-you-go,
+outside a subscription; OpenRouter is given the same place as a `cache_control` marker.
+Other models cache by themselves, or not at all.
 
 **Requests go over https, or not at all.** A provider's address that is plain `http://` is
 accepted only for this machine and its local network - `localhost`, `127.x`, `10.x`,
@@ -733,7 +876,21 @@ accepted only for this machine and its local network - `localhost`, `127.x`, `10
 model server of your own is reached. For any other address, Settings will not save it,
 and a `config.json` edited by hand to hold one sends nothing: the chat says why instead.
 The address is never rewritten to https for you, and certificates are always checked.
-(Up to 3.2.0 such a URL was only warned about, and then used.)
+(Up to 3.2.0 such a URL was only warned about, and then used.) A Tor onion service
+(`.onion`) may be plain http, since Tor encrypts it end to end. An address with a
+backslash, a space or a control character in it is refused outright: Python's parser and
+the one requests uses do not agree on where its host ends. A redirect is followed only to
+an address that could have been used in the first place, and never from https to plain
+http; a refused one sends nothing further, and says where it pointed.
+
+**A proxy** (Settings > Advanced > Proxy) takes every request the app makes - the
+models, the web search, the model lists, the attestation services, Tinfoil's client -
+except to this machine and its own network, which are reached directly:
+`socks5h://127.0.0.1:9050` for Tor, which is also what reaches an onion address, since
+the proxy looks the name up; `http://host:port` for a web proxy, through which https is
+tunnelled end to end. Left empty, the environment's own proxy settings (`HTTPS_PROXY` and
+the rest) stand. The programs the app starts - a browser for a link, the screenshot
+tools - get the environment they had, without the app's proxy.
 
 ## Where things are kept
 
@@ -741,14 +898,19 @@ The address is never rewritten to https for you, and certificates are always che
 |---|---|
 | Settings | `~/.config/da-assistant/config.json`, readable only by you (`0600`) |
 | API keys | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant`, one entry per provider |
-| Model lists, dictionary index, error log | `~/.cache/da-assistant` |
+| Model lists, dictionary index, error log | `~/.cache/da-assistant` (or `$XDG_CACHE_HOME/da-assistant`) |
 | The encyclopedia's database, the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` |
 | A hidden launcher entry, for the GlobalShortcuts portal (KDE, GNOME 48+) only | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
 
 An API key is never written to `config.json`. The keyring encrypts it and unlocks it
 with your login. A key that an older version left in `config.json` is moved into the
-keyring the next time the app starts. Where there is no keyring, a key typed into
+keyring the next time the app starts, and stays in the file until the keyring has taken
+it - saving Settings does not lose it. Where there is no keyring, a key typed into
 Settings is used until the app quits, and Settings shows why it cannot be kept.
+
+A value edited into `config.json` by hand is read as its setting's kind where that is
+plain (`"3600"` for a number, `"true"` for a tick); one that cannot be is left out, its
+default used instead, and the startup notice says so.
 
 ## Troubleshooting
 
@@ -768,7 +930,8 @@ compresses worse than the original.
 
 **The model misreads text in screenshots.** Turn on *Save every image sent* in Settings and
 look at the PNGs in `~/.cache/da-assistant/captures` — that is exactly what was
-transmitted. Check the capture is not dimmed or clipped, and that the region is tight
+transmitted: kept at Send, blacked out where you blacked it out, and never a capture you
+cancelled. Check the capture is not dimmed or clipped, and that the region is tight
 around the text. Small captures are upscaled automatically (up to 3x); the confirm dialog
 shows the dimensions actually sent.
 
@@ -821,8 +984,10 @@ README.md, MANUAL.md       what it is and how to install it; everything else
 LICENSE                    GPL-3.0
 assistant/
   config.py                settings, stored 0600; API keys go to keychain.py
+  paths.py                 where the cache is: every file the app writes there
   providers.py             NanoGPT, OpenRouter, Ollama, another endpoint: what differs
-  netguard.py              https, or nothing: which API addresses may be used
+  netguard.py              https, or nothing: which API addresses may be used, redirects too
+  proxy.py                 Settings > Advanced > Proxy, for every request the app makes
   keychain.py              the desktop's keyring (Secret Service), for the API keys
   session.py               display server / desktop / portal probing
   imaging.py               upscale, flatten, black out, encode before sending
@@ -860,6 +1025,8 @@ assistant/
   capture/                 screenshot backends and the region selector
   ui/                      tray, chat window, dialogs, model browser, Markdown
     article_view.py        the encyclopedia's article pane and the Flash window
+    webpolicy.py           what a WebKit view may follow: links out, its own page kept
+    lookups.py             right-click a selection to look it up
     encscheme.py           enc://, which serves the DVD's pictures and animations
     encyclopedia_windows.py  Search Encyclopedia, the reader, and Ask Encyclopedia
     bubbles.py             the transcript as widgets, when WebKit is unavailable
@@ -896,6 +1063,11 @@ systemd-run --user --scope -p MemoryMax=2500M -p MemorySwapMax=0 \
 
 GTK's own Broadway backend runs the suite too, but WebKit lays pages out nonsensically
 there - a negative device pixel ratio - so it is no use for looking at anything.
+
+The suite keeps out of your own cache and off the network: `tests/support.py`, imported
+first by every test module, points `XDG_CACHE_HOME` at a directory of the run's own, and
+turns the model lists' requests into a refusal for any test that does not stand in for
+them itself.
 
 The dictionary tests build their dictionaries on the spot. Keep it that way: no real
 dictionary or encyclopedia text belongs in this repository.

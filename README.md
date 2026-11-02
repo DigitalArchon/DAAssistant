@@ -4,20 +4,20 @@ A system-tray assistant for Linux that translates and answers questions about wh
 on your screen or in your clipboard, using NanoGPT, OpenRouter, an Ollama server of your
 own, or any other OpenAI-compatible chat API.
 
-> [!WARNING]
-> **DA Assistant is beta software.** Expect rough edges, and settings that may change
-> between versions. Everything you capture or copy into it is sent to the providers
-> you choose: check what is in a screenshot before you send it, and read
-> [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. Answers are written by
-> language models and can be wrong, even when they sound sure.
+> [!NOTE]
+> Everything you capture, copy or attach is sent to the providers you choose: check what
+> is in a screenshot before you send it (anything in it can be blacked out first), and
+> read [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. Answers are written
+> by language models and can be wrong, even when they sound sure.
 
 ## What it does
 
-Eight operations, from the tray menu or a global shortcut you choose:
+Nine operations, from the tray menu or a global shortcut you choose:
 
 | Action | Suggested key | What it does |
 |---|---|---|
 | Translate clipboard text | `Ctrl+Shift+1` | Translates the clipboard into your language |
+| Translate selected text | `Ctrl+Shift+0` | Translates the text you have highlighted, without copying it |
 | Translate image selection | `Ctrl+Shift+2` | Reads the text in a screen region, then translates it |
 | Query clipboard text | `Ctrl+Shift+3` | Ask a question about the clipboard |
 | Query image selection | `Ctrl+Shift+4` | Ask a question about a screen region |
@@ -27,7 +27,10 @@ Eight operations, from the tray menu or a global shortcut you choose:
 | Ask Encyclopedia | `Ctrl+Shift+8` | Answers from the encyclopedia alone, every quotation checked - [off by default](#the-encyclopedia) |
 
 **Ask anything**, at the top of the tray menu, opens a chat with nothing captured, to
-type into straight away (suggested key `Ctrl+Shift+9`).
+type into straight away (suggested key `Ctrl+Shift+9`). **Your own actions** - a prompt
+of yours, applied to the clipboard, the highlighted text or a screen region - join them
+from **Settings > Actions**, each in the tray menu and with a shortcut of its own if you
+like.
 
 No shortcut is set until you choose one - see [Shortcuts](#shortcuts).
 
@@ -38,7 +41,9 @@ blacked out first, and are re-encoded from their pixels alone, so no metadata go
 them. You choose which model does each job, and can switch models
 mid-conversation. Web search is optional, per request. **Privacy Mode** sends everything
 only to models running in an attested trusted execution environment, proving each one
-before anything is sent.
+before anything is sent. Select a word anywhere the app shows text and right-click it to
+look it up in your dictionaries, or in the encyclopedia. Requests can go through a proxy,
+Tor's among them.
 
 The [manual](MANUAL.md) covers all of it in detail.
 
@@ -101,8 +106,11 @@ Then:
 ./run-assistant             # start it
 ```
 
-On Wayland, install `wl-clipboard` (KDE needs nothing: it uses Klipper), and on KDE,
-`spectacle` for selecting screen regions. The manual has the details:
+On Wayland, install `wl-clipboard` (KDE needs it only for Translate selected text: its
+clipboard is read through Klipper), and on KDE, `spectacle` for selecting screen regions.
+For a SOCKS proxy (Tor), add PySocks and socksio: `python3-socks python3-socksio`
+(Debian, Ubuntu, Mint), `python3-pysocks python3-socksio` (Fedora), `python-pysocks
+python-socksio` (Arch). The manual has the details:
 [What it uses from the system](MANUAL.md#what-it-uses-from-the-system).
 
 ## First run
@@ -130,7 +138,7 @@ says why it cannot be kept.
 ## Shortcuts
 
 Open **Settings > Shortcuts**, click an action's button and press the keys you want, or
-press **Use suggested keys** for `Ctrl+Shift+1` to `9`. Nothing is bound until you do.
+press **Use suggested keys** for `Ctrl+Shift+1` to `0`. Nothing is bound until you do.
 How they are bound depends on your session, and the page says which:
 
 - **X11** (Cinnamon, MATE, XFCE, or KDE and GNOME on Xorg): the app listens for the keys

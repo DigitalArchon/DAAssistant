@@ -47,7 +47,13 @@ if [ "$mode" = lock ]; then
     export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
     "$V/pip" install -q "pip==26.2.2" "pip-tools==7.6.1"
     cd "$P"
+    # pip-compile keeps the pins of a lock it is writing over: so a package added to a
+    # .in file is locked without moving everything else to whatever is newest today.
+    # UPGRADE=1 re-resolves the lot.
     for name in requirements build-requirements sdists; do
+        if [ "${UPGRADE:-0}" != 1 ] && [ -f "$name.lock" ]; then
+            cp "$name.lock" "/out/$name.lock"
+        fi
         "$V/pip-compile" -q --generate-hashes --allow-unsafe --no-strip-extras \
             --output-file "/out/$name.lock" "$name.in"
     done
@@ -107,6 +113,30 @@ cp -r "$W/src/assistant" "$W/src/run-assistant" "$A/"
 "$PY" -m pip install -q --no-compile --no-deps --require-hashes --only-binary :all: \
     --target "$A/private-mode" -r "$W/src/packaging/private-mode.lock"
 rm -rf "$A/private-mode/bin"
+# private-mode/ is ahead of site-packages on the path (assistant/vendored.py), so where
+# both have a package its copy is the one imported. In 3.4.0 that put cryptography
+# 50.0.1 (OpenSSL 4.0.2) in place of the 50.0.2 requirements.lock named, unseen; the
+# two locks now agree (packaging/lock-private-mode.sh), and the build stops if not.
+for site in "$W"/AppDir/usr/python/lib/python3.*/site-packages; do
+    "$PY" - "$site" "$A/private-mode" <<'PY'
+import pathlib, re, sys
+
+def versions(folder):
+    found = {}
+    for info in pathlib.Path(folder).glob("*.dist-info"):
+        name, _, version = info.name[:-len(".dist-info")].rpartition("-")
+        found[re.sub(r"[-_.]+", "-", name).lower()] = version
+    return found
+
+site, private = versions(sys.argv[1]), versions(sys.argv[2])
+apart = sorted(f"{name} {site[name]} (requirements.lock) vs {private[name]} "
+               f"(private-mode.lock)" for name in site.keys() & private.keys()
+               if site[name] != private[name])
+if apart:
+    sys.exit("private-mode/ would shadow the app's own packages at other versions: "
+             + "; ".join(apart))
+PY
+done
 # Ruffle, for the encyclopedia DVD's Flash animations; checked against packaging/ruffle.lock
 "$W/src/tools/install-ruffle.sh" --to "$A/ruffle" >/dev/null
 "$PY" -m pip uninstall -q -y pip                  # nothing is installed at run time
@@ -178,24 +208,45 @@ cp -r "$W/src/assistant/data/icons" "$W/AppDir/usr/share/"
 install -m 644 "$W/src/assistant/data/icons/hicolor/256x256/apps/da-assistant.png" "$W/AppDir/"
 ln -s da-assistant.png "$W/AppDir/.DirIcon"
 install -d "$W/AppDir/usr/share/metainfo"
-cat > "$W/AppDir/usr/share/metainfo/$APP_ID.appdata.xml" <<XML
+cat > "$W/AppDir/usr/share/metainfo/$APP_ID.metainfo.xml" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>$APP_ID</id>
   <name>DA Assistant</name>
-  <summary>Translate and query screen regions and clipboard text</summary>
+  <summary>Translate and ask about what is on the screen or the clipboard</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
+  <developer id="au.com.digitalarchon">
+    <name>Digital Archon</name>
+  </developer>
   <description>
     <p>
-      Sends a screen region, an image or clipboard text to an OpenAI-compatible API and
-      shows the answer: translation, OCR, or a question of your own.
+      A system-tray assistant that translates and answers questions about a screen
+      region, the clipboard or the highlighted text, using NanoGPT, OpenRouter, an Ollama
+      server of your own, or any other OpenAI-compatible chat API.
     </p>
+    <ul>
+      <li>Translation, OCR and questions, from the tray or a global shortcut</li>
+      <li>Answers that stream into a chat window, with follow-up questions</li>
+      <li>Privacy Mode: only models in an attested trusted execution environment</li>
+      <li>Your own dictionaries, read in place, and actions of your own</li>
+    </ul>
   </description>
   <launchable type="desktop-id">da-assistant.desktop</launchable>
+  <url type="homepage">https://github.com/DigitalArchon/DAAssistant</url>
+  <url type="bugtracker">https://github.com/DigitalArchon/DAAssistant/issues</url>
+  <url type="vcs-browser">https://github.com/DigitalArchon/DAAssistant</url>
   <categories>
     <category>Utility</category>
   </categories>
+  <keywords>
+    <keyword>translate</keyword>
+    <keyword>OCR</keyword>
+    <keyword>LLM</keyword>
+    <keyword>screenshot</keyword>
+    <keyword>clipboard</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
   <releases>
     <release version="$VERSION" date="$DATE"/>
   </releases>
@@ -210,6 +261,28 @@ mksquashfs "$W/AppDir" "$W/app.squashfs" -quiet -noappend -root-owned -no-xattrs
     -comp zstd -Xcompression-level 19 -b 1M
 
 NAME="DA_Assistant-$VERSION-x86_64.AppImage"
-cat /cache/runtime-x86_64 "$W/app.squashfs" > "/out/$NAME"
+# Update information, in the runtime's .upd_info section where AppImageUpdate, Gear
+# Lever and AppImageLauncher read it: the newest GitHub release's .zsync, made below,
+# from which an updater fetches only the blocks that changed. Reading it is theirs to
+# do, when asked; the app itself never looks for updates.
+UPDATE_INFO="gh-releases-zsync|DigitalArchon|DAAssistant|latest|DA_Assistant-*-x86_64.AppImage.zsync"
+cp /cache/runtime-x86_64 "$W/runtime"
+"$W/buildpy/bin/python3" - "$W/runtime" "$UPDATE_INFO" <<'PY'
+import re, subprocess, sys
+path, info = sys.argv[1], sys.argv[2].encode()
+sections = subprocess.run(["readelf", "-SW", path], capture_output=True, text=True,
+                          check=True).stdout
+found = re.search(r"\.upd_info\s+PROGBITS\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)",
+                  sections)
+offset, size = int(found.group(1), 16), int(found.group(2), 16)
+if len(info) >= size:
+    sys.exit("update information too long for .upd_info")
+with open(path, "r+b") as runtime:
+    runtime.seek(offset)
+    runtime.write(info + b"\0" * (size - len(info)))
+PY
+cat "$W/runtime" "$W/app.squashfs" > "/out/$NAME"
 chmod 755 "/out/$NAME"
+touch -d "@$SOURCE_DATE_EPOCH" "/out/$NAME"      # zsyncmake writes the file's mtime
+(cd /out && zsyncmake -u "$NAME" -o "$NAME.zsync" "$NAME" >/dev/null)
 (cd /out && sha256sum "$NAME" > "$NAME.sha256" && cat "$NAME.sha256")

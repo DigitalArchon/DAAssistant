@@ -12,3 +12,5 @@ python-xlib
 cryptography
 # the API key's keyring (assistant/keychain.py): the Secret Service, over D-Bus, in Python
 keyring
+# SOCKS proxies for requests (assistant/proxy.py) - Tor's, socks5h://, among them
+PySocks

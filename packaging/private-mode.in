@@ -15,3 +15,5 @@ pyhpke==0.6.5
 # floor keeps a relock from standing still on an older one. AppRun prefers the host's
 # own CA store and falls back to this.
 certifi>=2026.10.19
+# SOCKS proxies for httpx, which the sealed client sends through (assistant/proxy.py).
+socksio

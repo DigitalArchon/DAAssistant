@@ -132,7 +132,42 @@ class TheSuitesOwnCache(unittest.TestCase):
         for path in (errors.LOG_FILE, webkitguard.STATE_FILE, models.CACHE_FILE,
                      dictionaries.CACHE_DIR):
             self.assertTrue(path.startswith(paths.CACHE_DIR), path)
-        self.assertIn("paths.CACHE_DIR", open(imaging.__file__).read())
+        with open(imaging.__file__, encoding="utf-8") as f:
+            self.assertIn("paths.CACHE_DIR", f.read())
+
+
+class TheTwoLocksAgree(unittest.TestCase):
+    """The Privacy Mode client's directory is ahead of the app's site-packages on the
+    path, so a package both lock had better be the same version in each: 3.4.0 shipped
+    cryptography 50.0.2 and ran 50.0.1 from the client's copy, an older OpenSSL."""
+
+    @staticmethod
+    def pins(path):
+        import re
+        with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+            return {re.sub(r"[-_.]+", "-", name).lower(): version for name, version in
+                    re.findall(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)", f.read(), re.M)}
+
+    def test_every_package_in_both_is_the_same_version(self):
+        app = self.pins("packaging/appimage/requirements.lock")
+        private = self.pins("packaging/private-mode.lock")
+        shared = app.keys() & private.keys()
+        self.assertIn("cryptography", shared)
+        self.assertEqual({name: private[name] for name in shared},
+                         {name: app[name] for name in shared})
+
+    def test_the_lock_and_the_build_keep_them_so(self):
+        with open(os.path.join(ROOT, "packaging/lock-private-mode.sh"), encoding="utf-8") as f:
+            self.assertIn("--constraint appimage/requirements.lock", f.read())
+        with open(os.path.join(ROOT, "packaging/appimage/build.sh"), encoding="utf-8") as f:
+            build = f.read()
+        self.assertIn("private-mode/ would shadow the app's own packages", build)
+        self.assertIn("gh-releases-zsync|DigitalArchon|DAAssistant|latest|", build)
+        self.assertIn("zsyncmake", build)
+
+    def test_socks_proxies_have_what_they_need(self):
+        self.assertIn("pysocks", self.pins("packaging/appimage/requirements.lock"))
+        self.assertIn("socksio", self.pins("packaging/private-mode.lock"))
 
     def test_unrelated_variables_are_passed_through(self):
         os.environ[hostenv.KEYS] = "LD_LIBRARY_PATH"

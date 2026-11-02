@@ -35,11 +35,16 @@ type 2 runtime, so it doesn't need `libfuse2`.
 You need rootless [Podman](https://podman.io) (`sudo apt install podman`).
 
 ```bash
-packaging/build-appimage.sh build    # dist/DA_Assistant-<version>-x86_64.AppImage (+ .sha256)
+packaging/build-appimage.sh build    # dist/DA_Assistant-<version>-x86_64.AppImage (+ .sha256, .zsync)
 packaging/build-appimage.sh check    # build twice from scratch, compare: must be identical
 packaging/test-appimage.sh           # smoke-test it on Ubuntu, Debian, Fedora, Arch, CachyOS
-packaging/build-appimage.sh lock     # re-resolve the dependency locks (review the diff, commit)
+packaging/build-appimage.sh lock     # lock what the .in files add (review the diff, commit)
+UPGRADE=1 packaging/build-appimage.sh lock    # re-resolve every pin to today's newest
+DIST=/some/dir packaging/build-appimage.sh check   # results there instead of dist/
 ```
+
+`lock` keeps the pins already in a lock, so a package added to a `.in` file is locked
+without moving everything else; `UPGRADE=1` is for a deliberate update of the lot.
 
 Only committed files are built (`git archive HEAD`), and every timestamp is HEAD's commit
 time (`SOURCE_DATE_EPOCH`). Builds run in `packaging/appimage/Containerfile`: Ubuntu 24.04 pinned
@@ -55,11 +60,17 @@ by digest, with packages from the Ubuntu archive as it was at a fixed moment
 | Runtime Python packages (wheels, with hashes) | `appimage/requirements.lock`, from `requirements.in` |
 | PyGObject, pycairo (source archives, with hashes) | `appimage/sdists.lock`, from `sdists.in` |
 | meson, meson-python, ninja, setuptools (with hashes) | `appimage/build-requirements.lock` |
-| Privacy Mode's client (wheels, with hashes) | `private-mode.lock`, by `lock-private-mode.sh` |
+| Privacy Mode's client (wheels, with hashes) | `private-mode.lock`, by `lock-private-mode.sh`, resolved against `requirements.lock` |
 | Ruffle (npm tarball, SHA-512) | `ruffle.lock` |
 | The fallback libraries and typelibs | the apt snapshot in `appimage/pins.sh` |
 
 Changing any of these changes the AppImage, which is the point: an update is a reviewed commit.
+
+The Privacy Mode client is installed in a directory of its own, ahead of the app's
+`site-packages` on the path (`assistant/vendored.py`), so where both have a package its copy
+is the one imported. `lock-private-mode.sh` therefore pins every package `requirements.lock`
+also has to the same version, and the build stops if the two ever disagree. (3.4.0 shipped
+cryptography 50.0.2 and ran 50.0.1 - an older OpenSSL - from the client's directory.)
 Runtime packages are installed only as prebuilt wheels; PyGObject and pycairo, which publish
 none for Linux, are built from their pinned sources with the pinned tools.
 
@@ -81,7 +92,12 @@ If they differ, `diffoscope` on the two files shows where.
 
 1. Update `__version__` in `assistant/__init__.py`, commit, tag.
 2. `packaging/build-appimage.sh check` (reproducible), then `packaging/test-appimage.sh`.
-3. Attach the AppImage and its `.sha256` to the release.
+3. Attach the AppImage, its `.sha256` and its `.zsync` to the release.
+
+The AppImage carries update information
+(`gh-releases-zsync|DigitalArchon|DAAssistant|latest|DA_Assistant-*-x86_64.AppImage.zsync`):
+AppImageUpdate, Gear Lever and AppImageLauncher read it, and fetch from the latest release's
+`.zsync` only the blocks that changed. The app itself never looks for updates.
 
 Rebuild and re-release when a pinned dependency has a security fix: the locks don't move by
 themselves. GTK and WebKitGTK update with the system.

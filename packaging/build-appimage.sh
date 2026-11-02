@@ -1,8 +1,10 @@
 #!/bin/bash
 # Build DA Assistant's AppImage reproducibly with rootless Podman (see packaging/README.md).
-#   packaging/build-appimage.sh build   AppImage of HEAD -> dist/ (+ .sha256)
+#   packaging/build-appimage.sh build   AppImage of HEAD -> dist/ (+ .sha256, .zsync)
 #   packaging/build-appimage.sh check   build HEAD twice from scratch and compare the hashes
-#   packaging/build-appimage.sh lock    re-resolve packaging/appimage/*.lock (review, then commit)
+#   packaging/build-appimage.sh lock    lock what the *.in files add (UPGRADE=1: re-resolve
+#                                       everything); review, then commit
+# DIST=dir puts the results somewhere other than dist/.
 # Only committed files are built (git archive HEAD); SOURCE_DATE_EPOCH is HEAD's commit time.
 # lock reads the *.in files as they are in the working tree.
 set -euo pipefail
@@ -31,29 +33,30 @@ git archive --format=tar HEAD > "$WORK/src.tar"
 EPOCH="$(git log -1 --format=%ct HEAD)"
 VERSION="$(git show HEAD:assistant/__init__.py | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/da-assistant-appimage"
-mkdir -p "$CACHE" dist
+DIST="$(mkdir -p "${DIST:-dist}" && cd "${DIST:-dist}" && pwd)"
+mkdir -p "$CACHE"
 
 run() {  # out-dir mode
     mkdir -p "$1"
     podman run --rm -v "$WORK/src.tar:/src.tar:ro,Z" -v "$CACHE:/cache:Z" -v "$1:/out:Z" \
-        -e SOURCE_DATE_EPOCH="$EPOCH" -e VERSION="$VERSION" "$TAG" \
+        -e SOURCE_DATE_EPOCH="$EPOCH" -e VERSION="$VERSION" -e UPGRADE="${UPGRADE:-0}" "$TAG" \
         bash -c 'tar -xOf /src.tar packaging/appimage/build.sh > /tmp/build.sh && bash /tmp/build.sh "$0"' "$2"
 }
 
 case "$mode" in
     build)
-        run "$PWD/dist" build ;;
+        run "$DIST" build ;;
     check)
         run "$WORK/a" build
         rm -rf "$CACHE/pip"          # the second build downloads its wheels again
         run "$WORK/b" build
         a=$(cut -d' ' -f1 "$WORK"/a/*.sha256); b=$(cut -d' ' -f1 "$WORK"/b/*.sha256)
-        if [ "$a" = "$b" ]; then
-            cp "$WORK"/a/* dist/
+        if [ "$a" = "$b" ] && cmp -s "$WORK"/a/*.zsync "$WORK"/b/*.zsync; then
+            cp "$WORK"/a/* "$DIST"/
             echo "Reproducible: both builds are $a"
         else
-            echo "NOT reproducible: $a vs $b (compare with diffoscope; copies in dist/check-a, dist/check-b)" >&2
-            rm -rf dist/check-a dist/check-b && cp -r "$WORK/a" dist/check-a && cp -r "$WORK/b" dist/check-b
+            echo "NOT reproducible: $a vs $b (compare with diffoscope; copies in $DIST/check-a, $DIST/check-b)" >&2
+            rm -rf "$DIST/check-a" "$DIST/check-b" && cp -r "$WORK/a" "$DIST/check-a" && cp -r "$WORK/b" "$DIST/check-b"
             exit 1
         fi ;;
     lock)

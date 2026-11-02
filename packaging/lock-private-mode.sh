@@ -41,9 +41,14 @@ export UV_NO_CONFIG=1 UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never
 # Python 3.12 is what the AppImage bundles and what Ubuntu 24.04 runs from source;
 # manylinux_2_28 keeps the compiled wheels (cryptography, pydantic-core) loadable on any
 # host the rest of the bundle runs on.
+# What the AppImage's own lock pins too is pinned to the same version here. The AppImage
+# puts this directory ahead of its site-packages, so a version of its own here would be
+# the one imported: cryptography 50.0.1 over the 50.0.2 requirements.lock named, in
+# 3.4.0. The AppImage build stops if the two ever disagree.
+# (Named by its path relative to here, which is what the lock's "via" lines then say.)
 cd "$ROOT/packaging"
 "$UV" pip compile --quiet private-mode.in -o private-mode.lock \
   --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
-  --only-binary :all: --generate-hashes \
+  --only-binary :all: --generate-hashes --constraint appimage/requirements.lock \
   --custom-compile-command "packaging/lock-private-mode.sh"
 echo "Locked $(grep -c '==' private-mode.lock) packages into packaging/private-mode.lock"

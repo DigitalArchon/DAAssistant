@@ -8,6 +8,11 @@ Details that matter:
     positioned left of or above the origin, which is a normal multi-head layout.
   - spectacle flags are probed from --help instead of hardcoding Plasma 5's `-bno`;
     Plasma 6 (the CachyOS target) changed them.
+  - Cinnamon's D-Bus has no region picker: ScreenshotArea takes a fixed rectangle.
+    Cinnamon gives the whole screen, cropped in the app's own window.
+  - a tool that exits non-zero is a user's cancel only when it said nothing - or
+    said only that it was cancelled. Anything else is a failure, so that the next
+    rung of the chain is tried, rather than a cancel, which ends the chain.
   - temp files are cleaned up on every path, including the error paths.
   - they live in a directory of our own rather than loose in /tmp. See _tempfile.
 """
@@ -18,6 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 
 from gi.repository import GLib
 from PIL import Image
@@ -27,6 +33,9 @@ from .base import CaptureError, ScreenshotBackend
 
 SLURP_GEOMETRY = re.compile(r"(-?\d+),(-?\d+)\s+(\d+)x(\d+)")
 
+# Seconds for Cinnamon to write a screenshot after answering: a frame and a PNG.
+CINNAMON_WRITE_TIMEOUT = 10.0
+
 
 def _load(path):
     if not os.path.exists(path) or os.path.getsize(path) == 0:
@@ -34,6 +43,42 @@ def _load(path):
     with Image.open(path) as img:
         img.load()
         return img.copy()
+
+
+def _await_image(path, timeout, interval=0.05):
+    """The image at `path`, once a tool that answered before writing it has finished.
+
+    Cinnamon's Screenshot returns as soon as it has started: the grab is taken on the
+    next frame and saved from a thread after that, so the file appears, and grows,
+    after gdbus has come back. Finished is a size that is not zero and has not changed
+    since the last look - and a file that decodes, since cairo writes it piece by piece
+    and a pause between two pieces looks just as still.
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if size and size == last:
+            try:
+                return _load(path)
+            except (OSError, SyntaxError, ValueError, CaptureError):
+                pass                        # half written yet: keep waiting
+        last = size
+        if time.monotonic() >= deadline:
+            raise CaptureError(f"no screenshot was written within {timeout:g} s")
+        time.sleep(interval)
+
+
+def _complaint(result, cancelled=()):
+    """What a tool that exited non-zero said was wrong; "" when that was a cancel.
+
+    It is a cancel only when the tool said nothing, or one of the things in `cancelled`:
+    slurp says "selection cancelled" when Esc is pressed."""
+    said = (result.stderr or "").strip()
+    return "" if not said or said.lower() in cancelled else said
 
 
 def _tempfile():
@@ -142,9 +187,11 @@ class CliBackend(ScreenshotBackend):
         return self.tool is not None
 
     def supports_region_selection(self):
+        """Not Cinnamon: its ScreenshotArea takes a rectangle given to it, and picks none
+        (the chain crops Cinnamon's whole screen instead)."""
         if self.tool == "grim":
             return shutil.which("slurp") is not None
-        return self.tool in ("spectacle", "gnome-screenshot", "cinnamon")
+        return self.tool in ("spectacle", "gnome-screenshot")
 
     # ---- region selection -------------------------------------------------
 
@@ -175,6 +222,9 @@ class CliBackend(ScreenshotBackend):
         if self.tool == "grim":
             slurp = _run(["slurp"], timeout=300)
             if slurp.returncode != 0:
+                complaint = _complaint(slurp, cancelled=("selection cancelled",))
+                if complaint:
+                    raise CaptureError(f"slurp failed: {complaint}")
                 return None                      # user pressed Esc
             match = SLURP_GEOMETRY.search(slurp.stdout.strip())
             if not match:
@@ -208,22 +258,12 @@ class CliBackend(ScreenshotBackend):
             path = _tempfile()
             try:
                 result = _run(["gnome-screenshot", "-a", "-f", path], timeout=300)
-                # Esc leaves no file, or an empty one, depending on the version.
-                if result.returncode != 0 or not os.path.exists(path) \
-                        or os.path.getsize(path) == 0:
-                    return None
-                return _load(path)
-            finally:
-                _discard(path)
-
-        if self.tool == "cinnamon":
-            path = _tempfile()
-            try:
-                result = _run(["gdbus", "call", "--session", "--dest", "org.Cinnamon",
-                               "--object-path", "/org/Cinnamon", "--method",
-                               "org.Cinnamon.ScreenshotArea", "false", path],
-                              timeout=300)
-                if result.returncode != 0 or not os.path.exists(path):
+                # Esc leaves no file, or an empty one, depending on the version - and
+                # says nothing, which is how it is told from a failure.
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
+                    complaint = _complaint(result) if result.returncode != 0 else ""
+                    if complaint:
+                        raise CaptureError(f"gnome-screenshot failed: {complaint}")
                     return None
                 return _load(path)
             finally:
@@ -245,9 +285,7 @@ class CliBackend(ScreenshotBackend):
             elif self.tool == "gnome-screenshot":
                 result = _run(["gnome-screenshot", "-f", path])
             elif self.tool == "cinnamon":
-                result = _run(["gdbus", "call", "--session", "--dest", "org.Cinnamon",
-                               "--object-path", "/org/Cinnamon", "--method",
-                               "org.Cinnamon.Screenshot", "false", path])
+                return self._cinnamon_screenshot(path)
             else:
                 raise CaptureError(f"Unsupported tool: {self.tool}")
             if result.returncode != 0 and not os.path.exists(path):
@@ -255,3 +293,21 @@ class CliBackend(ScreenshotBackend):
             return _load(path)
         finally:
             _discard(path)
+
+    @staticmethod
+    def _cinnamon_screenshot(path):
+        """The whole screen through Cinnamon's own D-Bus, written to `path`.
+
+        org.Cinnamon.Screenshot takes (include_cursor, flash, filename) - its XML calls
+        the first include_frame - and was sent (false, path), which fits no signature,
+        so it failed every time. Each argument goes as GVariant text, which is what
+        gdbus reads, rather than leaving the quoting of a path to gdbus's guess. The
+        method answers before the picture is written, so the file is waited for.
+        """
+        result = _run(["gdbus", "call", "--session", "--dest", "org.Cinnamon",
+                       "--object-path", "/org/Cinnamon", "--method",
+                       "org.Cinnamon.Screenshot", "false", "false",
+                       GLib.Variant("s", path).print_(False)])
+        if result.returncode != 0:
+            raise CaptureError(f"Cinnamon's Screenshot failed: {result.stderr.strip()}")
+        return _await_image(path, CINNAMON_WRITE_TIMEOUT)

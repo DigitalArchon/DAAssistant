@@ -86,14 +86,20 @@ class Assistant:
         Gtk.Window.set_default_icon_name(app_icon.name())
         self.tray = Tray(APP_ID, APP_NAME, self.menu)
 
+        # One notice for all of it: each notification replaces the last, so a keyring
+        # problem shown first was gone the moment the first-run hint arrived.
+        problems = []
         if self.config.load_error:
-            self.notify(f"Config problem, using defaults: {self.config.load_error}")
-        elif self.config.keychain_error:
-            self.notify(f"{self.config.keychain_error} The API key cannot be kept "
-                        "between runs.", urgency="normal")
+            problems.append(f"Config problem, using defaults: {self.config.load_error}")
+        problems += self.config.load_warnings
+        if self.config.keychain_error:
+            problems.append(f"{self.config.keychain_error} The API key cannot be kept "
+                            "between runs.")
         if providers.unready(self.config):
-            GLib.idle_add(self._first_run_hint)
+            GLib.idle_add(self._first_run_hint, problems)
         else:
+            if problems:
+                GLib.idle_add(self._startup_notice, " ".join(problems))
             self._warm_catalogue()
 
     # ---- setup ------------------------------------------------------------
@@ -129,9 +135,14 @@ class Assistant:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _first_run_hint(self):
-        self.notify(f"{providers.unready(self.config) or 'Not set up yet.'} "
-                    f"Settings are in the tray menu.")
+    def _first_run_hint(self, problems=()):
+        hint = (f"{providers.unready(self.config) or 'Not set up yet.'} "
+                f"Settings are in the tray menu.")
+        self.notify(" ".join([*problems, hint]), urgency="normal" if problems else "low")
+        return False
+
+    def _startup_notice(self, message):
+        self.notify(message, urgency="normal")
         return False
 
     def _build_menu(self):
@@ -829,8 +840,13 @@ class Assistant:
                     return
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
                           self.config.encyclopedia_enabled)
+                # Only what changed: a setting set is one save() may write over whatever
+                # the file says now, and a key set is one the keyring is asked to take -
+                # which, with no keyring, warned on every save about a key nobody had
+                # touched.
                 for key, value in values.items():
-                    setattr(self.config, key, value)
+                    if getattr(self.config, key, None) != value:
+                        setattr(self.config, key, value)
                 try:
                     self.config.save()
                 except OSError as e:

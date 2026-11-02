@@ -133,6 +133,48 @@ class KeyInTheKeychain(unittest.TestCase):
         self.assertNotIn("api_key", self._file())             # never in plain text
         self.assertEqual(self._file()["default_language"], "French")
 
+    def test_a_settings_save_about_something_else_keeps_the_files_key(self):
+        """The Settings dialog set every field it has, the key among them, unchanged;
+        that marked the key changed, and save() took it out of the file before the
+        keyring refused it. The next start had no key."""
+        self._write({"api_key": "sk-old", "text_provider": "nanogpt"})
+        config = Config(self.path, keychain=LockedKeychain())
+        config.default_language = "German"
+        config.api_key = config.api_key             # as the dialog's values() did
+        with self.assertRaises(KeychainError):
+            config.save()
+        self.assertEqual(self._file()["api_key"], "sk-old")
+        self.assertEqual(self._file()["default_language"], "German")
+        self.assertEqual(Config(self.path, keychain=LockedKeychain()).api_key, "sk-old")
+
+    def test_a_key_moved_to_its_provider_stays_in_the_file_under_its_new_name(self):
+        """A settings file from before providers had names, pointing at OpenRouter: the
+        key moves to openrouter_api_key at the first start - and with no keyring it
+        used to be dropped from the file on the way."""
+        self._write({"api_url": "https://openrouter.ai/api/v1/chat/completions",
+                     "api_key": "sk-or-old"})
+        config = Config(self.path, keychain=LockedKeychain())
+        self.assertEqual(config.text_provider, "openrouter")
+        self.assertEqual(config.openrouter_api_key, "sk-or-old")
+        self.assertEqual(self._file().get("openrouter_api_key"), "sk-or-old")
+        self.assertNotIn("api_key", self._file())
+        again = Config(self.path, keychain=LockedKeychain())
+        self.assertEqual(again.openrouter_api_key, "sk-or-old")
+
+    def test_the_files_copy_goes_once_the_keyring_takes_it(self):
+        self._write({"api_key": "sk-old"})
+        keychain = MemoryKeychain()
+        Config(self.path, keychain=keychain)
+        self.assertNotIn("api_key", self._file())
+        self.assertEqual(keychain.get("api_key"), "sk-old")
+
+    def test_a_key_cleared_with_no_keyring_leaves_the_file(self):
+        self._write({"api_key": "sk-old"})
+        config = Config(self.path, keychain=LockedKeychain())
+        config.api_key = ""
+        config.save()
+        self.assertNotIn("api_key", self._file())
+
     def test_a_detached_copy_shares_the_keychain_but_saves_nothing(self):
         keychain = CountingKeychain()
         config = Config(self.path, keychain=keychain)
@@ -162,3 +204,51 @@ class SystemKeychainFailures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandEditedValues(unittest.TestCase):
+    """MANUAL invites editing config.json by hand; a value of the wrong type is made the
+    right one where that is plain, and otherwise the default stands in, with a word."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.path = os.path.join(self.dir, "config.json")
+
+    def load(self, values):
+        with open(self.path, "w") as f:
+            json.dump(values, f)
+        return Config(self.path)
+
+    def test_a_number_in_quotes_is_a_number(self):
+        config = self.load({"capture_max_long_edge": "3600", "max_tokens": 8192.0})
+        self.assertEqual(config.capture_max_long_edge, 3600)
+        self.assertEqual(config.max_tokens, 8192)
+        self.assertEqual(config.load_warnings, [])
+
+    def test_a_yes_or_no_in_words_is_one(self):
+        config = self.load({"use_premium": "true", "web_search_enabled": "off",
+                            "upscale_small_captures": 0})
+        self.assertIs(config.use_premium, True)
+        self.assertIs(config.web_search_enabled, False)
+        self.assertIs(config.upscale_small_captures, False)
+
+    def test_what_cannot_be_read_as_its_kind_is_the_default_and_said(self):
+        config = self.load({"capture_max_long_edge": "big", "hotkeys": "Ctrl+1",
+                            "use_premium": 7, "default_language": "German"})
+        self.assertEqual(config.capture_max_long_edge, 3000)
+        # Left out, hotkeys is undecided, as in a file from before shortcuts could be
+        # chosen: hotkeys.migrate decides from what worked.
+        self.assertIsNone(config.hotkeys)
+        self.assertIs(config.use_premium, False)
+        self.assertEqual(config.default_language, "German")
+        self.assertEqual(len(config.load_warnings), 3)
+        self.assertTrue(any("capture_max_long_edge" in w and "whole number" in w
+                            for w in config.load_warnings))
+
+    def test_a_capture_with_the_hand_edited_cap_works(self):
+        from PIL import Image
+        from assistant import imaging
+        config = self.load({"capture_max_long_edge": "3600"})
+        _image, info = imaging.prepare_for_vision(Image.new("RGB", (4000, 100)), config)
+        self.assertEqual(info["sent_size"][0], 3600)

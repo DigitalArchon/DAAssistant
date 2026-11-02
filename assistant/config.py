@@ -140,6 +140,46 @@ class ConfigError(Exception):
     pass
 
 
+_KINDS = {bool: "true or false", int: "a whole number", float: "a number", str: "text",
+          list: "a list", dict: "an object"}
+
+
+def _coerce(default, value):
+    """`value`, read from a config.json that may have been edited by hand, as the type
+    of its `default`; ValueError when there is no plain way to make it one. MANUAL
+    invites editing capture_max_long_edge, and "3600" - in quotes - used to make every
+    capture fail with a TypeError."""
+    if value is None or default is None:
+        return value                    # "undecided" (hotkeys, see Config.load)
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        words = {"true": True, "false": False, "yes": True, "no": False, "on": True,
+                 "off": False, "1": True, "0": False}
+        if isinstance(value, str) and value.strip().lower() in words:
+            return words[value.strip().lower()]
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        raise ValueError(value)
+    if isinstance(default, int):
+        if isinstance(value, bool):
+            raise ValueError(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        if isinstance(value, str):
+            return int(value.strip())
+        raise ValueError(value)
+    if isinstance(default, float):
+        if isinstance(value, bool):
+            raise ValueError(value)
+        return float(value)
+    if not isinstance(value, type(default)):
+        raise ValueError(value)
+    return value
+
+
 class Config:
     """Settings, persisted to JSON.
 
@@ -152,8 +192,8 @@ class Config:
     """
 
     # Attributes that are bookkeeping rather than persisted settings.
-    _INTERNAL = ("config_dir", "config_file", "load_error", "keychain", "keychain_error",
-                 "_dirty", "_loading", "_kept")
+    _INTERNAL = ("config_dir", "config_file", "load_error", "load_warnings", "keychain",
+                 "keychain_error", "_dirty", "_loading", "_kept", "_loose")
 
     def __init__(self, path=None, keychain=None):
         """The user's config, its secrets in the desktop's keyring. Given a `path` of its
@@ -162,6 +202,7 @@ class Config:
         object.__setattr__(self, "_dirty", set())
         object.__setattr__(self, "_loading", False)
         object.__setattr__(self, "_kept", {})       # each secret as the keychain has it
+        object.__setattr__(self, "_loose", set())   # secrets config.json held at load
         if path:
             self.config_file = os.path.abspath(os.path.expanduser(path))
             self.config_dir = os.path.dirname(self.config_file)
@@ -171,6 +212,7 @@ class Config:
         self.keychain = keychain or (MemoryKeychain() if path else SystemKeychain())
         self.keychain_error = None
         self.load_error = None
+        self.load_warnings = []
         self.load()
 
     def __setattr__(self, name, value):
@@ -179,8 +221,10 @@ class Config:
             object.__getattribute__(self, "_dirty").add(name)
         object.__setattr__(self, name, value)
 
-    def _read_file(self):
-        """Current on-disk settings, or {} if absent/unreadable."""
+    def _read_file(self, warnings=None):
+        """Current on-disk settings, or {} if absent/unreadable. A value of the wrong
+        type is made the right one where that is plain ("3600" for a number), and left
+        out otherwise, so the default stands in; `warnings` collects what was."""
         if not os.path.exists(self.config_file):
             return {}, None
         try:
@@ -191,13 +235,29 @@ class Config:
         except (OSError, ValueError) as e:
             return {}, f"{self.config_file}: {e}"
         # Ignore unknown keys rather than crashing on an old/newer schema.
-        return {k: v for k, v in loaded.items() if k in DEFAULTS}, None
+        values = {}
+        for key, value in loaded.items():
+            if key not in DEFAULTS:
+                continue
+            try:
+                values[key] = _coerce(DEFAULTS[key], value)
+            except (TypeError, ValueError):
+                if warnings is not None:
+                    warnings.append(f"{key} in {os.path.basename(self.config_file)} is "
+                                    f"{json.dumps(value)[:40]}, which is not "
+                                    f"{_KINDS.get(type(DEFAULTS[key]), 'valid')}; using "
+                                    f"{json.dumps(DEFAULTS[key])}.")
+        return values, None
 
     def load(self):
         values = dict(DEFAULTS)
-        on_disk, error = self._read_file()
+        self.load_warnings = []
+        on_disk, error = self._read_file(self.load_warnings)
+        for warning in self.load_warnings:
+            print(f"[config] {warning}")
         # A key written into the file by an older version, to be moved to the keychain.
         loose = {key: on_disk.pop(key) for key in SECRETS if on_disk.get(key)}
+        object.__setattr__(self, "_loose", set(loose.values()))
         values.update(on_disk)
         if on_disk and "hotkeys" not in on_disk:
             # Written before shortcuts could be chosen: hotkeys.migrate decides what it
@@ -289,15 +349,26 @@ class Config:
                    and getattr(self, key, 0) is None]
         for key in pending:
             merged.pop(key, None)
-        # Secrets go to the keychain, and only the ones changed here. A copy in the file
-        # goes too - unless the keychain could not take it at load (see load) and
-        # nothing has replaced it since.
+        # Secrets go to the keychain, and only the ones changed here - first, so that
+        # what the file keeps can follow what the keychain actually took. A copy in the
+        # file goes once the keychain holds that same key. Until then, a key the file
+        # already held stays in it, under the name it has now: an older version wrote
+        # it there, the keychain cannot take it, and deleting it would lose it - which a
+        # Settings save about something else entirely used to do. A key typed in this
+        # session is never written to the file; it is used until the app quits.
         changed = {key: getattr(self, key) for key in SECRETS if key in dirty}
+        try:
+            self._save_secrets(changed)
+            refused = None
+        except KeychainError as e:
+            refused = e
+        kept = object.__getattribute__(self, "_kept")
+        loose = object.__getattribute__(self, "_loose")
         for key in SECRETS:
             merged.pop(key, None)
-            if (on_disk.get(key) and key not in dirty
-                    and not object.__getattribute__(self, "_kept").get(key)):
-                merged[key] = on_disk[key]
+            value = getattr(self, key, "") or ""
+            if value and kept.get(key) != value and value in loose:
+                merged[key] = value
 
         fd, tmp_path = tempfile.mkstemp(dir=self.config_dir, prefix=".config-", suffix=".json")
         try:
@@ -319,7 +390,8 @@ class Config:
         finally:
             object.__setattr__(self, "_loading", False)
         dirty.clear()
-        self._save_secrets(changed)
+        if refused is not None:
+            raise refused
 
     def _save_secrets(self, values):
         """Write the secrets that changed to the keychain. The rest of the settings are
@@ -353,6 +425,8 @@ class Config:
         object.__setattr__(copy, "_dirty", set())
         object.__setattr__(copy, "_loading", True)
         object.__setattr__(copy, "_kept", dict(object.__getattribute__(self, "_kept")))
+        object.__setattr__(copy, "_loose", set(object.__getattribute__(self, "_loose")))
+        copy.load_warnings = list(self.load_warnings)
         copy.config_dir, copy.config_file = self.config_dir, self.config_file
         copy.keychain, copy.keychain_error = self.keychain, self.keychain_error
         copy.load_error = self.load_error

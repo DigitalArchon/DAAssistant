@@ -1154,6 +1154,137 @@ class TeeAttestationsAge(TempConfig):
         self.assertEqual(self.attestations_asked(server), 3)
 
 
+class StrictAttestation(TempConfig):
+    """config.privacy_strict. An enclave that proved less than it could - anything that
+    shows the banner amber - is refused instead of used, and a reply whose signature
+    does not hold has its model attested again before anything more is sent to it."""
+
+    def session(self, server, strict=True):
+        session = PrivacySession(API_URL, "k", TEXT, VISION, tee_factory=server.tee_client,
+                                 strict=strict)
+        self.events = []
+        session.listener = lambda event, model, detail: self.events.append(event)
+        return session
+
+    def attestations_asked(self, server):
+        return len([g for g in server.gets if "/tee/attestation" in g])
+
+    def send(self, server, session, text="hi"):
+        client = LLMClient(self.config)
+        client.session = server
+        return client.stream(TEXT, [{"role": "user", "content": text}], privacy=session)
+
+    def test_it_is_read_when_the_conversation_starts_and_kept(self):
+        self.config.privacy_mode = True
+        self.assertFalse(PrivacySession.start(self.config).strict)
+        self.config.privacy_strict = True
+        session = PrivacySession.start(self.config)
+        self.config.privacy_strict = False
+        self.assertTrue(session.strict)
+
+    def test_an_attestation_that_fell_short_is_refused_naming_what_it_lacked(self):
+        for server, lacked in (
+                (FakeNanoGpt(evidence=False), "no GPU evidence"),
+                (FakeNanoGpt(intel=dcap.Result(status="OutOfDate", platform="OutOfDate",
+                                               qe="UpToDate")), "Intel TCB OutOfDate"),
+                (FakeNanoGpt(intel=dcap.Result(collateral=False)), "Intel TCB unchecked"),
+                (FakeNanoGpt(nras_status=503), "GPUs unverified"),
+                (FakeNanoGpt(nvidia=nras.KeysUnavailable("NVIDIA's keys are out of reach")),
+                 "NVIDIA signature unchecked")):
+            session = self.session(server)
+            with self.assertRaisesRegex(PrivacyError, f"proved less than it could "
+                                                      f"\\({lacked}\\), and strict "
+                                                      f"attestation is on; nothing was "
+                                                      f"sent"):
+                session.ensure(TEXT)
+            self.assertEqual(self.events, ["attesting", "refused"])
+            self.assertNotIn(TEXT, session.attestations)
+            # Not strict, the same enclave is used, with its shortfall in the headline.
+            self.assertIn(lacked, self.session(server, strict=False).ensure(TEXT).headline)
+
+    def test_nothing_is_sent_to_an_enclave_that_fell_short(self):
+        server = FakeNanoGpt(evidence=False)
+        with self.assertRaisesRegex(LLMError, "no GPU evidence.*strict attestation is on; "
+                                              "nothing was sent"):
+            self.send(server, self.session(server), "secret")
+        self.assertEqual(server.chat_posts, [])
+
+    def test_one_that_proved_everything_is_used_as_ever(self):
+        server = FakeNanoGpt()
+        self.assertEqual(self.send(server, self.session(server)), "Hello there")
+
+    def test_an_enclave_on_an_older_release_is_refused(self):
+        class OlderRelease:
+            def check_offered(self, model):
+                pass
+
+            def attest(self, model):
+                return privacy.Attestation(model=model, kind=privacy.E2EE,
+                                           release="v0.0.150", latest_release="v0.0.155")
+
+        model = "private/glm-5-3"
+        session = PrivacySession(API_URL, "k", model, model, strict=True,
+                                 sealed_factory=lambda *a: OlderRelease())
+        with self.assertRaisesRegex(PrivacyError, r"proved less than it could \(an older "
+                                                  r"release than v0\.0\.155\)"):
+            session.ensure(model)
+        lenient = PrivacySession(API_URL, "k", model, model,
+                                 sealed_factory=lambda *a: OlderRelease())
+        self.assertEqual(lenient.ensure(model).latest_release, "v0.0.155")
+
+    def test_after_a_signature_mismatch_the_next_send_attests_again(self):
+        server = FakeNanoGpt(signer=1)              # a key the attestation did not name
+        session = self.session(server)
+        self.send(server, session)
+        self.assertEqual(session.pop_receipt().state, privacy.MISMATCH)
+        server.signer = KEY                         # and then the attested one again
+        self.assertEqual(self.send(server, session, "and then"), "Hello there")
+        self.assertEqual(self.events, ["attesting", "attested", "sent", "receipt"] * 2)
+        self.assertEqual(session.pop_receipt().state, privacy.SIGNED)
+        self.send(server, session, "and on")        # signed: nothing to attest again
+        self.assertEqual(self.events[8:], ["sent", "receipt"])
+        self.assertEqual(self.attestations_asked(server), 2)
+        self.assertEqual(len(server.chat_posts), 3)
+
+    def test_after_a_reply_left_unsigned_the_next_send_attests_again(self):
+        server = FakeNanoGpt(signature_status=500)
+        session = self.session(server)
+        session.ensure(TEXT)
+        self.assertEqual(session.check_reply(TEXT, "chatcmpl-1").state, privacy.UNSIGNED)
+        session.ensure(TEXT)
+        self.assertEqual(self.attestations_asked(server), 2)
+
+    def test_a_provider_that_signs_no_replies_is_not_attested_again_for_that(self):
+        class SignsNothing:
+            """Chutes' shape: every instance attested, no key named to sign replies."""
+
+            def __init__(self):
+                self.attested = 0
+
+            def attest(self):
+                self.attested += 1
+                return privacy.Attestation(model="TEE/kimi-k3", kind=privacy.TEE)
+
+            def check_reply(self, response_id):
+                return privacy.UNSIGNED, "this model's provider signs no replies"
+
+        provider = SignsNothing()
+        session = PrivacySession(API_URL, "k", "TEE/kimi-k3", VISION, uses=("text",),
+                                 tee_factory=lambda *args: provider, strict=True)
+        session.ensure("TEE/kimi-k3")
+        session.check_reply("TEE/kimi-k3", "chatcmpl-1")
+        session.ensure("TEE/kimi-k3")
+        self.assertEqual(provider.attested, 1)
+
+    def test_without_it_a_mismatch_is_shown_and_nothing_attested_again(self):
+        server = FakeNanoGpt(signer=1)
+        session = self.session(server, strict=False)
+        session.ensure(TEXT)
+        self.assertEqual(session.check_reply(TEXT, "chatcmpl-1").state, privacy.MISMATCH)
+        session.ensure(TEXT)
+        self.assertEqual(self.attestations_asked(server), 1)
+
+
 class TheMainLoopNeverWaitsForAnAttestation(unittest.TestCase):
     """ensure() held the session's lock across the network - several requests, each
     allowed 30 seconds - and enlist(), which the chat window calls on the main loop when

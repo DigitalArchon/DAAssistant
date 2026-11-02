@@ -31,6 +31,11 @@ parts that matter here:
 A conversation's privacy is decided once, when it starts (`PrivacySession.start`), and
 never relaxed: its models are copied then, so switching Privacy Mode off, or choosing
 other models in Settings, leaves every open private conversation exactly as it was.
+
+So is whether its attestation is strict (config.privacy_strict). An attestation that
+proved less than it could - everything that shows the chat window's banner amber - is
+then refused rather than used, and a TEE reply whose signature does not hold has its
+model attested again before anything more is sent to it.
 """
 
 import base64
@@ -212,6 +217,18 @@ class Attestation:
         if not self.shortfalls:
             return "TEE attested"
         return f"TEE attested ({', '.join(self.shortfalls)})"
+
+    @property
+    def fell_short(self):
+        """What the enclave proved less of than it could, in a few words each - all
+        that turns the chat window's banner amber - or [] when it proved everything
+        this app can check."""
+        found = list(self.shortfalls)
+        if self.latest_release:
+            found.append(f"an older release than {self.latest_release}")
+        if self.level != "full" and not found:
+            found.append("not everything could be checked")
+        return found
 
 
 @dataclass
@@ -757,11 +774,14 @@ class PrivacySession:
     worker thread does the attesting, which can take minutes, while the main loop calls
     enlist() and reads `attestations` for the banner. `clock` ages attestations; the
     boot clock, which runs on while the machine sleeps, unless a test gives another.
+
+    `strict`: strict attestation (config.privacy_strict), fixed for the conversation
+    like its models. See ensure() and check_reply().
     """
 
     def __init__(self, api_url, api_key, text_model, vision_model, request_timeout=180,
                  tee_factory=TeeClient, sealed_factory=None, uses=("text", "vision"),
-                 premium_model=None, clock=dcap.since_boot):
+                 premium_model=None, clock=dcap.since_boot, strict=False):
         self.api_url = api_url
         self.api_key = api_key
         self.text_model = text_model
@@ -778,6 +798,8 @@ class PrivacySession:
         self.attestations = {}          # model -> Attestation, newest check
         self._clock = clock
         self._attested_at = {}          # model -> the clock when its newest check began
+        self.strict = bool(strict)
+        self._doubted = set()           # TEE/ models to attest again: see check_reply
         self._receipts = []
         # Called with (event, model, detail) from whichever thread is working:
         # "attesting", "attested" (detail: Attestation), "refused" (detail: message),
@@ -802,7 +824,8 @@ class PrivacySession:
         return cls(config.api_url, config.api_key,
                    config.private_text_model.strip(), config.private_vision_model.strip(),
                    request_timeout=config.request_timeout, uses=uses,
-                   premium_model=config.private_premium_model.strip())
+                   premium_model=config.private_premium_model.strip(),
+                   strict=getattr(config, "privacy_strict", False))
 
     # ---- models ---------------------------------------------------------------------
 
@@ -893,6 +916,10 @@ class PrivacySession:
         sealed.py whenever its proof is five minutes old, before anything is sealed.
         Raises PrivacyError, having sent nothing, when the enclave cannot be trusted.
 
+        With strict attestation, it raises too for an attestation that proved less than
+        it could (Attestation.fell_short), naming what it lacked, and a TEE model one
+        of whose replies check_reply doubted is attested again before the next send.
+
         Attesting is network work - several requests, each allowed TIMEOUT_SECONDS - and
         it is done with no lock held, so that enlist(), called on the main loop when a
         model is picked or Send pressed, never waits for it. A thread that asks for a
@@ -907,7 +934,7 @@ class PrivacySession:
             raise PrivacyError(f"{model} is not a TEE model; nothing was sent")
         with self._lock:
             known = self.attestations.get(model)
-            if kind == TEE and known is not None and not self._aged(model):
+            if kind == TEE and known is not None and not self._due(model):
                 return known
             attesting = self._attesting.get(model)
             waiting = attesting is not None
@@ -933,8 +960,11 @@ class PrivacySession:
             attesting.done.set()
         return attesting.attestation
 
-    def _aged(self, model):
-        """Whether a TEE/ model's newest attestation is too old to send on."""
+    def _due(self, model):
+        """Whether a TEE/ model must be attested again before anything more is sent to
+        it: its newest attestation is too old, or strict attestation doubted a reply."""
+        if model in self._doubted:
+            return True
         age = self._clock() - self._attested_at.get(model, float("-inf"))
         return not 0 <= age < TEE_MAX_AGE_SECONDS
 
@@ -966,6 +996,10 @@ class PrivacySession:
                         client = self._tee[model] = self._tee_factory(
                             self.api_url, self.api_key, model)
                 attestation = client.attest()
+            lacking = attestation.fell_short if self.strict else []
+            if lacking:
+                raise PrivacyError(f"{model}'s enclave proved less than it could "
+                                   f"({', '.join(lacking)}), and strict attestation is on")
         except ModelRetired as e:
             self.note_retired(e)
             raise
@@ -979,12 +1013,19 @@ class PrivacySession:
         with self._lock:
             self.attestations[model] = attestation
             self._attested_at[model] = started
+            self._doubted.discard(model)
         if announce or known.detail != attestation.detail:
             self._emit("attested", model, attestation)
         return attestation
 
     def check_reply(self, model, response_id):
-        """Record and return what can be said about one reply."""
+        """Record and return what can be said about one reply.
+
+        With strict attestation, a TEE reply whose signature does not hold - signed by
+        another key, or by none when the attestation named the key its replies are
+        signed with - has its model attested again before anything more is sent to it.
+        Not refused for good: once the enclave attests well again, the conversation
+        carries on."""
         if kind_of(model) == E2EE:
             receipt = Receipt(model, E2EE, SEALED,
                               "decrypted here; only the attested enclave could have "
@@ -998,6 +1039,10 @@ class PrivacySession:
                 receipt = Receipt(model, TEE, state, detail)
         with self._lock:
             self._receipts.append(receipt)
+            named = getattr(self.attestations.get(model), "signing_address", "")
+            if self.strict and (receipt.state == MISMATCH
+                                or (receipt.state == UNSIGNED and named)):
+                self._doubted.add(model)
         self._emit("receipt", model, receipt)
         return receipt
 

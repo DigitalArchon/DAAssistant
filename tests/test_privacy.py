@@ -253,12 +253,16 @@ class TeeAttestation(unittest.TestCase):
         self.assertEqual(attestation.level, "partial")
         self.assertIn("Intel TCB unchecked", attestation.headline)
 
-    def test_without_cryptography_it_says_the_signatures_were_not_checked(self):
-        attestation = self.client(intel=ImportError("cryptography"),
-                                  nvidia=ImportError("cryptography")).attest()
-        self.assertEqual(attestation.shortfalls, ["signatures unchecked"])
-        with self.assertRaisesRegex(PrivacyError, "NVIDIA rejected"):
-            self.client(intel=ImportError(), nvidia=ImportError(), gpu=False).attest()
+    def test_without_cryptography_nothing_is_attested_and_it_says_what_to_install(self):
+        """It used to pass with "signatures unchecked": the quote's bytes, unchecked,
+        named the key, and every reply that key signed then read "signed by attested
+        enclave"."""
+        for intel, nvidia in ((ImportError("cryptography"), ImportError("cryptography")),
+                              (UP_TO_DATE, ImportError("cryptography"))):
+            with self.assertRaisesRegex(PrivacyError, "cannot be checked without Python's "
+                                                      "cryptography package "
+                                                      r"\(python3-cryptography\)"):
+                self.client(intel=intel, nvidia=nvidia).attest()
 
     def test_a_verdict_nvidia_did_not_sign_is_refused(self):
         with self.assertRaisesRegex(PrivacyError, "GPU attestation failed: .*nonce"):
@@ -745,6 +749,29 @@ class Session(TempConfig):
         self.config.api_url = "https://api.example.com/v1/chat/completions"
         self.assertTrue(any("not nano-gpt's" in f for f in privacy.problems(self.config)))
 
+    def test_problems_name_the_cryptography_package_tee_models_need(self):
+        self.assertEqual(privacy.problems(self.config), [])
+        with mock.patch.object(privacy, "_cryptography", False):
+            found = privacy.problems(self.config)
+            self.assertEqual(found, [
+                "The cryptography package (python3-cryptography) is not installed, and "
+                f"without it {TEXT}, TEE/glm-5.3 and {VISION} cannot be attested: what a "
+                "TEE model proves is Intel's and NVIDIA's signatures."])
+            self.config.private_premium_model = TEXT        # named once, whatever its roles
+            self.assertIn(f"{TEXT} and {VISION} cannot", privacy.problems(self.config)[0])
+            self.config.privacy_mode = True
+            with self.assertRaisesRegex(PrivacyError, "Privacy Mode is on, but the "
+                                                      "cryptography package.*Nothing was "
+                                                      "sent"):
+                PrivacySession.start(self.config)
+            # End-to-end encrypted models are sealed by Tinfoil's client, which brings
+            # its own.
+            for key in ("private_text_model", "private_premium_model",
+                        "private_vision_model"):
+                setattr(self.config, key, "private/glm-5-3")
+            with mock.patch.object(sealed, "available", return_value=(True, "tinfoil")):
+                self.assertEqual(privacy.problems(self.config), [])
+
 
 class TheMainLoopNeverWaitsForAnAttestation(unittest.TestCase):
     """ensure() held the session's lock across the network - several requests, each
@@ -880,6 +907,17 @@ class PrivateRequests(TempConfig):
             self.client(server).stream(TEXT, [{"role": "user", "content": "secret"}],
                                        privacy=session_for(server))
         self.assertEqual(server.chat_posts, [])
+
+    def test_nothing_is_sent_without_the_cryptography_package(self):
+        server = FakeNanoGpt(intel=ImportError("cryptography"))
+        session = session_for(server)
+        events = []
+        session.listener = lambda event, model, detail: events.append(event)
+        with self.assertRaisesRegex(LLMError, "python3-cryptography.*nothing was sent"):
+            self.client(server).stream(TEXT, [{"role": "user", "content": "secret"}],
+                                       privacy=session)
+        self.assertEqual(server.chat_posts, [])
+        self.assertEqual(events, ["attesting", "refused"])
 
     def test_nothing_is_sent_to_a_model_outside_the_conversation(self):
         server = FakeNanoGpt()

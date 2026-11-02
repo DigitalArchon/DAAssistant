@@ -117,6 +117,25 @@ def describe(model):
     return "", ""
 
 
+_cryptography = None    # cryptography_available()'s answer, once it has been worked out
+
+
+def cryptography_available():
+    """Whether Python's cryptography package can be loaded. Every check of a TEE/
+    model's attestation is a signature - Intel's, NVIDIA's, an instance's - so without
+    it none of them is attested, and nothing is sent to one. Worked out once: it takes
+    a few hundredths of a second the first time, and cannot change without a restart."""
+    global _cryptography
+    if _cryptography is None:
+        try:
+            from cryptography import x509  # noqa: F401  - and its compiled bindings
+        except Exception:  # an ImportError, or a build for another Python
+            _cryptography = False
+        else:
+            _cryptography = True
+    return _cryptography
+
+
 def problems(config, wait=True):
     """Why Privacy Mode cannot run with these settings, as a list of sentences.
 
@@ -128,6 +147,7 @@ def problems(config, wait=True):
     insecure = netguard.problem(getattr(config, "api_url", ""))
     if insecure:
         found.append(insecure)
+    tee = []
     for key, what in (("private_text_model", "text"), ("private_premium_model", "premium"),
                       ("private_vision_model", "vision")):
         model = (getattr(config, key, "") or "").strip()
@@ -144,6 +164,13 @@ def problems(config, wait=True):
             if answer is not None and not answer[0]:
                 found.append(f"{model} needs Tinfoil's client, which is not installed: "
                              f"run tools/install-private-mode.sh, then restart the app.")
+        elif model not in tee:
+            tee.append(model)
+    if tee and not cryptography_available():
+        names = (", ".join(tee[:-1]) + " and " if len(tee) > 1 else "") + tee[-1]
+        found.append(f"The cryptography package (python3-cryptography) is not installed, "
+                     f"and without it {names} cannot be attested: what a TEE model "
+                     f"proves is Intel's and NVIDIA's signatures.")
     return found
 
 
@@ -254,6 +281,12 @@ def _error_text(response):
     return ""
 
 
+def _unchecked_without_cryptography(model):
+    return (f"{model}'s attestation cannot be checked without Python's cryptography "
+            f"package (python3-cryptography), which is not installed: what it proves is "
+            f"Intel's and NVIDIA's signatures")
+
+
 def _instance_verifier():
     """verify(certificate DER, body, signature) -> sha256 of the certificate's public
     key when its signature over body holds, else None. Raises ImportError without the
@@ -302,11 +335,6 @@ class _Checks:
     def fall_short(self, what):
         if what not in self.shortfalls:
             self.shortfalls.append(what)
-
-    def unchecked(self):
-        self.fall_short("signatures unchecked")
-        self.note("Intel's and NVIDIA's signatures could not be checked: the "
-                  "cryptography package is not installed")
 
     def tcb(self, status):
         """Keep the worst Intel TCB status seen."""
@@ -407,12 +435,13 @@ class TeeClient:
         revoked, a debug TD, a TCB Intel has revoked or never listed), GPU evidence
         whose NVIDIA verdict is unsigned, stale, for another nonce or negative, or - in
         the per-instance shape - any instance that failed to attest, since a request
-        could be routed to it.
+        could be routed to it. And without the `cryptography` package, always: every one
+        of those checks is a signature, and a quote whose signatures go unchecked is
+        bytes anyone could have written.
 
         What merely could not be checked - Intel's collateral or NVIDIA's service out of
-        reach, no GPU evidence offered, no `cryptography` package - or is not current
-        (any Intel TCB status but UpToDate) makes the attestation partial, and the
-        headline names it.
+        reach, no GPU evidence offered - or is not current (any Intel TCB status but
+        UpToDate) makes the attestation partial, and the headline names it.
 
         Stricter than StoryLoom, which reads these verdicts without checking their
         signatures: a nonce or a verdict that merely comes back in JSON proves nothing,
@@ -575,11 +604,15 @@ class TeeClient:
         return check
 
     def _check_quote(self, raw, check):
-        """Intel's verification of one quote, into `check`. Refuses a bad quote."""
+        """Intel's verification of one quote, into `check`. Refuses a bad quote, and
+        one that cannot be checked at all."""
         try:
             intel = self._intel(raw, self.session)
         except ImportError:
-            check.unchecked()
+            # Without its signatures checked, a quote is bytes anyone could have
+            # written, and a reply "signed by the attested enclave" would be signed by
+            # whatever key they named.
+            raise PrivacyError(_unchecked_without_cryptography(self.model))
         except dcap.DcapError as e:
             raise PrivacyError(f"{self.model}'s Intel TDX quote failed verification: {e}")
         else:
@@ -608,17 +641,16 @@ class TeeClient:
             return
         try:
             gpus = self._nvidia(answer, nonce, self.session)
-        except (ImportError, nras.KeysUnavailable) as e:
+        except ImportError:
+            raise PrivacyError(_unchecked_without_cryptography(self.model))
+        except nras.KeysUnavailable as e:
             # Unchecked, but a verdict that says no is still believed.
             if not any(c.get("x-nvidia-overall-att-result") is True
                        for c in _jwt_claims(answer)):
                 raise PrivacyError(f"NVIDIA rejected {self.model}'s GPU evidence")
             check.summary_gpu.add("NVIDIA's verdict unchecked")
-            if isinstance(e, ImportError):
-                check.unchecked()
-            else:
-                check.fall_short("NVIDIA signature unchecked")
-                check.note(f"{e}, so NVIDIA's verdict is unchecked")
+            check.fall_short("NVIDIA signature unchecked")
+            check.note(f"{e}, so NVIDIA's verdict is unchecked")
         except nras.NrasError as e:
             raise PrivacyError(f"{self.model}'s GPU attestation failed: {e}")
         else:

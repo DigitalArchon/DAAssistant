@@ -25,7 +25,9 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 
 from assistant import models, sealed
 from assistant.config import Config
-from assistant.llm import CUT_OFF_NOTE, REASONING_ROOM, LLMClient, LLMError
+from assistant import websearch
+from assistant.llm import (CUT_OFF_NOTE, FILTERED_NOTE, REASONING_ROOM, UNFINISHED_NOTE,
+                           LLMClient, LLMError)
 
 API_URL = "https://nano-gpt.com/api/v1/chat/completions"
 
@@ -198,3 +200,116 @@ class HowAReplyEnds(CatalogueCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EveryWayAReplyEnds(CatalogueCase):
+    """Only a reply that finished passes for a whole one; and when nothing came, the
+    provider's own words are the error rather than "an empty response"."""
+
+    def raw(self, lines, model="TEE/glm-5.3", **kwargs):
+        client = LLMClient(self.config)
+        client._post = lambda payload, stream, cancel=None: FakeResponse(lines)
+        return client.stream(model, [{"role": "user", "content": "translate"}], **kwargs)
+
+    @staticmethod
+    def data(*chunks):
+        return [b"data: " + json.dumps(c).encode() for c in chunks]
+
+    def test_an_error_part_way_keeps_what_came_and_says_what_went_wrong(self):
+        text = self.raw(self.data(
+            {"id": "c1", "choices": [{"delta": {"content": "Der Hund"}}]},
+            {"id": "c1", "error": {"code": 502, "message": "Provider disconnected"},
+             "choices": [{"delta": {"content": ""}, "finish_reason": "error"}]}))
+        self.assertTrue(text.startswith("Der Hund"))
+        self.assertIn("Cut off", text)
+        self.assertIn("Provider disconnected", text)
+
+    def test_an_error_before_any_text_is_the_providers_own_message(self):
+        with self.assertRaises(LLMError) as caught:
+            self.raw(self.data({"error": {"message": "Rate limit exceeded: free tier"}}))
+        self.assertIn("Rate limit exceeded: free tier", str(caught.exception))
+
+    def test_the_content_filter_is_named(self):
+        text = self.raw(self.data(
+            {"choices": [{"delta": {"content": "Half"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "content_filter"}]})
+            + [b"data: [DONE]"])
+        self.assertTrue(text.endswith(FILTERED_NOTE))
+        with self.assertRaises(LLMError) as caught:
+            self.raw(self.data({"choices": [{"delta": {},
+                                             "finish_reason": "content_filter"}]}))
+        self.assertIn("content filter", str(caught.exception))
+
+    def test_a_stream_that_just_ends_is_marked_unfinished(self):
+        text = self.raw(self.data({"choices": [{"delta": {"content": "Half a sente"}}]}))
+        self.assertTrue(text.endswith(UNFINISHED_NOTE))
+
+    def test_a_finish_reason_without_done_is_a_whole_reply(self):
+        text = self.raw(self.data(
+            {"choices": [{"delta": {"content": "Whole."}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]}))
+        self.assertEqual(text, "Whole.")
+
+    def test_a_connection_that_breaks_keeps_what_came(self):
+        import requests
+
+        def lines():
+            yield from self.data({"choices": [{"delta": {"content": "So far"}}]})
+            raise requests.exceptions.ChunkedEncodingError("Connection broken")
+
+        text = self.raw(lines())
+        self.assertTrue(text.startswith("So far"))
+        self.assertIn("connection broke", text)
+
+    def test_an_error_sent_with_http_200_is_reported(self):
+        with self.assertRaises(LLMError) as caught:
+            self.raw([b'{"error": {"message": "Insufficient balance"}}'])
+        self.assertIn("Insufficient balance", str(caught.exception))
+
+    def test_a_server_that_does_not_stream_is_still_answered(self):
+        body = json.dumps({"choices": [{"message": {"content": "Plain answer"},
+                                        "finish_reason": "stop"}]}, indent=2)
+        self.assertEqual(self.raw([line.encode() for line in body.splitlines()]),
+                         "Plain answer")
+
+    def test_a_page_that_is_not_an_answer_is_said_to_be_one(self):
+        with self.assertRaises(LLMError) as caught:
+            self.raw([b"<html><body>Captive portal</body></html>"])
+        self.assertIn("not an answer", str(caught.exception))
+
+    def test_content_in_parts_is_read_and_thinking_left_out(self):
+        text = self.raw(self.data(
+            {"choices": [{"delta": {"content": [{"type": "thinking", "text": "hmm"},
+                                                {"type": "text", "text": "Answer"}]}}]},
+            {"choices": [None]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]}) + [b"data: [DONE]"])
+        self.assertEqual(text, "Answer")
+
+    def test_sse_comments_are_not_mistaken_for_a_body(self):
+        text = self.raw([b": OPENROUTER PROCESSING", b"event: message"] + self.data(
+            {"choices": [{"delta": {"content": "Fine"}, "finish_reason": "stop"}]})
+            + [b"data: [DONE]"])
+        self.assertEqual(text, "Fine")
+
+    def test_a_completion_with_an_error_body_says_so(self):
+        client = LLMClient(self.config)
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"error": {"message": "Model is overloaded"}}
+        client._post = lambda payload, stream, cancel=None: response
+        with self.assertRaises(LLMError) as caught:
+            client.complete("TEE/glm-5.3", [{"role": "user", "content": "hi"}])
+        self.assertIn("Model is overloaded", str(caught.exception))
+
+    def test_a_failed_web_search_is_said_in_the_answer(self):
+        self.config.web_search_craft_query = False
+        said = []
+        with mock.patch.object(websearch, "run",
+                               side_effect=websearch.SearchError("HTTP 503: busy")):
+            text = self.raw(self.data(
+                {"choices": [{"delta": {"content": "From memory."},
+                              "finish_reason": "stop"}]}) + [b"data: [DONE]"],
+                model="deepseek/deepseek-v4-pro", web_search=True, status=said.append)
+        self.assertTrue(text.startswith("From memory."))
+        self.assertIn("Not searched", text)
+        self.assertIn("HTTP 503: busy", text)
+        self.assertTrue(any("web search failed" in s for s in said))

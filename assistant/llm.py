@@ -55,6 +55,12 @@ QUERY_TOKENS = 120
 REASONING_ROOM = {"none": 0, "minimal": 2048, "low": 4096, "medium": 16384,
                   "high": 16384, "xhigh": 32768, "max": 32768}
 CUT_OFF_NOTE = "\n\n_(Cut off: the reply reached its token limit.)_"
+FILTERED_NOTE = "\n\n_(Cut off: the provider's content filter stopped the reply here.)_"
+UNFINISHED_NOTE = ("\n\n_(Cut off: the connection ended before the reply was "
+                   "finished.)_")
+# A reply that is not a stream at all - an error sent with HTTP 200, or a whole answer
+# from a server that does not stream - is read as JSON once it has ended, up to this.
+MAX_PLAIN_BODY = 64 * 1024
 
 GZIP_THRESHOLD_BYTES = 16 * 1024
 GZIP_LEVEL = 6
@@ -223,6 +229,28 @@ def system_message(instructions):
     if not instructions:
         return None
     return {"role": "system", "content": instructions}
+
+
+def error_message(error):
+    """A provider's error object as words, or None when there is none."""
+    if not error:
+        return None
+    if isinstance(error, dict):
+        message = error.get("message") or error.get("error") or json.dumps(error)[:300]
+        return str(message).strip() or None
+    return str(error).strip() or None
+
+
+def content_text(content):
+    """The text of a message's content. A string - or, from some servers, a list of
+    parts, of which only the text ones are the answer: a "thinking" part is not."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(part.get("text") or "" for part in content
+                       if isinstance(part, dict)
+                       and part.get("type", "text") in ("text", "output_text"))
+    return ""
 
 
 class LLMError(Exception):
@@ -483,16 +511,39 @@ class LLMClient:
         return payload
 
     @staticmethod
-    def _ending(text, finish_reason, model, limit):
+    def _ending(text, finish_reason, model, limit, done=True, error=None):
         """The reply as it should be kept, given how it ended.
 
         A reply that stopped at the token limit says so, rather than passing for a
         whole answer. One that stopped there before saying anything was all thinking,
         and is an error with the way out named, not "an empty response".
+
+        So does every other way a reply can end short of finishing: an error the
+        provider reported part way (OpenRouter's {"error": ...} with finish_reason
+        "error"), its content filter, a connection that broke, and a stream that simply
+        ended with neither [DONE] nor a finish reason. A half translation must not pass
+        for a whole one; and with nothing at all to keep, the provider's own words are
+        the error, rather than "an empty response".
         """
+        stripped = (text or "").strip()
+        if error or finish_reason == "error":
+            why = error or "the provider reported an error"
+            if not stripped:
+                raise LLMError(f"The provider stopped with an error: {why}", model=model)
+            return text + f"\n\n_(Cut off: the provider stopped with an error - {why})_"
+        if finish_reason == "content_filter":
+            if not stripped:
+                raise LLMError("The provider's content filter stopped the reply before "
+                               "it began.", model=model)
+            return text + FILTERED_NOTE
+        if not done and not finish_reason:
+            if not stripped:
+                raise LLMError("The connection ended before any reply arrived.",
+                               model=model)
+            return text + UNFINISHED_NOTE
         if finish_reason != "length":
             return text
-        if not (text or "").strip():
+        if not stripped:
             raise LLMError(
                 f"{model} spent its whole allowance of {limit} tokens thinking and never "
                 f"began its answer. Lower Reasoning effort, or raise Max response tokens, "
@@ -529,15 +580,17 @@ class LLMClient:
         return query
 
     def search(self, messages, web_search=None, cancel=None):
-        """Run the web search for this turn. Returns (context, [(title, url)]).
+        """Run the web search for this turn. Returns (context, [(title, url)], failure).
 
         Failure is not fatal: a search that cannot run leaves the model answering from
-        what it already has, which is what it would have done anyway.
+        what it already has, which is what it would have done anyway. But it is said:
+        `failure` is why, for the answer to carry, since an answer from the model alone
+        reads just like a searched one.
         """
         if not web_search_active(self.config, web_search):
-            return "", []
+            return "", [], None
         if cancel is not None and cancel.is_set():
-            return "", []
+            return "", [], None
 
         query = websearch.query_from(messages)
         if query and getattr(self.config, "web_search_craft_query", True):
@@ -545,14 +598,14 @@ class LLMClient:
             # what carries the exception name or the distinctive phrase.
             query = self.craft_query(websearch.material_from(messages), cancel) or query
         if cancel is not None and cancel.is_set():
-            return "", []
+            return "", [], None
         try:
             results = websearch.run(query, self.config, session=self.session)
         except websearch.SearchError as e:
             print(f"[search] {e}")
-            return "", []
+            return "", [], str(e)
         return (websearch.as_context(query, results),
-                [(result["title"], result["url"]) for result in results])
+                [(result["title"], result["url"]) for result in results], None)
 
     def complete(self, model, messages, image_base64=None, cancel=None,
                  web_search=None, system=None, max_tokens=None, privacy=None, status=None):
@@ -580,12 +633,15 @@ class LLMClient:
             raise LLMError("Provider returned a non-JSON response", model=model)
         finally:
             response.close()
+        problem = error_message(body.get("error")) if isinstance(body, dict) else None
+        if problem and not body.get("choices"):
+            raise LLMError(f"The provider answered with an error: {problem}", model=model)
         try:
             choice = body["choices"][0]
-            text = choice["message"]["content"] or ""
+            text = content_text(choice["message"]["content"])
             return self._ending(text, choice.get("finish_reason"), model,
                                 payload.get("max_tokens"))
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError, TypeError, AttributeError):
             raise LLMError(f"Unexpected response shape: {json.dumps(body)[:300]}",
                            model=model)
 
@@ -601,55 +657,103 @@ class LLMClient:
 
         `lines` may be bytes (requests) or str (httpx, for the sealed stream). The
         completion's id is kept because a TEE reply's signature is filed under it.
+
+        How it ended goes back too, for _ending to say: `done` is whether [DONE]
+        arrived, and `error` is what went wrong - an error the provider sent part way,
+        or a connection that broke, after which what had arrived is still returned. A
+        sealed stream's own errors are not caught here: one that cannot be opened is
+        never shown as text. A body with no "data:" lines at all is read as JSON once
+        it has ended: an error sent with HTTP 200, or a whole answer from a server that
+        does not stream.
         """
-        text, response_id, finish_reason, done = "", None, None, False
-        for raw in lines:
-            if cancel is not None and cancel.is_set():
-                return None
-            if not raw:
-                continue
-            line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-            if not line.startswith("data:"):
-                continue
-            line = line[5:].strip()
-            if line == "[DONE]":
-                done = True
-                break
-            try:
-                chunk = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(chunk, dict):
-                continue
-            if response_id is None and isinstance(chunk.get("id"), str):
-                response_id = chunk["id"]
-            # Search metadata arrives in a frame of its own, where `choices` is
-            # empty - skipping those was throwing the sources away unread.
-            for source in _extract_citations(chunk):
-                if source not in citations:
-                    citations.append(source)
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            if choices[0].get("finish_reason"):
-                finish_reason = choices[0]["finish_reason"]
-            delta = choices[0].get("delta") or {}
-            piece = delta.get("content") or ""
-            if piece:
-                text += piece
-                if on_delta:
-                    on_delta(piece, text)
-                cut = halt(text) if halt and "\n" in piece else None
-                if cut is not None:
-                    text, finish_reason, done = text[:cut], "stop", True
+        text, response_id, finish_reason, done, error = "", None, None, False, None
+        plain, streamed = [], False
+        try:
+            for raw in lines:
+                if cancel is not None and cancel.is_set():
+                    return None
+                if not raw:
+                    continue
+                line = (raw.decode("utf-8", errors="replace") if isinstance(raw, bytes)
+                        else raw)
+                if not line.startswith("data:"):
+                    # SSE's own fields and comments (": OPENROUTER PROCESSING") are not
+                    # the body; anything else may be, if no stream ever starts.
+                    if not streamed and not line.startswith((":", "event:", "id:",
+                                                             "retry:")) \
+                            and sum(map(len, plain)) < MAX_PLAIN_BODY:
+                        plain.append(line)
+                    continue
+                streamed = True
+                line = line[5:].strip()
+                if line == "[DONE]":
+                    done = True
                     break
-            for source in (_extract_citations(delta)
-                           + _extract_citations(choices[0])
-                           + _extract_citations(choices[0].get("message"))):
-                if source not in citations:
-                    citations.append(source)
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                if response_id is None and isinstance(chunk.get("id"), str):
+                    response_id = chunk["id"]
+                problem = error_message(chunk.get("error"))
+                if problem:
+                    error = problem
+                    break
+                # Search metadata arrives in a frame of its own, where `choices` is
+                # empty - skipping those was throwing the sources away unread.
+                for source in _extract_citations(chunk):
+                    if source not in citations:
+                        citations.append(source)
+                choices = chunk.get("choices") or []
+                choice = choices[0] if choices and isinstance(choices[0], dict) else None
+                if choice is None:
+                    continue
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta") or {}
+                piece = content_text(delta.get("content")) if isinstance(delta, dict) \
+                    else ""
+                if piece:
+                    text += piece
+                    if on_delta:
+                        on_delta(piece, text)
+                    cut = halt(text) if halt and "\n" in piece else None
+                    if cut is not None:
+                        text, finish_reason, done = text[:cut], "stop", True
+                        break
+                for source in (_extract_citations(delta)
+                               + _extract_citations(choice)
+                               + _extract_citations(choice.get("message"))):
+                    if source not in citations:
+                        citations.append(source)
+        except requests.exceptions.RequestException as e:
+            error = f"the connection broke ({e})"
+        if not streamed and plain and error is None:
+            text, finish_reason, done, error = LLMClient._plain_reply("\n".join(plain))
         return {"text": text, "id": response_id, "finish_reason": finish_reason,
-                "done": done}
+                "done": done, "error": error}
+
+    @staticmethod
+    def _plain_reply(body):
+        """(text, finish_reason, done, error) from a reply that was never a stream."""
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            return "", None, False, ("the reply was not an answer: "
+                                     + " ".join(body.split())[:200])
+        if isinstance(parsed, dict):
+            problem = error_message(parsed.get("error"))
+            if problem:
+                return "", None, False, problem
+            choices = parsed.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                message = choices[0].get("message") or {}
+                if isinstance(message, dict):
+                    return (content_text(message.get("content")),
+                            choices[0].get("finish_reason") or "stop", True, None)
+        return "", None, False, "the reply was not an answer: " + body[:200]
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
                web_search=None, system=None, privacy=None, status=None, max_tokens=None):
@@ -667,7 +771,9 @@ class LLMClient:
 
         # Ours to run, before the model is called, so the query is the user's question
         # rather than whatever the chat endpoint would have derived from the request.
-        search_context, citations = self.search(messages, web_search, cancel)
+        search_context, citations, not_searched = self.search(messages, web_search, cancel)
+        if not_searched and status is not None:
+            status(f"The web search failed ({not_searched}); answering without it")
         if cancel is not None and cancel.is_set():
             return None
 
@@ -691,7 +797,10 @@ class LLMClient:
         if runaway and result["finish_reason"] == "stop":
             text = tidy_end(text)
         text = self._ending(text, result["finish_reason"], model,
-                            payload.get("max_tokens"))
+                            payload.get("max_tokens"), result["done"], result["error"])
+        if not_searched:
+            text += (f"\n\n_(Not searched: the web search failed - {not_searched}. This "
+                     f"answer is from what the model already knew.)_")
         # The sources are the ones we searched for, so the footer is built from what we
         # know rather than from what the model remembers reading. Any the response
         # happens to carry as well are folded in above.
@@ -768,7 +877,7 @@ class LLMClient:
             say("Checking the reply's signature…")
         privacy.check_reply(model, result["id"])
         return self._ending(result["text"].strip(), result["finish_reason"], model,
-                            payload.get("max_tokens"))
+                            payload.get("max_tokens"), result["done"], result["error"])
 
     def _check_other_providers(self, answered, reply):
         """The rest of a connection test, when the premium or vision model is asked of

@@ -470,7 +470,7 @@ class Citations(unittest.TestCase):
         client = self._client()
         client._post = lambda *a, **k: FakeResponse(lines)
         # The search is a live HTTP call of its own; tests never make one.
-        client.search = lambda *a, **k: (self.search_context, self.search_citations)
+        client.search = lambda *a, **k: (self.search_context, self.search_citations, None)
         return client.stream("m", [{"role": "user", "content": "q"}], **kwargs)
 
     def test_nothing_about_searching_is_added_to_the_users_turn(self):

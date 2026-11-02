@@ -1375,6 +1375,33 @@ class Sealed(unittest.TestCase):
             with client.request(self.MODEL, {"messages": []}):
                 pass
 
+    def test_a_reply_that_is_not_2xx_is_refused_and_nothing_of_it_shown(self):
+        """EHBP opens only a 2xx reply, and hands on any other without a response nonce
+        just as it came. A 3xx marked as Private Mode, carrying a plaintext stream, was
+        read as a sealed reply and shown as end-to-end encrypted."""
+        import httpx
+        for status in (301, 302, 303, 307, 308):
+            client, _ = self.make(lambda r, status=status: httpx.Response(
+                status, headers={"x-nanogpt-private-mode": "tinfoil",
+                                 "location": "https://nano-gpt.com/elsewhere"},
+                content=self.stream_body()))
+            with self.assertRaisesRegex(PrivacyError, f"answered HTTP {status} instead "
+                                                      f"of a sealed reply"):
+                with client.request(self.MODEL, {"messages": []}):
+                    self.fail(f"an HTTP {status} reply was opened")
+
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client)
+        shown = []
+        with tempfile.TemporaryDirectory() as directory:
+            llm = LLMClient(Config(os.path.join(directory, "c.json")))
+            with self.assertRaisesRegex(LLMError, "HTTP 308 instead of a sealed reply"):
+                llm.stream(self.MODEL, [{"role": "user", "content": "hi"}],
+                           on_delta=lambda piece, text: shown.append(text),
+                           privacy=session)
+        self.assertEqual(shown, [], "the plaintext stream was shown")
+        self.assertIsNone(session.pop_receipt())
+
     def test_a_stream_cut_short_is_refused(self):
         import httpx
         body = b'data: {"id":"c1","choices":[{"delta":{"content":"Hi"}}]}\n\n'

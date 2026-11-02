@@ -24,10 +24,11 @@ no code from nano-gpt:
    sealed body carries our own random secret, so nobody else - nano-gpt included - can
    time our prompt cache.
 3. Seal the body with EHBP (HPKE X25519, AES-256-GCM) to the attested key, and open the
-   sealed reply. A 2xx reply that is not sealed is refused by the transport, so is one
-   nano-gpt does not mark as Private Mode, and so is a stream that ends without its
-   final chunk. Nothing is ever sent unsealed, and nothing falls back to the plain
-   endpoint: llm.py refuses a private/ model everywhere but here.
+   sealed reply. Only a 2xx reply is opened: one that is not sealed is refused by the
+   transport, and any other status is refused here unread, since the transport hands
+   it on as it came. So is a reply nano-gpt does not mark as Private Mode, and a stream
+   that ends without its final chunk. Nothing is ever sent unsealed, and nothing falls
+   back to the plain endpoint: llm.py refuses a private/ model everywhere but here.
 
 The attestation is redone before a request once it is five minutes old (the proxy's
 figure: laptop sleep, a key rotated underneath us), and once more when the enclave says
@@ -315,8 +316,9 @@ class PrivateModeClient:
             self._client = httpx.Client(
                 transport=self._transport_factory(verified.hpke_public_key),
                 timeout=httpx.Timeout(self.request_timeout, connect=CONNECT_TIMEOUT),
-                # A redirect would carry the sealed body somewhere else; it comes back
-                # as a 3xx instead, without the Private Mode header, and is refused.
+                # A redirect would carry the sealed body somewhere else, so none is
+                # followed: it comes back as the 3xx it is, which request() refuses
+                # unread, as it refuses anything but a 2xx.
                 follow_redirects=False)
             self._client_key = verified.hpke_public_key
         return self._client
@@ -408,6 +410,16 @@ class PrivateModeClient:
                     self.enclave.invalidate(verified)
                     continue
                 raise PrivacyError(f"HTTP {response.status_code}: {text}")
+            if not 200 <= response.status_code < 300:
+                # Only a 2xx reply is opened. EHBP hands on any other that carries no
+                # response nonce just as it came, unsealed (ehbp's
+                # response_nonce_for_status), so a 3xx marked as Private Mode with a
+                # plaintext stream in it would have been read, and shown, as a sealed
+                # reply.
+                response.close()
+                raise PrivacyError(f"nano-gpt's relay answered HTTP "
+                                   f"{response.status_code} instead of a sealed reply, "
+                                   f"which was refused unread")
             if response.headers.get("x-nanogpt-private-mode") != "tinfoil":
                 response.close()
                 raise PrivacyError("the reply did not come back through Private Mode; "

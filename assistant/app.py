@@ -242,19 +242,56 @@ class Assistant:
             self.notify(f"Could not save settings: {e}", urgency="normal")
             return
         if not self.config.privacy_mode:
+            self._release_privacy_holds()
             self.notify("Privacy Mode off for new conversations. Open private "
                         "conversations stay private until they are closed.")
             return
         found = privacy_module.problems(self.config)
+        held = self._make_open_windows_private()
         if found:
             self.notify("Privacy Mode is on, but cannot be used yet: " + " ".join(found)
-                        + " Choose models in Settings > Privacy.", urgency="normal")
+                        + " Choose models in Settings > Privacy."
+                        + (f" {held[1]} open conversation{'s' if held[1] != 1 else ''} "
+                           f"will send nothing until then." if held[1] else ""),
+                        urgency="normal")
             return
         answers = (self.config.private_premium_model if self.config.use_premium
                    else self.config.private_text_model)
+        upgraded = held[0]
         self.notify(f"Privacy Mode on: {answers} answers and "
                     f"{self.config.private_vision_model} reads images, each attested "
-                    f"before anything is sent. Web search is off.")
+                    f"before anything is sent. Web search is off."
+                    + (f" {upgraded} open conversation{'s go' if upgraded != 1 else ' goes'} "
+                       f"private from {'their' if upgraded != 1 else 'its'} next message."
+                       if upgraded else ""))
+
+    def _make_open_windows_private(self):
+        """Privacy Mode switched on: every open conversation goes private from its next
+        message (ChatWindow.go_private) - the encyclopedia's kept reader among them, so
+        a citation followed from a private answer is read and asked about privately.
+        One whose private models cannot be used holds its Send instead, never falling
+        back to the ordinary models. Returns (made private, held)."""
+        from .ui.chat import ChatWindow
+        upgraded = held = 0
+        for window in Gtk.Window.list_toplevels():
+            if not isinstance(window, ChatWindow) or window.privacy is not None \
+                    or window._destroyed:
+                continue
+            try:
+                session = privacy_module.PrivacySession.start(
+                    self.config, uses=window.privacy_uses())
+            except privacy_module.PrivacyError as e:
+                window.hold_for_privacy(str(e).removesuffix(" Nothing was sent."))
+                held += 1
+                continue
+            upgraded += window.go_private(session)
+        return upgraded, held
+
+    def _release_privacy_holds(self):
+        from .ui.chat import ChatWindow
+        for window in Gtk.Window.list_toplevels():
+            if isinstance(window, ChatWindow):
+                window.release_privacy_hold()
 
     def _sync_privacy_item(self):
         """Settings can change privacy_mode too; keep the tray's tick honest without
@@ -416,9 +453,11 @@ class Assistant:
             from .capture import CropDialog
             CropDialog(
                 original,
+                # The route as it stands: a dialog made private since it opened stays
+                # private through a re-crop.
                 lambda cropped: self._review_capture(
                     cropped, title, ask_prompt, build, on_error,
-                    web_search_default, transcribe_first, system, privacy,
+                    web_search_default, transcribe_first, system, route["privacy"],
                     answer_by_text),
                 on_error, title=f"{title} — re-crop")
 
@@ -840,6 +879,7 @@ class Assistant:
                     return
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
                           self.config.encyclopedia_enabled)
+                was_private = bool(self.config.privacy_mode)
                 # Only what changed: a setting set is one save() may write over whatever
                 # the file says now, and a key set is one the keyring is asked to take -
                 # which, with no keyring, warned on every save about a key nobody had
@@ -864,6 +904,11 @@ class Assistant:
                     self._warm_catalogue()
                 self._refresh_reviews()
                 self._sync_privacy_item()
+                if self.config.privacy_mode:
+                    # Switched on here, or its models fixed for windows held waiting.
+                    self._make_open_windows_private()
+                elif was_private:
+                    self._release_privacy_holds()
                 self._sync_encyclopedia_items()
                 # Only when they changed: tearing the grabs down, asking the portal
                 # for a new session or rewriting the desktop's keybindings is not

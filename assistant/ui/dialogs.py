@@ -777,7 +777,8 @@ class SettingsDialog(Gtk.Dialog):
             "on this machine to a key only the attested enclave holds.\n\n"
             "A conversation keeps the privacy it started with: switching this off, or "
             "choosing other models, changes only the conversations that start "
-            "afterwards.</small>")
+            "afterwards. Switching it on makes the open ones private from their next "
+            "message.</small>")
         note.get_style_context().add_class("dim-label")
         page.pack_start(note, False, False, 0)
 
@@ -799,6 +800,18 @@ class SettingsDialog(Gtk.Dialog):
             grid.attach(browse, 3, row, 1, 1)
             self.entries[key] = entry
             self.privacy_kinds[key] = kind
+
+        self.privacy_strict = Gtk.CheckButton.new_with_label(
+            "Strict: refuse an enclave that proves less than it could")
+        self.privacy_strict.set_tooltip_text(
+            "Without this, an enclave that proved itself but not fully - no GPU evidence, "
+            "an Intel TCB that is not up to date, Intel's or NVIDIA's services out of "
+            "reach, an older release - is used, and the banner turns amber to say what "
+            "fell short. Strict refuses it, and nothing is sent. After a reply whose "
+            "signature did not match, it also attests that model again before sending "
+            "it anything more.")
+        self.privacy_strict.set_active(bool(getattr(self.config, "privacy_strict", False)))
+        page.pack_start(self.privacy_strict, False, False, 0)
 
         self.privacy_problems = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         page.pack_start(self.privacy_problems, False, False, 0)
@@ -1450,6 +1463,7 @@ class SettingsDialog(Gtk.Dialog):
         out["web_search_citations"] = self.search_citations.get_active()
         out["web_search_craft_query"] = self.search_craft.get_active()
         out["privacy_mode"] = self.privacy_enabled.get_active()
+        out["privacy_strict"] = self.privacy_strict.get_active()
         out["dictionaries_dir"] = self.dictionaries_dir.get_text().strip()
         out["encyclopedia_enabled"] = self.encyclopedia_enabled.get_active()
         out["encyclopedia_dir"] = self.encyclopedia_dir.get_text().strip()

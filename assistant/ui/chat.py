@@ -298,9 +298,14 @@ class ChatWindow(Gtk.Window):
         # Privacy Mode (assistant/privacy.py): the PrivacySession this conversation
         # started with, or None. It is never replaced or cleared - nothing in this window
         # reads config.privacy_mode - so a private conversation stays on its attested
-        # models to the end, whatever the tray or Settings say in the meantime.
+        # models to the end, whatever the tray or Settings say in the meantime. Privacy
+        # only ever tightens: switched on while this window is open, the app hands it a
+        # session (go_private), and from its next message it is a private conversation.
         self.privacy = privacy
         self._privacy_refused = None
+        self._pending_privacy = None        # to adopt once the answer coming has come
+        self._privacy_hold = None           # why nothing may be sent, Privacy Mode being
+                                            # on and its models not usable
         # Private models nano-gpt no longer offers, found here, each with what its list
         # offered instead; and the one whose refusal is still to be answered with that.
         self._retired = {}
@@ -424,7 +429,7 @@ class ChatWindow(Gtk.Window):
         header.pack_end(self.model_button)
         self._sync_model_display()
 
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self._main_box = box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
         if privacy is not None:
             box.pack_start(self._build_privacy_banner(), False, False, 0)
@@ -625,6 +630,70 @@ class ChatWindow(Gtk.Window):
             self.header.set_subtitle(model + self._where(model))
 
     # ---- privacy ----------------------------------------------------------
+
+    def privacy_uses(self):
+        """Which private models this conversation would need, were it made private
+        now: its answering model, and the vision model where it has pictures."""
+        answering = "premium" if self.config.use_premium else "text"
+        pictures = bool(self.image_base64 or self.screenshot) or any(
+            turn.get("images") for page in self._pages for turn in page)
+        return (answering, "vision") if pictures else (answering,)
+
+    def go_private(self, session):
+        """Privacy Mode was switched on with this conversation open: from its next
+        message it goes only to `session`'s attested models, and never searches the
+        web, as a conversation started now would. What it sent before went where it
+        went - those turns carry no privacy badge - and an answer already on its way
+        comes from where it was asked; the next message is the private one. False
+        when it was private already."""
+        if self.privacy is not None or self._destroyed:
+            return False
+        self._privacy_hold = None
+        if self._cancel is not None:
+            self._pending_privacy = session
+        else:
+            self._apply_privacy(session)
+        return True
+
+    def _apply_privacy(self, session):
+        self.privacy = session
+        session.listener = lambda *event: GLib.idle_add(self._on_privacy_event, *event)
+        self.search_toggle.set_active(False)
+        self.search_toggle.set_no_show_all(True)
+        self.search_toggle.hide()
+        # Its roles are the session's now; a model picked with Other model... is not
+        # one of them, and the answering role takes its place.
+        self._chosen = []
+        if self._choice not in ("text", "premium", "vision"):
+            self._choice = "premium" if self.config.use_premium else "text"
+        banner = self._build_privacy_banner()
+        self._main_box.pack_start(banner, False, False, 0)
+        self._main_box.reorder_child(banner, 0)
+        banner.show_all()
+        self._sync_model_display()
+        self.status.set_text(f"Privacy Mode: from here on, this conversation goes only "
+                             f"to {self.current_model}, attested before anything is sent")
+
+    def hold_for_privacy(self, reason):
+        """Privacy Mode is on and cannot be used for this conversation: nothing is
+        sent until it can be, or it is switched off - never to the ordinary models."""
+        if self.privacy is not None or self._destroyed:
+            return
+        self._privacy_hold = reason
+        self.status.set_text(f"Privacy Mode is on and cannot be used: {reason}")
+
+    def release_privacy_hold(self):
+        if self._privacy_hold and not self._destroyed:
+            self._privacy_hold = None
+            self.status.set_text("Privacy Mode is off; sending as before")
+
+    def _held(self):
+        """True, with the reason shown, while Privacy Mode holds this window's Send."""
+        if self._privacy_hold:
+            self.status.set_text(f"Privacy Mode is on and cannot be used: "
+                                 f"{self._privacy_hold}")
+            return True
+        return False
 
     def _build_privacy_banner(self):
         """The strip under the header saying what this conversation's enclaves proved.
@@ -1247,6 +1316,8 @@ class ChatWindow(Gtk.Window):
             # unanswered on the last. The question waits in the box.
             self.status.set_text("Wait for the lookup to finish, then send")
             return
+        if self._held():
+            return
         buf.set_text("")
         self._forget_undo()
         self._attachments.clear()
@@ -1433,6 +1504,8 @@ class ChatWindow(Gtk.Window):
             return
         if self._looking:
             self.status.set_text("Wait for the lookup to finish, then ask again")
+            return
+        if self._held():
             return
         last = max((i for i, t in enumerate(self.conversation) if t["role"] == "user"),
                    default=None)
@@ -2046,6 +2119,9 @@ class ChatWindow(Gtk.Window):
     def _finish_stream(self):
         self._cancel = None
         self._streaming_text = None
+        if self._pending_privacy is not None and not self._destroyed:
+            session, self._pending_privacy = self._pending_privacy, None
+            self._apply_privacy(session)
         if self._redraw_after_answer:
             self._redraw_after_answer = False
             # After the finished answer has taken the placeholder's place.

@@ -471,6 +471,7 @@ class ChatWindow(Gtk.Window):
         if lookup is not None and dictionary_list is not None:
             box.pack_start(self._build_dictionary_bar(dictionary_list()), False, False, 0)
 
+        self.bubbles = None                 # the plain-text view, when WebKit is not used
         self.view = self._build_view()
         box.pack_start(self._build_splitter(self.view, self._build_input()), True, True, 0)
         # Ctrl+F's bar, over the whole window: what it searches is whichever view the

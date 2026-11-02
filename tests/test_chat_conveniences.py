@@ -181,6 +181,16 @@ class InTheWebKitView(WindowCase):
         window = self.window()
         self.assertEqual(window.webview.get_zoom_level(), 1.5)
 
+    def test_the_size_steps_in_the_webkit_view_too(self):
+        window = self.window()
+        control = Gdk.ModifierType.CONTROL_MASK
+        window._on_window_key(window, self.key(Gdk.KEY_plus, control))
+        self.assertEqual(window.webview.get_zoom_level(), 1.1)
+        self.assertEqual(Config(self.config.config_file).chat_zoom, 1.1)
+        self.assertEqual(window.status.get_text(), "Text size 110%")
+        window._on_window_key(window, self.key(Gdk.KEY_0, control))
+        self.assertEqual(window.webview.get_zoom_level(), 1.0)
+
     def test_an_answers_copy_copies_its_markdown(self):
         window = self.window()
         window.show_all()

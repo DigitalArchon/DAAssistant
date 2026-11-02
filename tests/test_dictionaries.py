@@ -433,6 +433,60 @@ class StarDictFiles(unittest.TestCase):
         self.assertEqual(d.render(word, d.read(offset, size))[0], "plainb<b>bold</b>")
 
 
+class UpperCaseNames(unittest.TestCase):
+    """Dictionaries copied from Windows, where case does not matter: X.DSL.DZ beside
+    X.ANN and X.BMP, and X.IFO beside X.IDX, X.DICT.DZ and X.SYN."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        self.library = Library(types.SimpleNamespace(dictionaries_dir=self.folder,
+                                                     dictionaries_disabled=[]),
+                               cache_dir=os.path.join(self.dir, "cache"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_an_upper_case_dsl_dz_is_read_as_dictzip(self):
+        path = os.path.join(self.folder, "MADE-UP.DSL.DZ")
+        write_dictzip(path, dsl_bytes(), chunk=50)
+        with open(os.path.join(self.folder, "MADE-UP.ANN"), "w") as f:
+            f.write("Made up, in capitals.\n")
+        with open(os.path.join(self.folder, "MADE-UP.BMP"), "wb") as f:
+            f.write(b"BM")
+        d = dsl.DSL(path)
+        self.assertTrue(d.compressed)
+        self.assertEqual(sorted(word for word, _offset, _size in d.headwords()),
+                         ["(to) flimble {about}", "café", "glorp", "glorps", "zib"])
+        self.assertEqual(d.about(), "Made up, in capitals.")
+        self.assertEqual(d.icon, os.path.join(self.folder, "MADE-UP.BMP"))
+        found = self.library.look_up("glorp")
+        self.assertIn("imaginary", found["results"][0]["entries"][0]["text"])
+
+    def test_one_without_a_name_is_named_after_its_file_in_any_case(self):
+        path = os.path.join(self.folder, "NAMELESS.DSL")
+        write_dsl(path, "wug\n\t[m1]a test creature")
+        self.assertEqual(dsl.DSL(path).name, "NAMELESS")
+
+    def test_an_upper_case_stardict_finds_its_files(self):
+        write_stardict(self.folder, "sd", [("alpha", b"<b>alpha</b> first"),
+                                           ("beta", b"b")],
+                       synonyms=[("first", 0)], compress=True)
+        for suffix in (".ifo", ".idx", ".dict.dz", ".syn"):
+            os.rename(os.path.join(self.folder, "sd" + suffix),
+                      os.path.join(self.folder, "SD" + suffix.upper()))
+        d = StarDict(os.path.join(self.folder, "SD.IFO"))
+        self.assertEqual(d.files(), [os.path.join(self.folder, name) for name in
+                                     ("SD.IFO", "SD.IDX", "SD.DICT.DZ", "SD.SYN")])
+        index = {word: (offset, size) for word, offset, size in d.headwords()}
+        self.assertEqual(index["first"], index["alpha"])
+        self.assertEqual(d.render("alpha", d.read(*index["alpha"]))[0],
+                         "<b>alpha</b> first")
+        found = self.library.look_up("first")
+        self.assertEqual(found["results"][0]["dictionary"], "Made-up StarDict")
+
+
 class Folding(unittest.TestCase):
     def test_case_diacritics_and_spacing_do_not_matter(self):
         self.assertEqual(fold("  Café  au   Lait"), "cafeaulait")

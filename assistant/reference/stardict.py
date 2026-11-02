@@ -18,7 +18,7 @@ import struct
 
 from . import markup
 from .dictzip import DictzipFile
-from .dsl import icon_beside
+from .dsl import companion, icon_beside
 
 LINKS = ("http:", "https:", "mailto:", markup.LOOKUP_SCHEME)
 
@@ -28,13 +28,6 @@ PICTURE_TYPES = {".png": "image/png", ".gif": "image/gif", ".jpg": "image/jpeg",
                  ".jpeg": "image/jpeg", ".bmp": "image/bmp", ".webp": "image/webp",
                  ".svg": "image/svg+xml", ".ico": "image/x-icon"}
 MAX_PICTURE = 512 * 1024
-
-
-def _companion(stem, *suffixes):
-    for suffix in suffixes:
-        if os.path.exists(stem + suffix):
-            return stem + suffix
-    return None
 
 
 def read_ifo(path):
@@ -55,9 +48,11 @@ class StarDict:
         stem = ifo_path[:-len(".ifo")]
         self.info = read_ifo(ifo_path)
         self.name = self.info.get("bookname") or os.path.basename(stem)
-        self.idx_path = _companion(stem, ".idx", ".idx.gz")
-        self.dict_path = _companion(stem, ".dict", ".dict.dz")
-        self.syn_path = _companion(stem, ".syn")
+        # In any case: an X.IFO copied from Windows comes with X.IDX and X.DICT.DZ, and
+        # looked for in lower case only, they were missing - and so was the dictionary.
+        self.idx_path = companion(stem, ".idx", ".idx.gz")
+        self.dict_path = companion(stem, ".dict", ".dict.dz")
+        self.syn_path = companion(stem, ".syn")
         self.types = self.info.get("sametypesequence", "")
         self.icon = icon_beside(stem)
         self.res = os.path.join(os.path.dirname(ifo_path), "res")
@@ -83,7 +78,7 @@ class StarDict:
 
     def headwords(self):
         """Every (headword, offset, size): the .idx, then the .syn's alternatives."""
-        if self.idx_path.endswith(".gz"):
+        if self.idx_path.lower().endswith(".gz"):
             with gzip.open(self.idx_path, "rb") as f:
                 data = f.read()
         else:
@@ -120,7 +115,7 @@ class StarDict:
     # ---- articles ---------------------------------------------------------
 
     def read(self, offset, size):
-        if self.dict_path.endswith(".dz"):
+        if self.dict_path.lower().endswith(".dz"):
             if self._dict is None:
                 self._dict = DictzipFile(self.dict_path)
             return self._dict.read(offset, size)

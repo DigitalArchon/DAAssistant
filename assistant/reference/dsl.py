@@ -111,13 +111,33 @@ def detect(head, code_page=DEFAULT_CODE_PAGE):
     return eight_bit(code_page)
 
 
+def companion(stem, *suffixes):
+    """The file beside a dictionary that is named `stem` and one of `suffixes`, the
+    first of them there is, or None - in whatever case its name is written. Copied
+    from Windows, where case does not matter, a dictionary is as often X.IFO beside
+    X.IDX and X.DICT.DZ, or LINGVO.DSL beside LINGVO.ANN and LINGVO.BMP."""
+    for suffix in suffixes:
+        if os.path.isfile(stem + suffix):
+            return stem + suffix
+    folder, name = os.path.split(stem)
+    try:
+        entries = sorted(os.listdir(folder or "."))
+    except OSError:
+        return None
+    by_lower = {}
+    for entry in entries:
+        by_lower.setdefault(entry.lower(), entry)
+    for suffix in suffixes:
+        entry = by_lower.get((name + suffix).lower())
+        if entry is not None and os.path.isfile(os.path.join(folder, entry)):
+            return os.path.join(folder, entry)
+    return None
+
+
 def icon_beside(stem):
     """The dictionary's icon, by GoldenDict's convention: a picture beside it under the
     same name. Lingvo dictionaries ship a .bmp."""
-    for suffix in (".bmp", ".ico", ".png", ".jpg"):
-        if os.path.isfile(stem + suffix):
-            return stem + suffix
-    return None
+    return companion(stem, ".bmp", ".ico", ".png", ".jpg")
 
 
 class DSL:
@@ -125,12 +145,15 @@ class DSL:
 
     def __init__(self, path):
         self.path = path
-        self.compressed = path.endswith(".dz")
+        # In any case: copied from Windows, a dictionary is as often X.DSL.DZ, whose
+        # gzip bytes, read as text, were indexed as one garbage headword.
+        self.compressed = path.lower().endswith(".dz")
         self._dz = DictzipFile(path) if self.compressed else None
         head = self._read(0, SAMPLE)
         self.encoding = detect(head)
-        self.name = self._header_name(head) or os.path.basename(path).split(".dsl")[0]
-        self.icon = icon_beside(path[:path.lower().rfind(".dsl")])
+        stem = path[:path.lower().rfind(".dsl")]
+        self.name = self._header_name(head) or os.path.basename(stem)
+        self.icon = icon_beside(stem)
 
     def files(self):
         return [self.path]
@@ -138,9 +161,11 @@ class DSL:
     def about(self):
         """The annotation Lingvo ships beside a dictionary (its .ann): what the
         dictionary is, and usually whose. "" when there is none."""
-        stem = self.path[:self.path.lower().rfind(".dsl")]
+        annotation = companion(self.path[:self.path.lower().rfind(".dsl")], ".ann")
+        if annotation is None:
+            return ""
         try:
-            with open(stem + ".ann", "rb") as f:
+            with open(annotation, "rb") as f:
                 data = f.read(64 * 1024)
         except OSError:
             return ""

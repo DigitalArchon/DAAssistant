@@ -8,7 +8,9 @@ does, from the quote's bytes and Intel's published collateral:
 
   1. The PCK certificate chain carried in the quote (PCK leaf -> PCK Platform or
      Processor CA) verifies up to Intel's SGX Root CA, which is pinned below rather than
-     taken from the quote. Every certificate must be within its validity period.
+     taken from the quote. Every certificate must be within its validity period, and
+     every one that signed another must be a CA allowed to: basicConstraints CA, within
+     its path length, and keyCertSign in its keyUsage where it has one.
   2. The QE report is signed by that PCK key, and its report data is
      sha256(attestation key || QE authentication data): the QE vouches for the key that
      signed the quote.
@@ -19,7 +21,8 @@ does, from the quote's bytes and Intel's published collateral:
   5. The TCB: Intel's signed TCB info for the platform's FMSPC gives a status for its
      microcode and firmware (from the PCK certificate) and its TDX module (from the TD
      report); Intel's signed QE identity checks the quoting enclave and gives it a
-     status too. Both are signed by Intel's TCB signing key, chained to the same root.
+     status too. Both must be signed by Intel's TCB signing certificate, chained to the
+     same root - not by just any certificate that chains there.
   6. The TD is not a debug TD, whose memory the host can read.
 
 A failure of 1-4 or 6, or a TCB that is Revoked or older than any Intel lists, is a quote
@@ -68,6 +71,9 @@ AiEA4J0lrHoMs+Xo5o/sX6O9QWxHRAvZUGOdRQ7cvqRXaqI=
 -----END CERTIFICATE-----
 """
 INTEL_ROOT_SHA256 = "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3"
+# The subject CN of the certificate Intel signs TCB info and QE identities with, as its
+# TCB-Info-Issuer-Chain and SGX-Enclave-Identity-Issuer-Chain carry it.
+TCB_SIGNING_NAME = "Intel SGX TCB Signing"
 
 PCS = "https://api.trustedservices.intel.com"
 TCB_INFO_URL = PCS + "/tdx/certification/v4/tcb"
@@ -278,11 +284,39 @@ def intel_root():
     return root
 
 
+def _may_issue(issuer, below):
+    """Raise DcapError unless `issuer` may sign certificates with `below` CA
+    certificates between it and the leaf: its basicConstraints say it is a CA, within
+    its path length, and its keyUsage, where it has one, includes certificate signing.
+
+    Without this, any certificate Intel's root vouches for - the TCB signing one, or a
+    PCK certificate whose key a compromised platform gave up - could sign certificates
+    of its own and have them pass as Intel's."""
+    x509 = _crypto()[0]
+    name = issuer.subject.rfc4514_string()
+    try:
+        constraints = issuer.extensions.get_extension_for_class(x509.BasicConstraints).value
+    except x509.ExtensionNotFound:
+        constraints = None
+    if constraints is None or not constraints.ca:
+        raise DcapError(f"{name} signed a certificate, and is not a certificate authority")
+    if constraints.path_length is not None and below > constraints.path_length:
+        raise DcapError(f"{name} may have {constraints.path_length} certificate "
+                        f"authorities below it, and the chain puts {below} there")
+    try:
+        usage = issuer.extensions.get_extension_for_class(x509.KeyUsage).value
+    except x509.ExtensionNotFound:
+        return
+    if not usage.key_cert_sign:
+        raise DcapError(f"{name} signed a certificate with a key not meant for that")
+
+
 def verify_chain(certs, root, now):
-    """Each certificate signed by the next, the last by `root`, all of them current."""
+    """Each certificate signed by the next, the last by `root`, all of them current, and
+    every one that signed another a certificate authority allowed to (_may_issue)."""
     _x509, InvalidSignature, _hashes, ec, _encode = _crypto()
     chain = list(certs) + [root]
-    for cert, issuer in zip(chain, chain[1:]):
+    for below, (cert, issuer) in enumerate(zip(chain, chain[1:])):
         subject = cert.subject.rfc4514_string()
         if cert.issuer != issuer.subject:
             raise DcapError(f"{subject} was not issued by {issuer.subject.rfc4514_string()}")
@@ -291,6 +325,7 @@ def verify_chain(certs, root, now):
                                        ec.ECDSA(cert.signature_hash_algorithm))
         except InvalidSignature:
             raise DcapError(f"{subject}'s signature does not verify")
+        _may_issue(issuer, below)
     for cert in chain:
         if not _utc(cert, "not_valid_before") <= now <= _utc(cert, "not_valid_after"):
             raise DcapError(f"{cert.subject.rfc4514_string()} is outside its validity "
@@ -359,7 +394,11 @@ def _check_crl(crl, issuer, now, *certs):
 
 
 def _signed_json(content, key, chain_pem, root, now):
-    """The object under `key`, once Intel's signature over its exact bytes verifies."""
+    """The object under `key`, once Intel's signature over its exact bytes verifies.
+
+    The signer must be Intel's TCB signing certificate, not merely one that chains to
+    Intel's root: a PCK certificate chains there too, and one whose key a compromised
+    platform gave up could otherwise sign that platform's own TCB as UpToDate."""
     x509 = _crypto()[0]
     text = content.decode("utf-8")
     start = text.find(f'"{key}"')
@@ -388,6 +427,10 @@ def _signed_json(content, key, chain_pem, root, now):
     document = json.loads(text)
     signer = x509.load_pem_x509_certificates(chain_pem.encode())
     verify_chain(signer[:-1] if len(signer) > 1 else signer, root, now)
+    if _common_name(signer[0]) != TCB_SIGNING_NAME:
+        raise DcapError(f"Intel's {key} is signed by "
+                        f"{_common_name(signer[0]) or 'a certificate with no name'}, not by "
+                        f"its TCB signing certificate")
     if not _raw_verify(signer[0].public_key(), bytes.fromhex(document["signature"]),
                        raw.encode("utf-8")):
         raise DcapError(f"Intel's signature on its {key} does not verify")

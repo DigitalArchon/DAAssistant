@@ -5,9 +5,10 @@ The TEE checks run against a fake nano-gpt that attests, signs and streams like 
 real one (the report data layout, NRAS's JWT list and EIP-191 signatures as measured
 live, Sept 2026). Intel's and NVIDIA's verification is checked against a real
 attestation captured with its collateral (tests/data/tee_attestation.json), at the
-moment it was captured, and against forgeries of it. The end-to-end encrypted client
-runs only where Tinfoil's SDK is installed (tools/install-private-mode.sh), against a
-mocked transport.
+moment it was captured, and against forgeries of it; the certificate rules Intel's own
+chain keeps, against synthetic chains under a root of their own. The end-to-end
+encrypted client runs only where Tinfoil's SDK is installed
+(tools/install-private-mode.sh), against a mocked transport.
 
 Run:  python3 -m unittest tests.test_privacy -v
 """
@@ -336,6 +337,37 @@ def _has_cryptography():
     return True
 
 
+def key_usage(cert_sign):
+    """keyUsage as Intel's certificates have it: a CA's key signs certificates and
+    CRLs, any other's signs data."""
+    from cryptography import x509
+    return x509.KeyUsage(digital_signature=not cert_sign, content_commitment=not cert_sign,
+                         key_encipherment=False, data_encipherment=False,
+                         key_agreement=False, key_cert_sign=cert_sign, crl_sign=cert_sign,
+                         encipher_only=False, decipher_only=False)
+
+
+def synthetic_cert(name, key, issuer=None, ca=None, path_length=None, cert_sign=None):
+    """A certificate named `name` for `key`, signed by `issuer` - (its certificate, its
+    key) - or by itself; with basicConstraints if `ca` is given, and keyUsage if
+    `cert_sign` is."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    subject = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, name)])
+    issuer_cert, issuer_key = issuer or (None, key)
+    builder = (x509.CertificateBuilder().subject_name(subject)
+               .issuer_name(issuer_cert.subject if issuer_cert else subject)
+               .public_key(key.public_key()).serial_number(x509.random_serial_number())
+               .not_valid_before(datetime(2018, 1, 1, tzinfo=timezone.utc))
+               .not_valid_after(datetime(2049, 1, 1, tzinfo=timezone.utc)))
+    if ca is not None:
+        builder = builder.add_extension(x509.BasicConstraints(ca=ca, path_length=path_length),
+                                        critical=True)
+    if cert_sign is not None:
+        builder = builder.add_extension(key_usage(cert_sign), critical=True)
+    return builder.sign(issuer_key, hashes.SHA256())
+
+
 class FixtureSession:
     """Serves one real attestation, captured live from TEE/glm-5.3-flash with Intel's
     collateral and NVIDIA's answer and key, exactly as they came (tests/data)."""
@@ -450,10 +482,14 @@ class RealEvidence(unittest.TestCase):
                           x509.NameAttribute(x509.NameOID.LOCALITY_NAME, "Santa Clara"),
                           x509.NameAttribute(x509.NameOID.STATE_OR_PROVINCE_NAME, "CA"),
                           x509.NameAttribute(x509.NameOID.COUNTRY_NAME, "US")])
+        # Intel's root in every respect but its key, extensions included.
         impostor = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
                     .public_key(key.public_key()).serial_number(1)
                     .not_valid_before(datetime(2018, 1, 1, tzinfo=timezone.utc))
                     .not_valid_after(datetime(2049, 1, 1, tzinfo=timezone.utc))
+                    .add_extension(x509.BasicConstraints(ca=True, path_length=1),
+                                   critical=True)
+                    .add_extension(key_usage(cert_sign=True), critical=True)
                     .sign(key, hashes.SHA256()))
         original = dcap.intel_root
         dcap.intel_root = lambda: impostor
@@ -478,6 +514,22 @@ class RealEvidence(unittest.TestCase):
         forged["collateral"][2]["body"] = base64.b64encode(body.encode()).decode()
         with self.assertRaisesRegex(dcap.DcapError, "signature on its tcbInfo"):
             self.intel(session=FixtureSession(forged))
+
+    def test_tcb_information_signed_with_a_pck_chain_is_refused(self):
+        """A PCK certificate chains to Intel's root just as the TCB signing one does,
+        and its key lives in the very platform whose TCB is being judged."""
+        from urllib.parse import quote as url_quote
+        pck_chain = dcap.parse_quote(self.quote).pck_chain_pem.decode()
+        for index, header, key in ((2, "TCB-Info-Issuer-Chain", "tcbInfo"),
+                                   (3, "SGX-Enclave-Identity-Issuer-Chain",
+                                    "enclaveIdentity")):
+            dcap._cache.clear()
+            forged = json.loads(json.dumps(self.fixture))
+            forged["collateral"][index]["headers"][header] = url_quote(pck_chain)
+            with self.assertRaisesRegex(dcap.DcapError, f"Intel's {key} is signed by "
+                                                        f"Intel SGX PCK Certificate, not "
+                                                        f"by its TCB signing certificate"):
+                self.intel(session=FixtureSession(forged))
 
     def test_collateral_out_of_reach_is_reported_not_passed(self):
         result = self.intel(session=FixtureSession(self.fixture, intel_status=503))
@@ -571,6 +623,101 @@ class RealEvidence(unittest.TestCase):
         self.assertEqual(attestation.level, "full")
         self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"))
         self.assertEqual(attestation.signing_address, self.fixture["signing_address"])
+
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class IntelsChainRules(unittest.TestCase):
+    """verify_chain held a certificate to its issuer's name, signature and dates, and
+    no more: any certificate Intel's root vouched for - the TCB signing one, a PCK
+    certificate whose key a compromised platform gave up - could issue certificates of
+    its own that passed as Intel's. And Intel's TCB information and QE identity were
+    believed signed by any certificate chaining to the root. Synthetic chains, under a
+    root of their own; the real one is RealEvidence's."""
+
+    NOW = datetime(2026, 9, 26, tzinfo=timezone.utc)
+
+    @classmethod
+    def setUpClass(cls):
+        from cryptography.hazmat.primitives.asymmetric import ec
+        cls.keys = {name: ec.generate_private_key(ec.SECP256R1())
+                    for name in ("root", "ca", "leaf")}
+
+    def root(self, path_length=1):
+        return synthetic_cert("Test Root CA", self.keys["root"], ca=True,
+                              path_length=path_length, cert_sign=True)
+
+    def under(self, issuer, issuer_key, name, key, **extensions):
+        return synthetic_cert(name, self.keys[key], (issuer, self.keys[issuer_key]),
+                              **extensions)
+
+    def test_a_chain_of_authorities_allowed_to_sign_verifies(self):
+        root = self.root()
+        ca = self.under(root, "root", "Test CA", "ca", ca=True, path_length=0,
+                        cert_sign=True)
+        leaf = self.under(ca, "ca", "Test leaf", "leaf", ca=False, cert_sign=False)
+        dcap.verify_chain([leaf, ca], root, self.NOW)
+
+    def test_a_chain_through_a_certificate_that_is_no_ca_is_refused(self):
+        root = self.root()
+        signing = self.under(root, "root", "Intel SGX TCB Signing", "ca", ca=False,
+                             cert_sign=False)
+        leaf = self.under(signing, "ca", "Intel SGX PCK Certificate", "leaf", ca=False,
+                          cert_sign=False)
+        with self.assertRaisesRegex(dcap.DcapError, "CN=Intel SGX TCB Signing signed a "
+                                                    "certificate, and is not a "
+                                                    "certificate authority"):
+            dcap.verify_chain([leaf, signing], root, self.NOW)
+        # Nor one that does not say what it is.
+        bare = self.under(root, "root", "Bare", "ca")
+        leaf = self.under(bare, "ca", "Test leaf", "leaf", ca=False)
+        with self.assertRaisesRegex(dcap.DcapError, "Bare signed a certificate, and is "
+                                                    "not a certificate authority"):
+            dcap.verify_chain([leaf, bare], root, self.NOW)
+
+    def test_an_authority_beyond_its_path_length_is_refused(self):
+        root = self.root(path_length=0)
+        ca = self.under(root, "root", "Test CA", "ca", ca=True, path_length=0,
+                        cert_sign=True)
+        leaf = self.under(ca, "ca", "Test leaf", "leaf", ca=False, cert_sign=False)
+        with self.assertRaisesRegex(dcap.DcapError, "Test Root CA may have 0 certificate "
+                                                    "authorities below it, and the chain "
+                                                    "puts 1 there"):
+            dcap.verify_chain([leaf, ca], root, self.NOW)
+
+    def test_an_authority_whose_key_is_not_for_certificates_is_refused(self):
+        root = self.root()
+        ca = self.under(root, "root", "Test CA", "ca", ca=True, path_length=0,
+                        cert_sign=False)
+        leaf = self.under(ca, "ca", "Test leaf", "leaf", ca=False, cert_sign=False)
+        with self.assertRaisesRegex(dcap.DcapError, "Test CA signed a certificate with "
+                                                    "a key not meant for that"):
+            dcap.verify_chain([leaf, ca], root, self.NOW)
+
+    def signed_tcb_info(self, signer_name):
+        """Intel's TCB info as its service sends it, signed by a certificate named
+        `signer_name` that the root issued."""
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        from cryptography.hazmat.primitives.serialization import Encoding
+        root = self.root()
+        signer = self.under(root, "root", signer_name, "leaf", ca=False, cert_sign=False)
+        raw = json.dumps({"id": "TDX", "fmspc": "20a06f000000"}, separators=(",", ":"))
+        r, s = decode_dss_signature(self.keys["leaf"].sign(raw.encode(),
+                                                           ec.ECDSA(hashes.SHA256())))
+        signature = (r.to_bytes(32, "big") + s.to_bytes(32, "big")).hex()
+        content = f'{{"tcbInfo":{raw},"signature":"{signature}"}}'.encode()
+        chain = (signer.public_bytes(Encoding.PEM) + root.public_bytes(Encoding.PEM))
+        return dcap._signed_json(content, "tcbInfo", chain.decode(), root, self.NOW)
+
+    def test_tcb_info_signed_by_any_but_the_tcb_signing_certificate_is_refused(self):
+        info, signer = self.signed_tcb_info("Intel SGX TCB Signing")
+        self.assertEqual(info["fmspc"], "20a06f000000")
+        for name in ("Intel SGX PCK Certificate", "Intel SGX TCB Signing 2"):
+            with self.assertRaisesRegex(dcap.DcapError, f"Intel's tcbInfo is signed by "
+                                                        f"{name}, not by its TCB signing "
+                                                        f"certificate"):
+                self.signed_tcb_info(name)
 
 
 # ---- the session ---------------------------------------------------------------------

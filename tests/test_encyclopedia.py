@@ -1054,6 +1054,21 @@ class AskWindow(EncyclopediaWindowCase):
         finally:
             window.destroy()
 
+    def test_a_citation_highlights_the_passages_own_words(self):
+        # The page was searched for the answer's wording, ellipsis and all, which it
+        # does not have: nothing was found, and nothing highlighted.
+        self.client.answer = 'They "cross the glimmer sea [...] the crossing" [1].'
+        window = self._window(question="Where do zorblaxes migrate?")
+        try:
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            self.assertTrue(window.conversation[1]["checks"][0]["ok"])
+            window._follow_encyclopedia("enc://cite/1/1")
+            self.assertEqual(self.opened, [(("article", 1),
+                                            "cross the glimmer sea. Watch the crossing")])
+        finally:
+            window.destroy()
+
     def test_a_quotation_not_word_for_word_links_to_where_it_comes_closest(self):
         self.client.answer = ('They "cross the shimmering glimmer sea every winter" [1], '
                               'and "they fly to the moon each spring" [1].')

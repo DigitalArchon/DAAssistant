@@ -26,7 +26,7 @@ from .. import prompts
 from ..llm import LLMError
 from ..reference.encyclopedia import (ARTICLE_CONTEXT_CHARS, AUDIENCE_NAMES,
                                       RESEARCH_CHARS, byline, check_quotes, cited,
-                                      read_json, research_context)
+                                      nearest, read_json, research_context)
 from . import markdown_html
 from .article_view import ArticlePane, target_of
 from .chat import ChatWindow
@@ -590,8 +590,11 @@ class AskEncyclopediaWindow(ChatWindow):
                     return
                 number, quoted = near["passage"], near["text"]
             elif 1 <= number <= len(passages):
-                # What was quoted from it: word for word, else what it comes closest to.
-                quoted = next((c["quote"] for c in checks
+                # What was quoted from it - word for word, but in the passage's own
+                # words, which the page has, not the answer's ellipses and dashes - else
+                # what it comes closest to.
+                text = passages[number - 1]["text"]
+                quoted = next((nearest(text, c["quote"])[0] or c["quote"] for c in checks
                                if c["ok"] and c["found"] == number), None) or \
                     next((c["near"]["text"] for c in checks if not c["ok"]
                           and (c.get("near") or {}).get("passage") == number), None)

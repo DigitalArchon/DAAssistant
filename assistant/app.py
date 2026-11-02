@@ -42,7 +42,9 @@ def privacy_lines(config):
 
 
 class Assistant:
-    def __init__(self):
+    def __init__(self, initial_action=None):
+        """`initial_action` is done once the main loop runs: the app was started by a
+        shortcut's --action, there being no instance running to hand it to."""
         # Before any worker thread exists: see collector.py.
         from . import collector
         collector.install()
@@ -54,6 +56,8 @@ class Assistant:
         self._reader = None                 # the Search Encyclopedia window, while open
         self.hotkeys = HotkeyManager(self.config, self.dispatch,
                                      on_change=self._refresh_menu_keys)
+        if initial_action:
+            GLib.idle_add(self.dispatch, initial_action)
         self._action_items = {}
         self._notification = None
         self._settings_dialog = None

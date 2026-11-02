@@ -121,17 +121,35 @@ def main(argv=None):
         ok, message = ipc.send_action(args.action)
         if ok:
             return 0
+        if not ipc.is_running():
+            # Nothing to hand it to. A key bound in the desktop's own settings runs this,
+            # and used to do nothing at all - silently, to a terminal nobody had open -
+            # when the app was not running. It starts here instead, and does it.
+            return run_app(args.action)
         print(f"Could not reach a running {APP_NAME}: {message}", file=sys.stderr)
-        print("Start it first (run-assistant), then retry.", file=sys.stderr)
         return 1
 
     if ipc.is_running():
         print(f"{APP_NAME} is already running (check the system tray).", file=sys.stderr)
         return 1
+    return run_app()
 
+
+def run_app(action=None, attempts=20, wait=0.25):
+    """Start the tray app in this process, and then do `action`, if any. Started twice
+    at once - a key pressed twice before either was up - the second hands its action
+    to the first, which by then answers."""
+    import time
+    from . import ipc
     from .app import Assistant
-    app = Assistant()
+    app = Assistant(initial_action=action)
     if not app.is_primary:
+        if action:
+            for _ in range(attempts):
+                ok, _message = ipc.send_action(action)
+                if ok:
+                    return 0
+                time.sleep(wait)
         print(f"{APP_NAME} is already running.", file=sys.stderr)
         return 1
     try:

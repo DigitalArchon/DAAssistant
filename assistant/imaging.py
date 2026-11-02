@@ -35,10 +35,25 @@ from .config import DEFAULTS
 MAX_UPSCALE = 3.0
 
 
+SIXTEEN_BIT = ("I;16", "I;16B", "I;16L", "I;16N")
+
+
+def _eight_bit(img):
+    """A 16-bit (or 32-bit integer) greyscale picture as 8-bit grey. convert("RGB")
+    clips such values at 255 rather than scaling them, so a 16-bit PNG - a scan, a
+    microscope's or a camera's export - came out black and white."""
+    wide = img if img.mode == "I" else img.convert("I")
+    _low, high = wide.getextrema()
+    scale = 1 / 256 if high > 255 else 1
+    return wide.point(lambda value: value * scale).convert("L")
+
+
 def flatten(img):
     """Composite any transparency onto white and return RGB."""
     if img.mode == "RGB":
         return img
+    if img.mode in SIXTEEN_BIT or img.mode == "I":
+        img = _eight_bit(img)
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         rgba = img.convert("RGBA")
         canvas = Image.new("RGB", rgba.size, (255, 255, 255))

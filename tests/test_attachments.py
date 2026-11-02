@@ -516,3 +516,34 @@ class AskAnything(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class PicturesAndFilesAtTheEdges(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+
+    def test_a_16_bit_greyscale_picture_keeps_its_greys(self):
+        from io import BytesIO
+        from PIL import Image
+        gradient = Image.new("I;16", (256, 4))
+        gradient.putdata([x * 257 for x in range(256)] * 4)
+        raw = BytesIO()
+        gradient.save(raw, format="PNG")
+        picture, _photo = attachments.sniff_image(raw.getvalue())
+        greys = {picture.getpixel((x, 0))[0] for x in range(256)}
+        self.assertGreater(len(greys), 200, "came out black and white")
+        self.assertEqual(picture.getpixel((255, 0))[0], 255)
+        self.assertEqual(picture.getpixel((0, 0))[0], 0)
+
+    def test_a_pipe_is_refused_without_waiting_for_it(self):
+        fifo = os.path.join(self.dir, "pipe")
+        os.mkfifo(fifo)
+        with self.assertRaises(attachments.AttachmentError) as refused:
+            attachments.read_file(fifo)
+        self.assertIn("not a file", str(refused.exception))
+
+    def test_a_folder_or_a_device_is_refused(self):
+        for path in (self.dir, "/dev/zero"):
+            with self.assertRaises(attachments.AttachmentError):
+                attachments.read_file(path)

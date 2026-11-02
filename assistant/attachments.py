@@ -20,6 +20,7 @@ import base64
 import itertools
 import os
 import re
+import stat
 from io import BytesIO
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -52,16 +53,26 @@ class AttachmentError(ValueError):
 
 
 def read_file(path):
-    """The file's bytes, refusing anything too large before reading it."""
+    """The file's bytes, refusing anything too large before reading it - and anything
+    that is not a file of its own: a pipe never ends, and opening one waits for a writer
+    forever, which on the main loop was every window frozen; a device such as /dev/zero
+    reads until memory runs out, its size being 0."""
+    name = os.path.basename(path)
     try:
-        size = os.path.getsize(path)
-        if size > MAX_FILE_BYTES:
-            raise AttachmentError(f"{os.path.basename(path)} is {size // (1024 * 1024)} "
-                                  f"MB; the limit is {MAX_FILE_BYTES // (1024 * 1024)} MB")
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            raise AttachmentError(f"{name} is not a file (a folder, a device or a pipe)")
+        if info.st_size > MAX_FILE_BYTES:
+            raise AttachmentError(f"{name} is {info.st_size // (1024 * 1024)} MB; the "
+                                  f"limit is {MAX_FILE_BYTES // (1024 * 1024)} MB")
         with open(path, "rb") as f:
-            return f.read()
+            raw = f.read(MAX_FILE_BYTES + 1)
     except OSError as e:
-        raise AttachmentError(f"{os.path.basename(path)}: {e.strerror or e}") from e
+        raise AttachmentError(f"{name}: {e.strerror or e}") from e
+    if len(raw) > MAX_FILE_BYTES:
+        raise AttachmentError(f"{name} grew past {MAX_FILE_BYTES // (1024 * 1024)} MB "
+                              f"as it was read")
+    return raw
 
 
 def sniff_image(raw):

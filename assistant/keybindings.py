@@ -70,12 +70,33 @@ def command(action):
     return f"{shlex.quote(launcher())} --action={action}"
 
 
+# The Desktop Entry spec's reserved characters: an argument holding one is quoted.
+_EXEC_RESERVED = ' \t\n"\'\\><~|&;$*?#()`'
+
+
 def _desktop_exec(path):
-    """`path` as one argument of a .desktop Exec line (Desktop Entry spec, "Exec key")."""
-    if not any(c in path for c in ' \t\n"\'\\><~|&;$*?#()`'):
-        return path
-    escaped = "".join("\\" + c if c in '"`$\\' else c for c in path)
-    return f'"{escaped}"'
+    r"""`path` as one argument of a .desktop Exec line (Desktop Entry spec, "Exec key").
+
+    Two layers, which whatever reads the entry takes off again in the opposite order.
+    An argument holding a reserved character goes in double quotes, with `"`, `` ` ``,
+    `$` and `\` escaped by a backslash. And Exec is a string like any other value in
+    the file, whose own escapes apply on top: every backslash is doubled, so a literal
+    `$` reaches the file as `\\$` and a literal backslash as `\\\\`, and a tab or a
+    newline is written `\t` or `\n`. A single backslash before `$`, `"` or a backtick,
+    as written before, is an escape the key file format does not have, and GLib
+    refused the whole value.
+
+    A `%` is left as it is, though the spec would have it written `%%`. GLib will not
+    load an entry whose program cannot be found, and looks for it in Exec as written,
+    with no field code expanded: a path written with `%%` names a file that is not
+    there, and the portal knows an app only through GLib's loading of its entry (KDE's
+    says "App info not found" without one). Nothing ever launches this entry, so no
+    field code in it is ever expanded.
+    """
+    if any(c in path for c in _EXEC_RESERVED):
+        path = '"' + "".join("\\" + c if c in '"`$\\' else c for c in path) + '"'
+    return (path.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+            .replace("\r", "\\r"))
 
 
 def app_entry(data_home=None):

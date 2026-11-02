@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import gtkcompat  # noqa: F401
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, Gio, GLib, Gtk
 
 from assistant import hotkeys, keybindings, session, shortcuts
 from assistant.config import Config
@@ -489,6 +489,32 @@ class PortalAppEntry(TempDir):
             keybindings.app_entry(self.dir)                             # moved: rewritten
             with open(path) as f:
                 self.assertIn("Exec=/opt/DA.AppImage\n", f.read())
+
+    def test_any_path_reads_back_whole_and_glib_still_knows_the_app(self):
+        """GLib's key file reader takes the value, the shell rules give the path back as
+        one argument, and GLib loads the entry - which the portal knows the app by, and
+        which GLib does only when the program it names exists. A single backslash before
+        $, " or a backtick was refused by the key file reader outright."""
+        data_home = os.path.join(self.dir, "data")
+        for name in ("My Apps", 'say "hi"', "back`tick", "dol$lar", "back\\slash",
+                     "50%off", "Jason's", "Téléchargements", "tab\there"):
+            with self.subTest(name=name):
+                launcher = os.path.join(self.dir, name, "DA.AppImage")
+                os.makedirs(os.path.dirname(launcher))
+                with open(launcher, "w") as f:
+                    f.write("#!/bin/sh\n")
+                os.chmod(launcher, 0o755)
+                with mock.patch.dict(os.environ, {"APPIMAGE": launcher}):
+                    entry = keybindings.app_entry(data_home)
+                keyfile = GLib.KeyFile()
+                keyfile.load_from_file(entry, GLib.KeyFileFlags.NONE)
+                exec_line = keyfile.get_string("Desktop Entry", "Exec")
+                self.assertEqual(GLib.shell_parse_argv(exec_line)[1], [launcher])
+                try:
+                    loaded = Gio.DesktopAppInfo.new_from_filename(entry)
+                except TypeError:           # PyGObject's "constructor returned NULL"
+                    loaded = None
+                self.assertIsNotNone(loaded, f"GLib would not load Exec={exec_line}")
 
 
 # ---- the manager -------------------------------------------------------------------

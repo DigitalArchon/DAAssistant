@@ -47,13 +47,16 @@ DEFAULTS = {
     # well. A conversation keeps the privacy it started with, whatever happens here.
     # The defaults are the two that verified end to end - attestation with NVIDIA's GPU
     # evidence, and signed replies - in StoryLoom's survey of Sept 2026, and need
-    # nothing installed.
+    # nothing installed. The vision model was TEE/qwen3.6-27b until, in Nov 2026, its
+    # attestation came relayed for a nonce of the relay's choosing, which is refused;
+    # its successor attested fully, GPU evidence and all, and read a test capture
+    # without fault.
     "privacy_mode": False,
     "private_text_model": "TEE/glm-5.3-flash",
     # Answers instead of private_text_model when the premium option is on, as
     # premium_text_model does outside Privacy Mode.
     "private_premium_model": "TEE/glm-5.3",
-    "private_vision_model": "TEE/qwen3.6-27b",
+    "private_vision_model": "TEE/qwen3.8-27b",
     # Refuse an enclave that proved less than it could - no GPU evidence, an Intel TCB
     # that is not UpToDate, Intel's or NVIDIA's services out of reach, an older release
     # - rather than sending with an amber banner; and after a reply whose signature did
@@ -148,10 +151,14 @@ DEFAULTS = {
 # Settings kept in the keychain under their own names, and never written to config.json.
 SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
 
-# Defaults that were, and that their provider no longer lists: a file still holding one
-# (save() writes every setting) is moved to today's default. NanoGPT's list had no
-# gpt-5-chat-latest by Oct 2026, under any alias.
-RETIRED_DEFAULTS = {("premium_text_model", "premium_text_provider"): {"gpt-5-chat-latest"}}
+# Defaults that were, and that their provider no longer lists or this app can no longer
+# use: a file still holding one (save() writes every setting) is moved to today's
+# default. Keyed by the setting and the setting naming its provider, which must be the
+# default provider for the move; None for a private model, which is always NanoGPT's.
+# NanoGPT's list had no gpt-5-chat-latest by Oct 2026, under any alias; TEE/qwen3.6-27b
+# was refused from Nov 2026 (see private_vision_model).
+RETIRED_DEFAULTS = {("premium_text_model", "premium_text_provider"): {"gpt-5-chat-latest"},
+                    ("private_vision_model", None): {"TEE/qwen3.6-27b"}}
 
 
 class ConfigError(Exception):
@@ -312,8 +319,8 @@ class Config:
             object.__setattr__(self, "_loading", False)
         object.__getattribute__(self, "_dirty").clear()
         for (key, provider_key), retired in RETIRED_DEFAULTS.items():
-            if on_disk.get(key) in retired and \
-                    on_disk.get(provider_key, DEFAULTS[provider_key]) == DEFAULTS[provider_key]:
+            if on_disk.get(key) in retired and (provider_key is None or on_disk.get(
+                    provider_key, DEFAULTS[provider_key]) == DEFAULTS[provider_key]):
                 setattr(self, key, DEFAULTS[key])
                 moved = True
         if on_disk and "text_provider" not in on_disk:

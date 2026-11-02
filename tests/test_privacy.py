@@ -44,7 +44,7 @@ KEY = 0xB25C7DB31FEED9122727BF0939DC769A96564B2DE4C4726D035B36ECF1E5B364
 ADDRESS = "0x5ce9454909639D2D17A3F753ce7d93fa0b9aB12E"
 API_URL = "https://nano-gpt.com/api/v1/chat/completions"
 TEXT = "TEE/glm-5.3-flash"
-VISION = "TEE/qwen3.6-27b"
+VISION = "TEE/qwen3.8-27b"
 
 
 def jwt(claims):
@@ -820,7 +820,9 @@ class ClocksThatCountSleep(unittest.TestCase):
 class InstanceEvidence:
     """Chutes' per-instance attestation, built with a real key: each instance's
     certificate key is bound into its quote's report data, and signs a body carrying the
-    nonce, the quote and the GPU evidence - the shape TEE/kimi-k3 answers with."""
+    nonce, the quote and the GPU evidence - the shape TEE/kimi-k3 answers with. The
+    signed quote is under "quote", as live in Nov 2026; `quote_fields` names others
+    (Sept 2026's "tdx_quote"), or none."""
 
     def __init__(self, count=2):
         from cryptography import x509
@@ -841,7 +843,7 @@ class InstanceEvidence:
         self.gpu_nonce = "ab" * 32
 
     def body(self, nonce, sign_with=None, bind=True, signed_nonce=None, other_quote=False,
-             failed=()):
+             failed=(), quote_fields=("quote",)):
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import padding
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -853,13 +855,16 @@ class InstanceEvidence:
             quote = bytes.fromhex(fake_quote(bytes.fromhex(self.gpu_nonce) + bound))
             signed_quote = bytes.fromhex(fake_quote(bytes(64))) if other_quote else quote
             gpu = [{"arch": "HOPPER", "evidence": "e", "certificate": "c"}]
-            attested = json.dumps({"nonce": signed_nonce or nonce, "evidence": {
-                "tdx_quote": base64.b64encode(signed_quote).decode(),
-                "nvtrust_evidence": json.dumps(gpu)}}).encode()
+            signed_evidence = {field: base64.b64encode(signed_quote).decode()
+                               for field in quote_fields}
+            signed_evidence["nvtrust_evidence"] = json.dumps(gpu)
+            attested = json.dumps({"nonce": signed_nonce or nonce,
+                                   "evidence": signed_evidence}).encode()
             signer = sign_with or key
             signature = signer.sign(attested, padding.PKCS1v15(), hashes.SHA256())
             evidence.append({
-                "instance_id": f"inst-{i}", "quote": base64.b64encode(quote).decode(),
+                "instance_id": f"inst-{i}", "tee_type": "tdx",
+                "quote": base64.b64encode(quote).decode(),
                 "gpu_evidence": gpu,
                 "certificate": base64.b64encode(cert.public_bytes(Encoding.DER)).decode(),
                 "signature": base64.b64encode(signature).decode(),
@@ -894,7 +899,7 @@ class ShapedNanoGpt(FakeNanoGpt):
 
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
 class PerInstanceAttestation(unittest.TestCase):
-    """TEE/kimi-k3 and the other Chutes models (live, Sept 2026)."""
+    """TEE/kimi-k3 and the other Chutes models (live, Sept and Nov 2026)."""
 
     @classmethod
     def setUpClass(cls):
@@ -933,6 +938,14 @@ class PerInstanceAttestation(unittest.TestCase):
     def test_a_signed_body_for_another_quote_is_refused(self):
         with self.assertRaisesRegex(PrivacyError, "signed a different quote"):
             self.attest(other_quote=True)
+
+    def test_the_quote_signed_under_its_earlier_name_still_counts(self):
+        _client, _server, attestation = self.attest(quote_fields=("tdx_quote",))
+        self.assertEqual(attestation.level, "full")
+
+    def test_a_signed_body_with_no_quote_in_it_is_refused(self):
+        with self.assertRaisesRegex(PrivacyError, "signed a different quote"):
+            self.attest(quote_fields=())
 
     def test_any_instance_that_failed_to_attest_refuses_them_all(self):
         with self.assertRaisesRegex(PrivacyError, "1 of 3 .* could not be attested"):

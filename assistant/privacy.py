@@ -250,6 +250,14 @@ def _json(value):
     return value
 
 
+def _decodes_to(value, raw):
+    """Whether `value` is base64 for exactly the bytes `raw`."""
+    try:
+        return base64.b64decode(value) == raw
+    except (TypeError, ValueError, binascii.Error):
+        return False
+
+
 def _jwt_claims(value):
     """Every JWT's payload found in a JSON value, in order."""
     found = []
@@ -615,11 +623,17 @@ class TeeClient:
         try:
             attested = json.loads(signed)
             evidence = attested["evidence"]
+            if not isinstance(evidence, dict):
+                raise TypeError(type(evidence).__name__)
         except (ValueError, KeyError, TypeError):
             raise PrivacyError(f"{self.model}'s instance {name} signed unreadable evidence")
         if attested.get("nonce") != nonce:
             raise PrivacyError(f"{self.model}'s instance {name} did not sign our nonce")
-        if base64.b64decode(evidence.get("tdx_quote") or "") != raw:
+        # The quote as the instance signed it: "tdx_quote" until Nov 2026, "quote" since
+        # (live). Every copy it signed must be this quote, and there must be one.
+        signed_quotes = [evidence[field] for field in ("quote", "tdx_quote")
+                         if evidence.get(field)]
+        if not signed_quotes or not all(_decodes_to(copy, raw) for copy in signed_quotes):
             raise PrivacyError(f"{self.model}'s instance {name} signed a different quote")
 
         check = _Checks()

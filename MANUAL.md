@@ -359,11 +359,16 @@ first step's and its answering model's, then any chosen along the way.
   ciphertext: it sees your account, the model,
   timing, sizes and cost, never the text. It costs 5% more than the `TEE/` twin.
 
-The defaults, `TEE/glm-5.3-flash` and `TEE/qwen3.6-27b`, attested fully with GPU evidence
-and signed their replies when checked (Sept 2026), and need nothing installed but
-Python's cryptography package, which the AppImage carries. **Check
-attestation** in Settings attests both enclaves on the spot, which is free; **Test
-connection** sends the private text model one short request, checked end to end.
+The defaults, `TEE/glm-5.3-flash` and `TEE/qwen3.8-27b`, attested fully with GPU evidence
+when checked (Nov 2026), and need nothing installed but Python's cryptography package,
+which the AppImage carries. Their replies were signed in Sept 2026; in Nov 2026 nano-gpt
+kept no signature for any `TEE/` reply, even one whose headers said it had, so answers
+read *signature unavailable* - each enclave was still attested before anything was sent
+to it. Up to 3.4.0 the vision default was `TEE/qwen3.6-27b`, whose attestation now comes
+relayed for a nonce of the relay's own choosing, which is refused; a config still naming
+it is moved to `TEE/qwen3.8-27b`. **Check attestation** in Settings attests both enclaves
+on the spot, which is free; **Test connection** sends the private text model one short
+request, checked end to end.
 
 What you see:
 
@@ -380,7 +385,9 @@ What you see:
   signature.
 - **On every turn**, a badge: your messages read *Sent to attested TEE* or *Sealed
   end-to-end*; answers read *TEE · signed by attested enclave* or *End-to-end encrypted*.
-  A signature from any other key reads *signature mismatch*, in red.
+  A signature from any other key reads *signature mismatch*, in red; a reply nano-gpt
+  kept no signature for, or one from Chutes, which signs none, reads *signature
+  unavailable*, in amber.
 
 A conversation that starts private **stays private until its window is closed**. Its
 models are fixed when it starts, and nothing in it reads the setting again: switching
@@ -414,8 +421,9 @@ proved less than it could - anything that would turn the banner amber - is refus
 what it lacked named, and nothing is sent. After an answer whose signature did not match,
 or that came back unsigned from a model whose attestation named the key it signs with,
 that model is attested again before it is sent anything more; if it attests well, the
-conversation carries on. Chutes' models, which sign no replies, are not attested again
-for that. Like the models, Strict is fixed when a conversation starts. **Check
+conversation carries on - while nano-gpt keeps no signatures (Nov 2026), that is before
+every message, a few seconds each. Chutes' models, which sign no replies, are not
+attested again for that. Like the models, Strict is fixed when a conversation starts. **Check
 attestation** follows the box as ticked.
 
 nano-gpt retires Private Mode models from time to time, and the enclave - Tinfoil's

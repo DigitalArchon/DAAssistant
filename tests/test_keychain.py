@@ -279,3 +279,16 @@ class RetiredDefaults(unittest.TestCase):
         config = self.load({"premium_text_model": "gpt-5-chat-latest",
                             "premium_text_provider": "custom", "text_provider": "nanogpt"})
         self.assertEqual(config.premium_text_model, "gpt-5-chat-latest")
+
+    def test_the_private_vision_model_that_is_now_refused_moves_to_its_successor(self):
+        config = self.load({"private_vision_model": "TEE/qwen3.6-27b",
+                            "private_text_model": "TEE/glm-5.3-flash",
+                            "text_provider": "nanogpt"})
+        self.assertEqual(config.private_vision_model, "TEE/qwen3.8-27b")
+        self.assertEqual(config.private_text_model, "TEE/glm-5.3-flash")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f)["private_vision_model"], "TEE/qwen3.8-27b")
+
+    def test_a_private_vision_model_of_ones_own_is_left_alone(self):
+        config = self.load({"private_vision_model": "TEE/kimi-k3", "text_provider": "nanogpt"})
+        self.assertEqual(config.private_vision_model, "TEE/kimi-k3")

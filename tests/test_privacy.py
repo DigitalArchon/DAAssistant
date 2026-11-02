@@ -793,6 +793,15 @@ class ClocksThatCountSleep(unittest.TestCase):
         dcap._fetch(session, dcap.ROOT_CRL_URL)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_a_tee_attestation_is_made_again_after_a_sleep(self):
+        server = FakeNanoGpt()
+        session = session_for(server)
+        session.ensure(TEXT)
+        session.ensure(TEXT)
+        self.sleep(1)
+        session.ensure(TEXT)
+        self.assertEqual(len([g for g in server.gets if "/tee/attestation" in g]), 2)
+
     def test_nvidias_keys_are_fetched_again_after_a_sleep(self):
         nras._keys.update(at=0.0, keys={})
         self.addCleanup(nras._keys.update, at=0.0, keys={})
@@ -1087,6 +1096,62 @@ class Session(TempConfig):
                 setattr(self.config, key, "private/glm-5-3")
             with mock.patch.object(sealed, "available", return_value=(True, "tinfoil")):
                 self.assertEqual(privacy.problems(self.config), [])
+
+
+class TeeAttestationsAge(TempConfig):
+    """A TEE/ model's attestation was kept for the conversation's whole life, however
+    long that ran: an enclave restarted, moved or replaced hours later was never asked
+    again. Now one that is 15 minutes old is made again before the next send, and the
+    window hears of it as it did of the first."""
+
+    def session(self, server):
+        self.now = 1000.0
+        session = PrivacySession(API_URL, "k", TEXT, VISION, tee_factory=server.tee_client,
+                                 clock=lambda: self.now)
+        self.events = []
+        session.listener = lambda event, model, detail: self.events.append(event)
+        return session
+
+    def attestations_asked(self, server):
+        return len([g for g in server.gets if "/tee/attestation" in g])
+
+    def test_one_15_minutes_old_is_made_again_before_the_next_send(self):
+        server = FakeNanoGpt()
+        session = self.session(server)
+        first = session.ensure(TEXT)
+        self.now += privacy.TEE_MAX_AGE_SECONDS - 1
+        self.assertIs(session.ensure(TEXT), first)
+        self.now += 1
+        again = session.ensure(TEXT)
+        self.assertIsNot(again, first)
+        self.assertIs(session.attestations[TEXT], again)
+        self.assertEqual(self.attestations_asked(server), 2)
+        self.assertEqual(self.events, ["attesting", "attested"] * 2)
+
+    def test_the_message_after_goes_only_once_it_is_attested_again(self):
+        server = FakeNanoGpt()
+        session = self.session(server)
+        client = LLMClient(self.config)
+        client.session = server
+        client.stream(TEXT, [{"role": "user", "content": "hi"}], privacy=session)
+        self.now += 20 * 60
+        client.stream(TEXT, [{"role": "user", "content": "and then"}], privacy=session)
+        self.assertEqual(self.events, ["attesting", "attested", "sent", "receipt"] * 2)
+        self.assertEqual(len(server.chat_posts), 2)
+
+    def test_one_that_fails_again_sends_nothing_and_is_tried_at_the_next_send(self):
+        server = FakeNanoGpt()
+        session = self.session(server)
+        session.ensure(TEXT)
+        self.now += 20 * 60
+        server.nonce_bound = False
+        with self.assertRaisesRegex(PrivacyError, "did not bind.*nothing was sent"):
+            session.ensure(TEXT)
+        self.assertEqual(self.events[2:], ["attesting", "refused"])
+        server.nonce_bound = True
+        session.ensure(TEXT)
+        self.assertEqual(self.events[4:], ["attesting", "attested"])
+        self.assertEqual(self.attestations_asked(server), 3)
 
 
 class TheMainLoopNeverWaitsForAnAttestation(unittest.TestCase):

@@ -50,6 +50,10 @@ from .ethsig import recover_personal
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
 TIMEOUT_SECONDS = 30
 PRIVATE_MODE_HOSTS = frozenset({"nano-gpt.com"})
+# How old a TEE/ model's attestation may grow, on the boot clock, before the next send
+# to it attests it again: an enclave restarted, moved or replaced since is found within
+# this, as the end-to-end encrypted one is within sealed.MAX_AGE_SECONDS.
+TEE_MAX_AGE_SECONDS = 15 * 60
 
 TEE = "tee"
 E2EE = "e2ee"
@@ -745,17 +749,19 @@ class PrivacySession:
     follow-ups go to, the clipboard operations only the answering model, translating or
     querying an image both. A model the user picks later, from the chat window's model
     menu, joins with enlist(): any TEE/ or private/ model, attested before first use
-    like the rest. Nothing else can join, which is what keeps the conversation private
-    whatever is chosen in it.
+    like the rest, and again whenever its attestation has grown old (ensure). Nothing
+    else can join, which is what keeps the conversation private whatever is chosen in
+    it.
 
     Thread-safe, and its lock is never held across the network: the chat window's
     worker thread does the attesting, which can take minutes, while the main loop calls
-    enlist() and reads `attestations` for the banner.
+    enlist() and reads `attestations` for the banner. `clock` ages attestations; the
+    boot clock, which runs on while the machine sleeps, unless a test gives another.
     """
 
     def __init__(self, api_url, api_key, text_model, vision_model, request_timeout=180,
                  tee_factory=TeeClient, sealed_factory=None, uses=("text", "vision"),
-                 premium_model=None):
+                 premium_model=None, clock=dcap.since_boot):
         self.api_url = api_url
         self.api_key = api_key
         self.text_model = text_model
@@ -770,6 +776,8 @@ class PrivacySession:
         self._sealed = None
         self._attesting = {}            # model -> _Attesting, while it is attested
         self.attestations = {}          # model -> Attestation, newest check
+        self._clock = clock
+        self._attested_at = {}          # model -> the clock when its newest check began
         self._receipts = []
         # Called with (event, model, detail) from whichever thread is working:
         # "attesting", "attested" (detail: Attestation), "refused" (detail: message),
@@ -862,8 +870,9 @@ class PrivacySession:
 
     def sealed_client(self):
         """The end-to-end encrypted client every private/ model here is sent through.
-        One per conversation, so its enclave is attested once and its cache secret -
-        ours, random, never stored - lasts exactly as long as the conversation."""
+        One per conversation, so its private/ models share one attestation of the
+        enclave, renewed as sealed.py says, and its cache secret - ours, random, never
+        stored - lasts exactly as long as the conversation."""
         with self._lock:
             if self._sealed is None:
                 factory = self._sealed_factory
@@ -874,11 +883,14 @@ class PrivacySession:
             return self._sealed
 
     def ensure(self, model):
-        """Attest `model`'s enclave if it has not been, and return what it proved.
+        """Attest `model`'s enclave if it has not been, or not lately, and return what
+        it proved.
 
-        TEE enclaves are attested once per conversation: every reply's signature is
-        then checked against that key. The end-to-end encrypted enclave is re-attested
-        by sealed.py whenever its proof is five minutes old, before anything is sealed.
+        A TEE enclave is attested before its first use, and again before a send once
+        its attestation is TEE_MAX_AGE_SECONDS old on the session's clock, which runs on
+        while the machine sleeps; every reply's signature is checked against the key
+        its newest attestation named. The end-to-end encrypted enclave is re-attested by
+        sealed.py whenever its proof is five minutes old, before anything is sealed.
         Raises PrivacyError, having sent nothing, when the enclave cannot be trusted.
 
         Attesting is network work - several requests, each allowed TIMEOUT_SECONDS - and
@@ -895,7 +907,7 @@ class PrivacySession:
             raise PrivacyError(f"{model} is not a TEE model; nothing was sent")
         with self._lock:
             known = self.attestations.get(model)
-            if kind == TEE and known is not None:
+            if kind == TEE and known is not None and not self._aged(model):
                 return known
             attesting = self._attesting.get(model)
             waiting = attesting is not None
@@ -921,11 +933,22 @@ class PrivacySession:
             attesting.done.set()
         return attesting.attestation
 
+    def _aged(self, model):
+        """Whether a TEE/ model's newest attestation is too old to send on."""
+        age = self._clock() - self._attested_at.get(model, float("-inf"))
+        return not 0 <= age < TEE_MAX_AGE_SECONDS
+
     def _attest(self, model, kind, known):
         """Attest `model`'s enclave now, telling the listener. No lock is held while the
         enclave is asked; `known` is the attestation it last gave, if any."""
-        if known is None:
+        # A TEE/ model comes here only to be attested, for the first time or again, and
+        # the window hears of either as an attestation, banner and all. The end-to-end
+        # encrypted one comes before every request; sealed.py decides when its enclave
+        # is asked again, and the window hears of it when what it proved has changed.
+        announce = known is None or kind == TEE
+        if announce:
             self._emit("attesting", model)
+        started = self._clock()
         try:
             if kind == E2EE:
                 client = self.sealed_client()
@@ -955,7 +978,8 @@ class PrivacySession:
             raise PrivacyError(f"{message}; nothing was sent") from e
         with self._lock:
             self.attestations[model] = attestation
-        if known is None or known.detail != attestation.detail:
+            self._attested_at[model] = started
+        if announce or known.detail != attestation.detail:
             self._emit("attested", model, attestation)
         return attestation
 

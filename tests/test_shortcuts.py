@@ -1169,5 +1169,100 @@ class TrayMenu(TempDir):
         self.assertIn("Query clipboard text", labels)
 
 
+
+def lua_strings(line):
+    """The double-quoted Lua string literals in `line`, decoded."""
+    found, i = [], 0
+    while True:
+        i = line.find('"', i)
+        if i < 0:
+            return found
+        i += 1
+        out = []
+        while line[i] != '"':
+            if line[i] == "\\":
+                nxt = line[i + 1]
+                if nxt.isdigit():
+                    out.append(chr(int(line[i + 1:i + 4])))
+                    i += 4
+                    continue
+                out.append({"n": "\n"}.get(nxt, nxt))
+                i += 2
+                continue
+            out.append(line[i])
+            i += 1
+        found.append("".join(out))
+        i += 1
+
+
+class HyprlandLuaConfig(TempDir):
+    """Hyprland 0.55 and later: hyprland.lua, in Lua, and hyprland.conf unread beside it
+    (measured on 0.56, Omarchy)."""
+
+    OMARCHY = ('dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. '
+               '"/default/hypr/bootstrap.lua")\nrequire("default.hypr.omarchy")\n'
+               'require("hypr.bindings")\n')
+
+    def setUp(self):
+        super().setUp()
+        self.hypr = os.path.join(self.dir, "hypr")
+        os.makedirs(self.hypr)
+        patcher = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def put(self, name, text):
+        with open(os.path.join(self.hypr, name), "w") as f:
+            f.write(text)
+        return os.path.join(self.hypr, name)
+
+    def read(self, path):
+        with open(path) as f:
+            return f.read()
+
+    def test_the_lua_config_is_the_one_written_where_there_is_one(self):
+        self.put("hyprland.conf", "bind = SUPER, Q, exec, kitty\n")
+        self.assertTrue(keybindings.ConfigFileKeybindings("hyprland").path
+                        .endswith("hyprland.conf"))
+        lua = self.put("hyprland.lua", self.OMARCHY)
+        writer = keybindings.ConfigFileKeybindings("hyprland")
+        self.assertEqual(writer.path, lua)
+        self.assertEqual(writer.describe().rsplit("/", 1)[-1], "hyprland.lua")
+
+    def test_binds_are_written_in_hyprlands_lua(self):
+        path = self.put("hyprland.lua", self.OMARCHY)
+        host = FakeHost()
+        writer = keybindings.ConfigFileKeybindings("hyprland", host)
+        with mock.patch.dict(os.environ, {"APPIMAGE": '/home/u/My "Apps"/DA\\1 #2.AppImage'}):
+            writer.apply({"ocr_only": "<Control><Shift>5", "ask_anything": "<Super>F9"},
+                         LABELS, NAMES)
+            wanted = keybindings.command("ocr_only")
+        text = self.read(path)
+        self.assertTrue(text.startswith(self.OMARCHY), text)
+        self.assertEqual(text.count(keybindings.LUA_BEGIN), 1)
+        self.assertTrue(text.rstrip().endswith(keybindings.LUA_END))
+        bind = next(line for line in text.splitlines() if "ocr_only" in line)
+        self.assertTrue(bind.startswith('hl.bind("CTRL + SHIFT + 5", hl.dsp.exec_cmd('), bind)
+        self.assertEqual(lua_strings(bind), ["CTRL + SHIFT + 5", wanted,
+                                             "DA Assistant: OCR only"])
+        self.assertIn('hl.bind("SUPER + F9", ', text)
+        self.assertEqual(self.read(path + ".da-assistant.bak"), self.OMARCHY)
+        self.assertIn(["hyprctl", "reload"], host.calls)
+
+    def test_remove_takes_the_lua_block_out(self):
+        path = self.put("hyprland.lua", self.OMARCHY)
+        writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost())
+        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        writer.remove(NAMES)
+        self.assertEqual(self.read(path), self.OMARCHY)
+
+    def test_a_lua_block_that_does_not_end_is_left_alone(self):
+        broken = self.OMARCHY + keybindings.LUA_BEGIN + " ---\nhl.bind(\"F5\", x)\n"
+        path = self.put("hyprland.lua", broken)
+        writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost())
+        with self.assertRaisesRegex(OSError, "line 4 has no"):
+            writer.apply({"ocr_only": "F6"}, LABELS, NAMES)
+        self.assertEqual(self.read(path), broken)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

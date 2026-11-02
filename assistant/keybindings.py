@@ -36,6 +36,9 @@ PREFIX = "da-assistant"
 NAME = "DA Assistant"
 BEGIN = "# --- DA Assistant hotkeys"
 END = "# --- end DA Assistant hotkeys ---"
+# The same markers in Hyprland's Lua configuration (0.55 and later), where -- comments.
+LUA_BEGIN = "-- --- DA Assistant hotkeys"
+LUA_END = "-- --- end DA Assistant hotkeys ---"
 
 
 def run_host(args):
@@ -238,16 +241,43 @@ class GSettingsKeybindings:
 
 # ---- Hyprland and Sway -------------------------------------------------------------
 
+def _lua(text):
+    """`text` as a Lua string literal."""
+    out = []
+    for char in text:
+        if char in '\\"':
+            out.append("\\" + char)
+        elif char == "\n":
+            out.append("\\n")
+        elif ord(char) < 32 or char == "\x7f":
+            out.append(f"\\{ord(char):03d}")
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
+
+
 class ConfigFileKeybindings:
-    """A block of binds in Hyprland's or Sway's config file, between marker lines."""
+    """A block of binds in Hyprland's or Sway's config file, between marker lines.
+
+    Hyprland's configuration is Lua from 0.55: hyprland.lua, and the old hyprland.conf
+    is not read at all once there is one (measured on 0.56). A new install has only
+    hyprland.lua, so that is the file written where it exists, in its own syntax -
+    hl.bind(keys, hl.dsp.exec_cmd(command), options) - and hyprland.conf otherwise."""
 
     def __init__(self, desktop, run=run_host, path=None):
         self.desktop = desktop
         self.run = run
         config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-        self.path = path or (os.path.join(config, "hypr", "hyprland.conf")
-                             if desktop == "hyprland"
-                             else os.path.join(config, "sway", "config"))
+        if path is None:
+            if desktop == "hyprland":
+                lua = os.path.join(config, "hypr", "hyprland.lua")
+                path = lua if os.path.exists(lua) else os.path.join(config, "hypr",
+                                                                    "hyprland.conf")
+            else:
+                path = os.path.join(config, "sway", "config")
+        self.path = path
+        self.lua = desktop == "hyprland" and path.endswith(".lua")
+        self.begin, self.end = (LUA_BEGIN, LUA_END) if self.lua else (BEGIN, END)
 
     def describe(self):
         return self.path.replace(os.path.expanduser("~"), "~", 1)
@@ -263,7 +293,12 @@ class ConfigFileKeybindings:
             accel = bindings.get(action)
             if not accel:
                 continue
-            if self.desktop == "hyprland":
+            if self.lua:
+                mods, key = shortcuts.hyprland(accel)
+                keys = " + ".join(mods.split() + [key])
+                lines.append(f"hl.bind({_lua(keys)}, hl.dsp.exec_cmd({_lua(command(action))}), "
+                             f"{{ description = {_lua(f'{NAME}: {labels[action]}')} }})")
+            elif self.desktop == "hyprland":
                 mods, key = shortcuts.hyprland(accel)
                 run = command(action).replace("#", "##")
                 lines.append(f"bind = {mods}, {key}, exec, {run}  # {labels[action]}")
@@ -272,11 +307,11 @@ class ConfigFileKeybindings:
                              f"  # {labels[action]}")
         if not lines:
             return ""
-        return "\n".join([f"{BEGIN} (managed by {NAME}: Settings > Shortcuts) ---",
-                          *lines, END])
+        return "\n".join([f"{self.begin} (managed by {NAME}: Settings > Shortcuts) ---",
+                          *lines, self.end])
 
     @staticmethod
-    def strip(text, where="the config"):
+    def strip(text, where="the config", begin=BEGIN, end=END):
         """`text` without our block - or blocks, should an old script have left two.
 
         Only a whole block is taken out: a BEGIN line and the END line after it, END
@@ -287,17 +322,17 @@ class ConfigFileKeybindings:
         """
         out, begun = [], None
         for number, line in enumerate(text.splitlines(keepends=True), 1):
-            if line.lstrip().startswith(BEGIN):
+            if line.lstrip().startswith(begin):
                 if begun is not None:
                     break                   # a second BEGIN before the first one's END
                 begun = number
             elif begun is None:
                 out.append(line)
-            elif line.strip() == END:
+            elif line.strip() == end:
                 begun = None
         if begun is not None:
             raise OSError(f"{where}: the {NAME} block that begins on line {begun} has no "
-                          f'"{END}" line to end it, so nothing was changed. Put that '
+                          f'"{end}" line to end it, so nothing was changed. Put that '
                           f"line back where the block ends, or delete the block")
         return "".join(out).rstrip("\n") + ("\n" if out else "")
 
@@ -351,7 +386,7 @@ class ConfigFileKeybindings:
                           f"Settings > Shortcuts to your config yourself")
         before = self._read()
         block = self.block(bindings, labels, actions)
-        after = self.strip(before, self.describe())
+        after = self.strip(before, self.describe(), self.begin, self.end)
         if block:
             after = after + ("\n" if after else "") + block + "\n"
         if after == before:
@@ -363,7 +398,7 @@ class ConfigFileKeybindings:
             self.run(["swaymsg", "reload"])
 
     def remove(self, actions):
-        if os.path.exists(self.path) and BEGIN in self._read():
+        if os.path.exists(self.path) and self.begin in self._read():
             self.apply({}, {}, actions)
 
 

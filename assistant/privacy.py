@@ -673,6 +673,16 @@ class TeeClient:
 
 # ---- one conversation ---------------------------------------------------------------
 
+class _Attesting:
+    """One model's attestation while it is being made, for the threads that ask for the
+    same model meanwhile: they wait for its answer rather than attest it again."""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.attestation = None
+        self.error = None
+
+
 class PrivacySession:
     """One conversation's Privacy Mode: its models, and what their enclaves proved.
 
@@ -689,7 +699,9 @@ class PrivacySession:
     like the rest. Nothing else can join, which is what keeps the conversation private
     whatever is chosen in it.
 
-    Thread-safe: the chat window's worker thread does the attesting.
+    Thread-safe, and its lock is never held across the network: the chat window's
+    worker thread does the attesting, which can take minutes, while the main loop calls
+    enlist() and reads `attestations` for the banner.
     """
 
     def __init__(self, api_url, api_key, text_model, vision_model, request_timeout=180,
@@ -707,6 +719,7 @@ class PrivacySession:
         self._lock = threading.RLock()
         self._tee = {}
         self._sealed = None
+        self._attesting = {}            # model -> _Attesting, while it is attested
         self.attestations = {}          # model -> Attestation, newest check
         self._receipts = []
         # Called with (event, model, detail) from whichever thread is working:
@@ -818,6 +831,12 @@ class PrivacySession:
         then checked against that key. The end-to-end encrypted enclave is re-attested
         by sealed.py whenever its proof is five minutes old, before anything is sealed.
         Raises PrivacyError, having sent nothing, when the enclave cannot be trusted.
+
+        Attesting is network work - several requests, each allowed TIMEOUT_SECONDS - and
+        it is done with no lock held, so that enlist(), called on the main loop when a
+        model is picked or Send pressed, never waits for it. A thread that asks for a
+        model while another is attesting it waits, outside the lock, for that one's
+        answer and is given it: a model is never attested twice at once.
         """
         if not self.allows(model):
             raise PrivacyError(f"{model} is not one of this private conversation's models; "
@@ -829,37 +848,65 @@ class PrivacySession:
             known = self.attestations.get(model)
             if kind == TEE and known is not None:
                 return known
-            if known is None:
-                self._emit("attesting", model)
-            try:
-                if kind == E2EE:
-                    client = self.sealed_client()
-                    if model not in self._listed:
-                        # The enclave is Tinfoil's router whatever the model, so a
-                        # model nano-gpt has retired would attest: ask its list first,
-                        # once - the preflight says so too if it goes later.
-                        client.check_offered(model)
-                        self._listed.add(model)
-                    attestation = client.attest(model)
-                else:
+            attesting = self._attesting.get(model)
+            waiting = attesting is not None
+            if not waiting:
+                attesting = self._attesting[model] = _Attesting()
+        if waiting:
+            # Another thread is attesting this model: its answer is this one's too.
+            attesting.done.wait()
+            if attesting.error is not None:
+                raise attesting.error
+            if attesting.attestation is None:
+                raise PrivacyError(f"{model}'s attestation was interrupted; nothing was "
+                                   f"sent")
+            return attesting.attestation
+        try:
+            attesting.attestation = self._attest(model, kind, known)
+        except PrivacyError as e:
+            attesting.error = e
+            raise
+        finally:
+            with self._lock:
+                del self._attesting[model]
+            attesting.done.set()
+        return attesting.attestation
+
+    def _attest(self, model, kind, known):
+        """Attest `model`'s enclave now, telling the listener. No lock is held while the
+        enclave is asked; `known` is the attestation it last gave, if any."""
+        if known is None:
+            self._emit("attesting", model)
+        try:
+            if kind == E2EE:
+                client = self.sealed_client()
+                if model not in self._listed:
+                    # The enclave is Tinfoil's router whatever the model, so a model
+                    # nano-gpt has retired would attest: ask its list first, once - the
+                    # preflight says so too if it goes later.
+                    client.check_offered(model)
+                    self._listed.add(model)
+                attestation = client.attest(model)
+            else:
+                with self._lock:
                     client = self._tee.get(model)
                     if client is None:
                         client = self._tee[model] = self._tee_factory(
                             self.api_url, self.api_key, model)
-                    attestation = client.attest()
-            except ModelRetired as e:
-                self.note_retired(e)
-                raise
-            except PrivacyError as e:
-                self._emit("refused", model, str(e))
-                raise PrivacyError(f"{e}; nothing was sent") from e
-            except Exception as e:  # the SDK's own errors, network failures
-                message = f"{model}'s enclave could not be attested: {e}"
-                self._emit("refused", model, message)
-                raise PrivacyError(f"{message}; nothing was sent") from e
-            changed = known is None or known.detail != attestation.detail
+                attestation = client.attest()
+        except ModelRetired as e:
+            self.note_retired(e)
+            raise
+        except PrivacyError as e:
+            self._emit("refused", model, str(e))
+            raise PrivacyError(f"{e}; nothing was sent") from e
+        except Exception as e:  # the SDK's own errors, network failures
+            message = f"{model}'s enclave could not be attested: {e}"
+            self._emit("refused", model, message)
+            raise PrivacyError(f"{message}; nothing was sent") from e
+        with self._lock:
             self.attestations[model] = attestation
-        if changed:
+        if known is None or known.detail != attestation.detail:
             self._emit("attested", model, attestation)
         return attestation
 

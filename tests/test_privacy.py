@@ -20,8 +20,11 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -741,6 +744,112 @@ class Session(TempConfig):
             self.assertTrue(any("install-private-mode" in f for f in found))
         self.config.api_url = "https://api.example.com/v1/chat/completions"
         self.assertTrue(any("not nano-gpt's" in f for f in privacy.problems(self.config)))
+
+
+class TheMainLoopNeverWaitsForAnAttestation(unittest.TestCase):
+    """ensure() held the session's lock across the network - several requests, each
+    allowed 30 seconds - and enlist(), which the chat window calls on the main loop when
+    a model is picked from its menu or Send is pressed, took the same lock: the whole
+    app froze while a model was attested. Now only what needs an attestation's answer
+    waits for it, and outside the lock."""
+
+    def session(self, refuse=False):
+        """A session whose TEXT attestation, once entered, waits for self.release;
+        refuse=True makes its attestations fail."""
+        server = FakeNanoGpt(nonce_bound=not refuse)
+        self.entered, self.release = threading.Event(), threading.Event()
+        self.addCleanup(self.release.set)
+        self.attested = []
+        test = self
+
+        class Slow(TeeClient):
+            def attest(this):
+                test.attested.append(this.model)
+                if this.model == TEXT:
+                    test.entered.set()
+                    test.release.wait(10)
+                return super().attest()
+
+        def factory(url, key, model):
+            return Slow(url, key, model, session=server, intel=server.intel_verify,
+                        nvidia=server.nvidia_verify)
+
+        session = PrivacySession(API_URL, "k", TEXT, VISION, tee_factory=factory)
+        self.events = []
+        session.listener = lambda event, model, detail: self.events.append((event, model))
+        return session
+
+    def in_thread(self, work):
+        """work() on a thread of its own: (thread, outcome), the outcome holding its
+        "result" or its "error" once it is done."""
+        outcome = {}
+
+        def run():
+            try:
+                outcome["result"] = work()
+            except Exception as e:
+                outcome["error"] = e
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (self.release.set(), thread.join(10)))
+        return thread, outcome
+
+    def test_enlist_answers_at_once_while_a_model_is_attested(self):
+        session = self.session()
+        attesting, _ = self.in_thread(lambda: session.ensure(TEXT))
+        self.assertTrue(self.entered.wait(5))
+        enlisting, outcome = self.in_thread(
+            lambda: (session.enlist(TEXT), session.enlist("TEE/kimi-k3")))
+        enlisting.join(1)
+        self.assertFalse(enlisting.is_alive(), "enlist() waited for the attestation")
+        self.assertNotIn("error", outcome)
+        self.assertTrue(session.allows("TEE/kimi-k3"))
+        self.assertTrue(attesting.is_alive(), "the attestation was over too soon to tell")
+        self.release.set()
+        attesting.join(5)
+        self.assertEqual(self.events, [("attesting", TEXT), ("attested", TEXT)])
+
+    def test_another_model_is_attested_meanwhile(self):
+        session = self.session()
+        attesting, _ = self.in_thread(lambda: session.ensure(TEXT))
+        self.assertTrue(self.entered.wait(5))
+        other, outcome = self.in_thread(lambda: session.ensure(VISION))
+        other.join(2)
+        self.assertFalse(other.is_alive(), "one model's attestation waited for another's")
+        self.assertEqual(outcome["result"].model, VISION)
+        self.assertTrue(attesting.is_alive())
+
+    def test_a_model_asked_for_twice_at_once_is_attested_once(self):
+        session = self.session()
+        first, one = self.in_thread(lambda: session.ensure(TEXT))
+        self.assertTrue(self.entered.wait(5))
+        second, two = self.in_thread(lambda: session.ensure(TEXT))
+        second.join(0.2)
+        self.assertTrue(second.is_alive(), "the second ask did not wait for the first")
+        self.release.set()
+        first.join(5)
+        second.join(5)
+        self.assertEqual(self.attested, [TEXT])
+        self.assertIs(one["result"], two["result"])
+        self.assertEqual(self.events, [("attesting", TEXT), ("attested", TEXT)])
+
+    def test_a_refusal_is_given_to_every_thread_that_waited_for_it(self):
+        session = self.session(refuse=True)
+        first, one = self.in_thread(lambda: session.ensure(TEXT))
+        self.assertTrue(self.entered.wait(5))
+        second, two = self.in_thread(lambda: session.ensure(TEXT))
+        second.join(0.2)
+        self.release.set()
+        first.join(5)
+        second.join(5)
+        self.assertEqual(self.attested, [TEXT])
+        for outcome in (one, two):
+            self.assertIsInstance(outcome.get("error"), PrivacyError)
+            self.assertIn("did not bind", str(outcome["error"]))
+            self.assertIn("nothing was sent", str(outcome["error"]))
+        self.assertEqual(self.events, [("attesting", TEXT), ("refused", TEXT)])
+        self.assertNotIn(TEXT, session.attestations)
 
 
 # ---- the client ----------------------------------------------------------------------

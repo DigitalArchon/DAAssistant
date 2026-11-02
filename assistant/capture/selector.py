@@ -48,19 +48,24 @@ class _SelectionMixin:
         self._finished = False
 
     def _scale(self):
-        """Image pixels per widget unit.
+        """(widget units per image pixel, x offset, y offset): how the image is drawn,
+        and so how a selection maps back onto it.
 
-        On HiDPI the captured buffer is in physical pixels while GTK reports logical
-        units, so this ratio is what keeps the crop aligned with what the user drew.
+        The image is in device pixels and GTK lays out in logical ones, so on HiDPI the
+        two differ - an X11 grab at scale factor 2 is twice the overlay's size. Both
+        presentations draw the whole image at this ratio: the crop window centred in
+        itself, the overlay from its own corner, as the screen it stands in for. Drawn
+        at 1.0, as the overlay once was, a scale-2 screen showed its top-left quarter
+        at twice the size, and the rest could not be selected at all.
         """
         alloc = self.area.get_allocation()
         if alloc.width <= 0 or alloc.height <= 0:
             return 1.0, 0.0, 0.0
         iw, ih = self.image.size
-        scale = min(alloc.width / iw, alloc.height / ih) if self.fit else 1.0
-        offset_x = (alloc.width - iw * scale) / 2.0 if self.fit else 0.0
-        offset_y = (alloc.height - ih * scale) / 2.0 if self.fit else 0.0
-        return scale, offset_x, offset_y
+        scale = min(alloc.width / iw, alloc.height / ih)
+        if not self.fit:
+            return scale, 0.0, 0.0
+        return scale, (alloc.width - iw * scale) / 2.0, (alloc.height - ih * scale) / 2.0
 
     def _to_image_rect(self):
         if self.start is None or self.end is None:

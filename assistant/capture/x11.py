@@ -70,4 +70,6 @@ class X11Backend(ScreenshotBackend):
         except CaptureError as e:
             on_error(str(e))
             return
+        # The grab is in device pixels and the geometry in logical ones; on HiDPI the
+        # overlay draws the one at the other's size (_SelectionMixin._scale).
         FrozenOverlay(image, geometry, on_done, on_error)

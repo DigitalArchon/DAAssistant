@@ -31,28 +31,34 @@ from assistant.capture import selector
 SELECTOR_SRC = os.path.join(os.path.dirname(selector.__file__), "selector.py")
 
 
+def overlay(image, view=(500, 500)):
+    """The overlay's selection over `image`, laid out at `view` logical pixels.
+
+    _finish/_to_image_rect live on _SelectionMixin, shared verbatim by FrozenOverlay and
+    CropDialog, so this exercises the real code path without constructing a GObject (and
+    without grabbing the live session's input)."""
+    class Harness(selector._SelectionMixin):
+        fit = selector.FrozenOverlay.fit
+
+    obj = Harness()
+
+    class Area:
+        @staticmethod
+        def get_allocation():
+            class Alloc:
+                width, height = view
+            return Alloc
+    obj.area = Area
+    obj._init_selection(image)
+    obj.destroy = lambda: None
+    return obj
+
+
 class CropComesFromFrozenBuffer(unittest.TestCase):
     """The delivered image must be a crop of the buffer captured BEFORE the UI existed."""
 
     def _make(self, image, view=(500, 500)):
-        # _finish/_to_image_rect live on _SelectionMixin, shared verbatim by
-        # FrozenOverlay and CropDialog, so this exercises the real code path without
-        # constructing a GObject (and without grabbing the live session's input).
-        class Harness(selector._SelectionMixin):
-            fit = False
-
-        obj = Harness()
-
-        class Area:
-            @staticmethod
-            def get_allocation():
-                class Alloc:
-                    width, height = view
-                return Alloc
-        obj.area = Area
-        obj._init_selection(image)
-        obj.destroy = lambda: None
-        return obj
+        return overlay(image, view)
 
     def test_crop_is_taken_from_the_frozen_image(self):
         # A distinctive synthetic buffer that cannot coincidentally match the screen.
@@ -100,6 +106,77 @@ class CropComesFromFrozenBuffer(unittest.TestCase):
         obj._finish()
         self.assertEqual(delivered.get("error"), "Cancelled")
         self.assertNotIn("image", delivered)
+
+
+QUARTERS = {"top left": (255, 0, 0), "top right": (0, 255, 0),
+            "bottom left": (0, 0, 255), "bottom right": (255, 255, 255)}
+
+
+def quartered(size):
+    """A screen grab of `size` device pixels, each quarter its own colour."""
+    w, h = size
+    image = Image.new("RGB", size)
+    for (name, colour), (x, y) in zip(QUARTERS.items(),
+                                      ((0, 0), (w // 2, 0), (0, h // 2), (w // 2, h // 2))):
+        image.paste(Image.new("RGB", (w // 2, h // 2), colour), (x, y))
+    return image
+
+
+class TheOverlayOnHiDPI(unittest.TestCase):
+    """An X11 grab is in device pixels and the overlay is laid out in logical ones, so
+    at scale factor 2 the image is twice the overlay's size. It used to be drawn at 1.0:
+    the overlay showed the screen's top-left quarter, magnified, and nothing else of it
+    could be selected."""
+
+    def _crop(self, image, view, start, end):
+        delivered = {}
+        obj = overlay(image, view)
+        obj.on_done = lambda img: delivered.setdefault("image", img)
+        obj.on_error = lambda msg: delivered.setdefault("error", msg)
+        obj.start, obj.end = start, end
+        obj._finish()
+        self.assertIn("image", delivered, delivered.get("error"))
+        return delivered["image"]
+
+    def test_a_drag_from_corner_to_corner_takes_the_whole_screen(self):
+        source = quartered((3840, 2160))
+        crop = self._crop(source, (1920, 1080), (0, 0), (1920, 1080))
+        self.assertEqual(crop.size, (3840, 2160))
+        self.assertEqual(crop.tobytes(), source.tobytes())
+
+    def test_the_bottom_right_quarter_drawn_round_is_that_quarter_exactly(self):
+        source = quartered((3840, 2160))
+        crop = self._crop(source, (1920, 1080), (960, 540), (1920, 1080))
+        self.assertEqual(crop.size, (1920, 1080))
+        self.assertEqual(crop.getcolors(), [(1920 * 1080, QUARTERS["bottom right"])])
+
+    def test_at_scale_1_a_drag_is_taken_pixel_for_pixel(self):
+        source = quartered((1920, 1080))
+        crop = self._crop(source, (1920, 1080), (950, 530), (1010, 600))
+        self.assertEqual(crop.size, (60, 70))
+        self.assertEqual(crop.tobytes(), source.crop((950, 530, 1010, 600)).tobytes())
+
+    def test_the_whole_screen_is_what_is_shown(self):
+        try:
+            import cairo
+            import gi
+            gi.require_foreign("cairo")
+        except ImportError:
+            self.skipTest("needs pycairo and PyGObject's cairo support")
+        obj = overlay(quartered((3840, 2160)), (1920, 1080))
+        # What GTK hands the overlay at scale factor 2: 1920x1080 units, each 2x2
+        # device pixels.
+        surface = cairo.ImageSurface(cairo.FORMAT_RGB24, 3840, 2160)
+        surface.set_device_scale(2, 2)
+        obj._draw_selection(cairo.Context(surface), dim=0.45)
+        surface.flush()
+        data, stride = surface.get_data(), surface.get_stride()
+        for name, (x, y) in (("top left", (900, 600)), ("top right", (3000, 600)),
+                             ("bottom left", (600, 1900)),
+                             ("bottom right", (3800, 2100))):
+            blue, green, red = data[y * stride + x * 4:y * stride + x * 4 + 3]
+            shown = tuple(255 if channel > 100 else 0 for channel in (red, green, blue))
+            self.assertEqual(shown, QUARTERS[name], f"device pixel {x},{y}")
 
 
 class SelectorCannotCaptureTheScreen(unittest.TestCase):

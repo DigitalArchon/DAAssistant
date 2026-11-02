@@ -313,3 +313,44 @@ class EveryWayAReplyEnds(CatalogueCase):
         self.assertIn("Not searched", text)
         self.assertIn("HTTP 503: busy", text)
         self.assertTrue(any("web search failed" in s for s in said))
+
+
+class TheFirstRequestKnowsItsModel(unittest.TestCase):
+    """The catalogue was fetched only at startup, once setup was complete; requests
+    made after a key was first entered went without it."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.api_key = "k"
+        for patch in (mock.patch.object(models, "CACHE_DIR", self.dir),
+                      mock.patch.object(models, "CACHE_FILE",
+                                        os.path.join(self.dir, "models.json")),
+                      mock.patch.dict(models._asked, clear=True)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_with_no_list_at_all_it_is_fetched_before_the_payload(self):
+        def fetch(config, provider=None, timeout=None, force=False):
+            models.save_cache([models.normalise(e) for e in CATALOGUE],
+                              models.models_url(API_URL))
+            return [], False
+
+        with mock.patch.object(models, "fetch", side_effect=fetch) as fetched:
+            payload = LLMClient(self.config)._payload(
+                "TEE/glm-5.3", [{"role": "user", "content": "translate"}])
+        fetched.assert_called_once()
+        self.assertEqual(payload["reasoning"], {"effort": "low"})
+
+    def test_a_list_already_there_is_not_fetched_again(self):
+        models.save_cache([models.normalise(e) for e in CATALOGUE], models.models_url(API_URL))
+        with mock.patch.object(models, "fetch") as fetched:
+            models.ensure_listed(self.config, "TEE/glm-5.3")
+        fetched.assert_not_called()
+
+    def test_a_list_that_cannot_be_had_is_asked_for_once_a_minute(self):
+        with mock.patch.object(models, "fetch", side_effect=RuntimeError("offline")) as fetched:
+            models.ensure_listed(self.config, "TEE/glm-5.3")
+            models.ensure_listed(self.config, "TEE/glm-5.3")
+        self.assertEqual(fetched.call_count, 1)

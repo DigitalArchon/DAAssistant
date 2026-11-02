@@ -252,3 +252,30 @@ class HandEditedValues(unittest.TestCase):
         config = self.load({"capture_max_long_edge": "3600"})
         _image, info = imaging.prepare_for_vision(Image.new("RGB", (4000, 100)), config)
         self.assertEqual(info["sent_size"][0], 3600)
+
+
+class RetiredDefaults(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.path = os.path.join(self.dir, "config.json")
+
+    def load(self, values):
+        with open(self.path, "w") as f:
+            json.dump(values, f)
+        return Config(self.path)
+
+    def test_the_premium_default_is_sonnet(self):
+        self.assertEqual(Config(self.path).premium_text_model, "anthropic/claude-sonnet-5.5")
+
+    def test_a_file_holding_the_old_default_moves_to_the_new_one(self):
+        config = self.load({"premium_text_model": "gpt-5-chat-latest",
+                            "premium_text_provider": "nanogpt", "text_provider": "nanogpt"})
+        self.assertEqual(config.premium_text_model, "anthropic/claude-sonnet-5.5")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f)["premium_text_model"], "anthropic/claude-sonnet-5.5")
+
+    def test_a_model_of_that_name_elsewhere_is_left_alone(self):
+        config = self.load({"premium_text_model": "gpt-5-chat-latest",
+                            "premium_text_provider": "custom", "text_provider": "nanogpt"})
+        self.assertEqual(config.premium_text_model, "gpt-5-chat-latest")

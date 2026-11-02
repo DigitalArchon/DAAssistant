@@ -480,6 +480,7 @@ class LLMClient:
 
     def _payload(self, model, messages, image_base64=None, stream=False,
                  web_search=None, system=None, search_context=None, max_tokens=None):
+        catalogue.ensure_listed(self.config, model)
         msgs = attach_image(strip_internal_keys(messages), image_base64)
         head = system_message(system)
         if head:

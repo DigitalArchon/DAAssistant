@@ -858,6 +858,10 @@ class Assistant:
                                 "It is used until the app quits.", urgency="normal")
                 else:
                     self.notify("Settings saved")
+                # A key or an address entered just now: the lists the next requests are
+                # shaped by (models.ensure_listed), fetched in the background.
+                if not providers.unready(self.config):
+                    self._warm_catalogue()
                 self._refresh_reviews()
                 self._sync_privacy_item()
                 self._sync_encyclopedia_items()

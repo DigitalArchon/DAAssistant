@@ -35,7 +35,7 @@ DEFAULTS = {
     "vision_provider": providers.NANOGPT,
     "default_language": "English",
     "text_model": "deepseek-ai/DeepSeek-V3.1-Terminus",
-    "premium_text_model": "gpt-5-chat-latest",
+    "premium_text_model": "anthropic/claude-sonnet-5.5",
     # Reads images: OCR, stage one of Translate image selection, and - when the text
     # model answering a question about an image cannot see images - the transcription
     # and description it answers from. A cheap, literal reader.
@@ -134,6 +134,11 @@ DEFAULTS = {
 
 # Settings kept in the keychain under their own names, and never written to config.json.
 SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
+
+# Defaults that were, and that their provider no longer lists: a file still holding one
+# (save() writes every setting) is moved to today's default. NanoGPT's list had no
+# gpt-5-chat-latest by Oct 2026, under any alias.
+RETIRED_DEFAULTS = {("premium_text_model", "premium_text_provider"): {"gpt-5-chat-latest"}}
 
 
 class ConfigError(Exception):
@@ -293,6 +298,11 @@ class Config:
         finally:
             object.__setattr__(self, "_loading", False)
         object.__getattribute__(self, "_dirty").clear()
+        for (key, provider_key), retired in RETIRED_DEFAULTS.items():
+            if on_disk.get(key) in retired and \
+                    on_disk.get(provider_key, DEFAULTS[provider_key]) == DEFAULTS[provider_key]:
+                setattr(self, key, DEFAULTS[key])
+                moved = True
         if on_disk and "text_provider" not in on_disk:
             moved = self._name_provider(on_disk.get("api_url")) or moved
         if moved or (loose and all(kept[key] for key in loose)):

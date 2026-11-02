@@ -20,3 +20,17 @@ if "DA_ASSISTANT_TEST_CACHE" not in os.environ:
     atexit.register(shutil.rmtree, CACHE, ignore_errors=True)
 else:
     CACHE = os.environ["DA_ASSISTANT_TEST_CACHE"]
+
+# No test reaches the network for a model list. A request that finds no cached list
+# fetches one first (models.ensure_listed), from wherever the test's settings point -
+# nano-gpt.com with a key of "k", as often as not. A test that wants a list patches
+# models._get or models._post itself, which this leaves it free to do.
+from assistant import models as _models  # noqa: E402
+
+
+def _offline(url, **_kwargs):
+    raise _models.requests.exceptions.ConnectionError(
+        f"the tests make no network requests ({url})")
+
+
+_models._get = _models._post = _offline

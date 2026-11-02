@@ -18,6 +18,7 @@ Results are cached on disk, a file per provider, because NanoGPT's detailed list
 import copy
 import json
 import os
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -387,6 +388,37 @@ def _fetch_ollama(source, headers, timeout):
             tag["capabilities"] = shown["capabilities"]
         tag["sampling"] = ollama_sampling(shown.get("parameters"))
     return [normalise_ollama(tag) for tag in tags]
+
+
+_asked = {}                 # (provider, list address) -> when it was last fetched for want
+_asked_lock = threading.Lock()
+ASK_AGAIN_SECONDS = 60
+
+
+def ensure_listed(config, model_id, timeout=15):
+    """Fetch the list of `model_id`'s provider now, if there is none at all.
+
+    The catalogue says how a request to a model is shaped - the reasoning effort a model
+    that always thinks is asked for, the room it gets to think in, an Ollama model's own
+    temperature - and it was only fetched at startup, once setup was complete. So the
+    first requests after a key or an address was entered in Settings went without:
+    TEE/glm-5.3 thought at its own length until it ran out of room, and glm-ocr read at
+    temperature 1. Called from the worker thread a request is made on, before its
+    payload is built; a list that could not be fetched is asked for again only after a
+    minute, not on every request.
+    """
+    source = providers.of(config, model_id)
+    if load_cache(max_age=None, url=source.models_url, provider=source.id) is not None:
+        return
+    key = (source.id, source.models_url)
+    with _asked_lock:
+        if time.monotonic() - _asked.get(key, -ASK_AGAIN_SECONDS) < ASK_AGAIN_SECONDS:
+            return
+        _asked[key] = time.monotonic()
+    try:
+        fetch(config, provider=source.id, timeout=timeout)
+    except Exception as e:
+        print(f"[models] catalogue not fetched: {e}")
 
 
 def fetch(config, force=False, timeout=60, provider=None):

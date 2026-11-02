@@ -25,6 +25,12 @@ PREFIX = "APPIMAGE_HOST_"
 KEYS = "APPIMAGE_HOST_ENV_KEYS"
 RUNTIME = ("APPIMAGE", "APPDIR", "OWD", "ARGV0")
 
+# Variables a setting of the app's own sets for its process - the proxy (proxy.py) -
+# wherever it runs, each with the value it had before (None: unset), which children
+# get back. Kept apart from the AppImage's stash above, whose very presence is how
+# bundle.py and vendored.py tell that they are in the AppImage.
+_own = {}
+
 
 def set_for_self(name, value):
     """Set `name` for this process only: host_env() hands children the value it had
@@ -37,14 +43,47 @@ def set_for_self(name, value):
     os.environ[name] = value
 
 
+def set_own(name, value):
+    """Set `name` for this process alone, in the AppImage or not: host_env() hands
+    children the value it had before."""
+    if name not in _own:
+        _own[name] = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+
+
+def restore_own(name):
+    """`name` as it was before set_own, for this process too."""
+    if name in _own:
+        before = _own.pop(name)
+        if before is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = before
+
+
+def original(name):
+    """What `name` was before the app set it for itself, or is now if it did not."""
+    return _own[name] if name in _own else os.environ.get(name)
+
+
 def host_env():
     """Environment for a host binary, or None to inherit ours unchanged."""
     keys = os.environ.get(KEYS)
-    if not keys:
+    if not keys and not _own:
         return None
 
     env = dict(os.environ)
-    for key in keys.split():
+    for name, before in _own.items():
+        if before is None:
+            env.pop(name, None)
+        else:
+            env[name] = before
+    if not keys:
+        return env
+    for key in (keys or "").split():
         env.pop(key, None)
         # Only the variables AppRun actually overrode were stashed, so a missing
         # stash means the caller had it unset and it should stay unset.

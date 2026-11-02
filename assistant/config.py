@@ -106,6 +106,9 @@ DEFAULTS = {
     # this (llm.REASONING_ROOM), so thinking cannot use up the answer's share.
     "max_tokens": 4096,
     "request_timeout": 180,
+    # Every request of the app's own through this proxy (proxy.py): socks5h://host:port
+    # for Tor, or http://host:port. Empty: the environment's proxy settings, if any.
+    "proxy": "",
     # Debugging: write every image sent to the model into ~/.cache/da-assistant/captures.
     "debug_save_captures": False,
     # Look up word: the folder holding the user's DSL and StarDict dictionaries, read in

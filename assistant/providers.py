@@ -189,10 +189,18 @@ class Provider:
         return models_url(self.chat_url)
 
     def url_problem(self):
-        """Why its address may not be used, or None: not set, or not https (netguard)."""
+        """Why its address may not be used, or None: not set, or not https (netguard),
+        or a Tor onion service with no way to reach one."""
         if not self.address and not self.kind.fixed_url:
             return f"No address is set for {self.name}. Add it in Settings > Providers."
-        return netguard.problem(self.chat_url)
+        found = netguard.problem(self.chat_url)
+        if found is None and netguard.is_onion(urlparse(self.chat_url).hostname or ""):
+            from . import proxy
+            if not proxy.reaches_onion():
+                return (f"{self.address} is a Tor onion service, reached only through "
+                        f"Tor: set Settings > Advanced > Proxy to its SOCKS port, "
+                        f"socks5h://127.0.0.1:9050 as a rule.")
+        return found
 
     def key_problem(self):
         if self.kind.needs_key and not self.api_key:

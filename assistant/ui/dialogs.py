@@ -13,7 +13,7 @@ from .. import gtkcompat
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,
-                sealed)
+                proxy as proxy_module, sealed)
 from ..vendored import location as vendored_location
 from .model_browser import ModelBrowser
 
@@ -1068,7 +1068,8 @@ class SettingsDialog(Gtk.Dialog):
             self.privacy_problems.set_text("")
         self.privacy_problems.set_visible(bool(found))
         self.save_button.set_sensitive(not (enabled and (found or unsure))
-                                       and not self.url_problem())
+                                       and not self.url_problem()
+                                       and not self.proxy_problem())
 
     def _on_check_attestation(self, _widget):
         import threading
@@ -1590,7 +1591,36 @@ class SettingsDialog(Gtk.Dialog):
             "level instead.")
         grid.attach(self._label("Reasoning effort"), 0, 2, 1, 1)
         grid.attach(self.reasoning_effort, 1, 2, 1, 1)
+
+        self.proxy_entry = Gtk.Entry(hexpand=True)
+        self.proxy_entry.set_text(str(getattr(self.config, "proxy", "") or ""))
+        self.proxy_entry.set_placeholder_text(
+            "socks5h://127.0.0.1:9050 for Tor, or http://proxy:3128 - empty: the system's")
+        self.proxy_entry.set_tooltip_text(
+            "Every request the app makes goes through this proxy - the models, the web "
+            "search, attestation - except to this machine and its own network. "
+            "socks5h:// lets the proxy look names up, which is what reaches a Tor .onion "
+            "address. Empty, the environment's proxy settings are used, if any.")
+        self.proxy_entry.connect("changed", lambda _w: self._sync_proxy())
+        grid.attach(self._label("Proxy"), 0, 3, 1, 1)
+        grid.attach(self.proxy_entry, 1, 3, 1, 1)
+        self.proxy_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.proxy_warning.set_no_show_all(True)
+        page.pack_start(self.proxy_warning, False, False, 0)
         return page
+
+    def proxy_problem(self):
+        entry = getattr(self, "proxy_entry", None)
+        return proxy_module.problem(entry.get_text()) if entry is not None else None
+
+    def _sync_proxy(self):
+        problem = self.proxy_problem()
+        self.proxy_warning.set_markup(
+            f'<span foreground="#d23a31">{GLib.markup_escape_text(problem)}</span>'
+            if problem else "")
+        self.proxy_warning.set_visible(bool(problem))
+        if hasattr(self, "privacy_problems"):
+            self._sync_privacy()
 
     # ---- connection test --------------------------------------------------
 
@@ -1626,6 +1656,7 @@ class SettingsDialog(Gtk.Dialog):
         out["hotkey_mode"] = self.hotkey_mode.get_active_id() or "auto"
         out.update(self.shortcuts_page.values())
         out["max_tokens"] = int(self.max_tokens.get_value())
+        out["proxy"] = self.proxy_entry.get_text().strip()
         out["reasoning_effort"] = self.reasoning_effort.get_active_id() or "low"
         out["web_search_enabled"] = self.search_enabled.get_active()
         out["web_search_citations"] = self.search_citations.get_active()

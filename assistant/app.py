@@ -5,7 +5,7 @@ import os
 from . import gtkcompat
 from gi.repository import Gdk, GLib, Gtk
 
-from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc,
+from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc, proxy,
                 models as catalogue, privacy as privacy_module, prompts, providers,
                 webkitguard)
 from .capture import CANCELLED, CaptureManager
@@ -49,6 +49,7 @@ class Assistant:
         from . import collector
         collector.install()
         self.config = Config()
+        proxy.apply(self.config)
         self.client = LLMClient(self.config)
         self.capture = CaptureManager()
         self.dictionaries = Library(self.config)
@@ -1011,7 +1012,8 @@ class Assistant:
                 values = dialog.values()
                 # The dialog holds Save while the address is refused; this is for
                 # whatever gets a response out of it all the same.
-                refused = providers.refused(self.config.detached(**values))
+                refused = (providers.refused(self.config.detached(**values))
+                           or proxy.problem(values.get("proxy")))
                 if refused:
                     self.notify(f"Settings not saved. {refused}", urgency="normal")
                     return
@@ -1036,6 +1038,7 @@ class Assistant:
                                 "It is used until the app quits.", urgency="normal")
                 else:
                     self.notify("Settings saved")
+                proxy.apply(self.config)
                 # A key or an address entered just now: the lists the next requests are
                 # shaped by (models.ensure_listed), fetched in the background.
                 if not providers.unready(self.config):

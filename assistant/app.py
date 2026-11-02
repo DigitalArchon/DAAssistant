@@ -26,21 +26,6 @@ else:  # pragma: no cover
     Notify = None
 
 
-def privacy_lines(config):
-    """Privacy Mode's state, for Diagnostics and --probe."""
-    from . import sealed, vendored
-    ok, message = sealed.available()
-    found = privacy_module.problems(config)
-    return [
-        f"Privacy Mode  : {'on' if config.privacy_mode else 'off'} "
-        f"({config.private_text_model}, premium {config.private_premium_model}, "
-        f"vision {config.private_vision_model})"
-        + (f" - {' '.join(found)}" if found else ""),
-        f"E2EE client   : {message if ok else 'not installed'}"
-        + (f" from {vendored.location()}" if ok and vendored.location() else ""),
-    ]
-
-
 class Assistant:
     def __init__(self, initial_action=None):
         """`initial_action` is done once the main loop runs: the app was started by a
@@ -1098,7 +1083,7 @@ class Assistant:
         advice = gtkcompat.webkit_advice()
         if advice:
             lines.append(advice)
-        lines += privacy_lines(self.config)
+        lines += privacy_module.summary_lines(self.config)
         lines += [
             f"Config file   : {self.config.config_file}",
             f"Keyring       : {self.config.keychain_error or self.config.keychain.describe()}",

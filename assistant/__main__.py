@@ -37,22 +37,31 @@ def probe():
     manager = CaptureManager()
     chain = manager.describe_chain()
     print(f"Capture chain  : {' -> '.join(chain) if chain else 'NONE - see README'}")
-    from . import icon
-    resolved = icon.name()
-    print(f"Tray backend   : {gtkcompat.load_indicator()[1]}")
-    print(f"Tray icon      : {resolved}"
-          f"{'' if resolved == icon.NAME else ' (bundled icons not found)'}")
-    print(f"WebKit view    : {gtkcompat.webkit_status()}")
+    from gi.repository import Gdk
+    display = Gdk.Display.get_default()
+    if display is None:
+        # Over ssh, or from a text console: what needs the desktop is not there to ask.
+        print("Display        : none - run --probe in your desktop session to check the "
+              "tray, the chat view and the theme")
+    else:
+        from . import icon
+        resolved = icon.name()
+        print(f"Tray backend   : {gtkcompat.load_indicator()[1]}")
+        print(f"Tray icon      : {resolved}"
+              f"{'' if resolved == icon.NAME else ' (bundled icons not found)'}")
+        # WebKit is tried for real, and without a display GTK aborts the process.
+        print(f"WebKit view    : {gtkcompat.webkit_status()}")
     from . import bundle
     if bundle.status():
         print(f"Fallbacks      : {bundle.status()}")
-    advice = gtkcompat.webkit_advice()
+    advice = gtkcompat.webkit_advice() if display is not None else None
     if advice:
         print(advice)
     print(f"Notifications  : {'libnotify' if gtkcompat.has_notify() else 'stdout only'}")
-    from . import theming
-    for line in theming.summary():
-        print(line)
+    if display is not None:
+        from . import theming
+        for line in theming.summary():
+            print(line)
 
     from .config import Config
     from .hotkeys import bindings, choose
@@ -63,8 +72,8 @@ def probe():
         print(f"{provider.name:<15}: {provider.problem() or 'ready'}"
               + (f" ({provider.chat_url})" if provider.id != providers.NANOGPT else ""))
     print(f"Keyring        : {config.keychain_error or config.keychain.describe()}")
-    from .app import privacy_lines
-    for line in privacy_lines(config):
+    from .privacy import summary_lines
+    for line in summary_lines(config):
         print(line.replace(" : ", "  : ", 1))
     mechanism, why = choose(config)
     print(f"Shortcuts      : {mechanism} ({why}); setting {config.hotkey_mode}")

@@ -185,6 +185,22 @@ def problems(config, wait=True):
 
 # ---- attestation ----------------------------------------------------------------------
 
+def summary_lines(config):
+    """Privacy Mode's state, for Diagnostics and --probe. Here rather than with the app,
+    which brings GTK and WebKit with it: --probe reads this with no display too."""
+    from . import sealed, vendored
+    ok, message = sealed.available()
+    found = problems(config)
+    return [
+        f"Privacy Mode  : {'on' if config.privacy_mode else 'off'} "
+        f"({config.private_text_model}, premium {config.private_premium_model}, "
+        f"vision {config.private_vision_model})"
+        + (f" - {' '.join(found)}" if found else ""),
+        f"E2EE client   : {message if ok else 'not installed'}"
+        + (f" from {vendored.location()}" if ok and vendored.location() else ""),
+    ]
+
+
 @dataclass
 class Attestation:
     """What an enclave proved before anything was sent to it."""

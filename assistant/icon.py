@@ -26,18 +26,26 @@ _registered = False
 
 
 def register():
-    """Put the bundled icons on the default theme search path. Idempotent."""
+    """Put the bundled icons on the default theme search path. Idempotent. With no
+    display there is no theme yet (--probe over ssh): nothing is done until there is."""
     global _registered
-    if not _registered and os.path.isdir(THEME_DIR):
+    if _registered:
+        return
+    theme = Gtk.IconTheme.get_default()
+    if theme is None:
+        return
+    if os.path.isdir(THEME_DIR):
         # A directory of icon *themes*, the same shape as /usr/share/icons.
-        Gtk.IconTheme.get_default().append_search_path(THEME_DIR)
+        theme.append_search_path(THEME_DIR)
     _registered = True
 
 
 def name():
-    """The icon name to use, with the bundled icons registered first."""
+    """The icon name to use, with the bundled icons registered first; NAME itself when
+    there is no display to ask a theme of."""
     register()
-    if Gtk.IconTheme.get_default().has_icon(NAME):
+    theme = Gtk.IconTheme.get_default()
+    if theme is None or theme.has_icon(NAME):
         return NAME
     return FALLBACK
 

@@ -74,6 +74,43 @@ def reaches_onion():
                for name in VARIABLES)
 
 
+def in_use():
+    """Whether this process's requests go through a proxy: the app's, or the
+    environment's."""
+    return any(os.environ.get(name) for name in VARIABLES)
+
+
+def let_tuf_use_socks():
+    """Let TUF's fetcher through a SOCKS proxy too: it fetches Sigstore's trust root,
+    which Private Mode's attestation checks the enclave's release against.
+
+    tuf.ngclient builds a urllib3 ProxyManager for whatever proxy the environment names,
+    and that speaks http and https only. Through Tor, live (Nov 2026), the refresh
+    failed - "Failed to refresh TUF metadata" - and no private/ model could be attested.
+    For a SOCKS proxy it is given urllib3's SOCKS manager instead, which uses PySocks,
+    as a SOCKS proxy needs anyway; any other proxy is left to TUF as it was. Returns
+    whether TUF's proxy handling was found where this expects it."""
+    try:
+        from tuf.ngclient._internal import proxy as tuf_proxy
+    except ImportError:
+        return False
+    original = getattr(tuf_proxy, "ProxyManager", None)
+    if original is None:
+        return False
+    if getattr(original, "da_assistant_socks", False):
+        return True
+
+    def manager(proxy_url, *args, **kwargs):
+        if str(proxy_url).lower().startswith("socks"):
+            from urllib3.contrib.socks import SOCKSProxyManager
+            return SOCKSProxyManager(proxy_url, *args, **kwargs)
+        return original(proxy_url, *args, **kwargs)
+
+    manager.da_assistant_socks = True
+    tuf_proxy.ProxyManager = manager
+    return True
+
+
 def apply(config):
     """Send this process's requests through config.proxy - or, with none set or one
     that cannot be used, leave them to the environment's settings again."""

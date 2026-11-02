@@ -900,6 +900,14 @@ tunnelled end to end. Left empty, the environment's own proxy settings (`HTTPS_P
 the rest) stand. The programs the app starts - a browser for a link, the screenshot
 tools - get the environment they had, without the app's proxy.
 
+Through Tor, [Privacy Mode](#privacy-mode) attests poorly: the services an attestation
+needs refuse most Tor exits. Measured over twelve circuits (Nov 2026), Sigstore's
+servers, which a `private/` model's attestation reads its trust root from, refused 11;
+NVIDIA's refused 8 and Intel's dropped 8, while nano-gpt and Tinfoil answered nearly
+every time. A `private/` model is then not attested, and nothing is sent to it; a
+`TEE/` model's banner turns amber for what could not be checked, and Strict refuses it.
+Trying again later may go through another exit.
+
 ## Where things are kept
 
 | What | Where |

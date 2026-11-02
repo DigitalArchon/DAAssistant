@@ -44,7 +44,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from . import models
+from . import models, proxy
 from .dcap import since_boot
 from .privacy import E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode
 
@@ -155,6 +155,7 @@ def tinfoil_verify(relay, cache_secret):
     # needs, and the app should not pay for them at startup.
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
+    proxy.let_tuf_use_socks()
 
     # The secret is passed explicitly, or the SDK would create one in ~/.tinfoil; this
     # client only verifies, it never sends a request.
@@ -186,6 +187,16 @@ def tinfoil_verify(relay, cache_secret):
                     measurement=str(document.get("enclaveFingerprint") or ""),
                     release_digest=str(digest or ""), release_tag=tag,
                     latest_release=latest, latest_checked=checked)
+
+
+def _proxy_hint(error):
+    """Why, where it is likely: Sigstore's trust root, which the attestation needs, not
+    fetched through a proxy. Live through Tor (Nov 2026), Sigstore's servers refused 11
+    exits in 12 with HTTP 403; another exit, later, may pass."""
+    if "TUF" not in str(error) or not proxy.in_use():
+        return ""
+    return (" - through the proxy, which Sigstore's servers refuse from most Tor exits; "
+            "it may pass if tried again later")
 
 
 def attestation_for(model, verified):
@@ -233,7 +244,8 @@ class Enclave:
                     raise
                 except Exception as e:  # the SDK's own errors
                     raise PrivacyError(
-                        f"the private model's enclave could not be attested: {e}") from e
+                        f"the private model's enclave could not be attested: {e}"
+                        + _proxy_hint(e)) from e
                 self._at = self._clock()
             return self._verified
 

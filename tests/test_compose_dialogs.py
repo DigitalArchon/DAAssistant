@@ -153,3 +153,59 @@ class CaptureDialogNamesItsModels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class SaveEveryImageSent(unittest.TestCase):
+    """"Save every image sent" keeps what is sent: blacked out as sent, and only when it
+    is - not the capture as the review dialog opened on it, nor one that was cancelled."""
+
+    def setUp(self):
+        import shutil
+        import tempfile
+        from assistant import paths
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.captures = os.path.join(paths.CACHE_DIR, "captures")
+        shutil.rmtree(self.captures, ignore_errors=True)
+        self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.debug_save_captures = True
+        self.sent = {}
+
+    def saved(self):
+        return sorted(os.listdir(self.captures)) if os.path.isdir(self.captures) else []
+
+    def dialog(self):
+        def on_confirm(image, image_base64, info, prompt, web_search):
+            self.sent.update(image_base64=image_base64, info=info)
+        return CaptureReviewDialog(Image.new("RGB", (120, 60), (255, 255, 255)),
+                                   "OCR only", self.config, on_confirm)
+
+    def test_nothing_is_kept_when_the_dialog_opens_or_is_cancelled(self):
+        dialog = self.dialog()
+        self.assertEqual(self.saved(), [])
+        dialog.destroy()
+        self.assertEqual(self.saved(), [])
+
+    def test_the_copy_is_what_was_sent_blacked_out(self):
+        import base64
+        import io
+        from unittest import mock
+        from assistant.ui import redact
+
+        def black_out(_parent, image, done, apply_label=None):
+            blacked = image.copy()
+            blacked.paste((0, 0, 0), (0, 0, 60, 60))
+            done(blacked, [(0, 0, 60, 60)])
+
+        dialog = self.dialog()
+        with mock.patch.object(redact, "RedactDialog", black_out), \
+                mock.patch.object(dialog, "get_realized", lambda: True):
+            dialog._on_redact()
+        dialog._confirm()
+        [name] = self.saved()
+        with open(os.path.join(self.captures, name), "rb") as f:
+            kept = f.read()
+        self.assertEqual(kept, base64.b64decode(self.sent["image_base64"]))
+        self.assertEqual(Image.open(io.BytesIO(kept)).convert("RGB").getpixel((10, 10)),
+                         (0, 0, 0))
+        self.assertEqual(self.sent["info"]["debug_path"], os.path.join(self.captures, name))

@@ -131,7 +131,8 @@ class SavingAsMarkdownWithTheScreenshot(WindowCase):
         self.assertTrue(os.path.exists(os.path.join(self.out, "a (2).png")))
 
     def test_replacing_a_saved_conversation_replaces_its_picture(self):
-        for name, data in (("a.md", b"old"), ("a.png", b"old")):
+        for name, data in (("a.md", b"## Screenshot\n\n![Screenshot](a.png)\n"),
+                           ("a.png", b"old")):
             with open(os.path.join(self.out, name), "wb") as f:
                 f.write(data)
         data = png()
@@ -140,6 +141,32 @@ class SavingAsMarkdownWithTheScreenshot(WindowCase):
         self.assertEqual(sorted(os.listdir(self.out)), ["a.md", "a.png"])
         with open(os.path.join(self.out, "a.png"), "rb") as f:
             self.assertEqual(f.read(), data)
+
+    def test_replacing_keeps_to_the_picture_the_conversation_linked_to(self):
+        """Saved beside someone's own a.png, a.md linked "a (2).png"; saving over a.md
+        again replaces that, and a.png is still theirs."""
+        for name, data in (("a.md", b"## Screenshot\n\n![Screenshot](a%20%282%29.png)\n"),
+                           ("a.png", b"theirs"), ("a (2).png", b"ours")):
+            with open(os.path.join(self.out, name), "wb") as f:
+                f.write(data)
+        data = png()
+        window = self._window(data)
+        self._save(lambda: window._on_save_markdown(None), os.path.join(self.out, "a.md"))
+        with open(os.path.join(self.out, "a.png"), "rb") as f:
+            self.assertEqual(f.read(), b"theirs")
+        with open(os.path.join(self.out, "a (2).png"), "rb") as f:
+            self.assertEqual(f.read(), data)
+
+    def test_replacing_a_markdown_file_that_linked_no_picture_leaves_a_png_alone(self):
+        for name, data in (("README.md", b"# Notes\n"), ("README.png", b"theirs")):
+            with open(os.path.join(self.out, name), "wb") as f:
+                f.write(data)
+        window = self._window(png())
+        self._save(lambda: window._on_save_markdown(None),
+                   os.path.join(self.out, "README.md"))
+        with open(os.path.join(self.out, "README.png"), "rb") as f:
+            self.assertEqual(f.read(), b"theirs")
+        self.assertTrue(os.path.exists(os.path.join(self.out, "README (2).png")))
 
     def test_cancelling_writes_nothing(self):
         window = self._window(png())

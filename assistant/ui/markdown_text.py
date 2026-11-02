@@ -15,8 +15,9 @@ both light and dark.
 
 import re
 
-from gi.repository import Gdk, Gtk, Pango
+from gi.repository import Gdk, GLib, Gtk, Pango
 
+from .. import hostenv
 from .markdown_html import URL, url_end
 
 FENCE = re.compile(r"^\s*```(\w*)\s*$")
@@ -287,7 +288,12 @@ def _on_link_click(textview, event):
     if handler is not None and handler(url):
         return False
     if url.startswith(("http://", "https://", "mailto:")):
-        Gtk.show_uri_on_window(None, url, event.time)
+        # With the host's environment, as every program the app starts (hostenv); a
+        # link nothing opens - mailto: with no mail program - is not an error dialog.
+        try:
+            hostenv.open_uri(url)
+        except GLib.Error as e:
+            print(f"[link] {url}: {e.message}")
     return False
 
 

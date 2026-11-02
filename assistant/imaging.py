@@ -139,10 +139,19 @@ def prepare_for_vision(img, config=None, save_debug_copy=False):
         "scaled": out.size != original_size,
     }
 
-    if save_debug_copy or (config and getattr(config, "debug_save_captures", False)):
+    # Only when asked to here. "Save every image sent" saves at Send, from what is sent
+    # (save_sent_copy): this runs as the review dialog opens, before anything is blacked
+    # out, and for captures that are then cancelled.
+    if save_debug_copy:
         info["debug_path"] = _save_debug(png)
 
     return base64.b64encode(png).decode("ascii"), info
+
+
+def save_sent_copy(image_base64):
+    """Keep a copy of the image being sent, for "Save every image sent": the exact
+    bytes, blacked out as they are. Returns its path."""
+    return _save_debug(base64.b64decode(image_base64))
 
 
 def _save_debug(png_bytes):

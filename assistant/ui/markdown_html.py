@@ -15,6 +15,7 @@ from html.parser import HTMLParser
 
 import markdown
 from pygments.formatters import HtmlFormatter
+from pygments.token import STANDARD_TYPES
 
 from ..reference.encyclopedia import byline
 
@@ -65,6 +66,14 @@ def _pygments_css(dark):
     return HtmlFormatter(style=style).get_style_defs(".codehilite")
 
 
+# The only classes a model's HTML keeps: Pygments' token classes and codehilite's own,
+# which the stylesheet colours code by. Any other would be one of the transcript's -
+# "turn user", "role", "privacy ok" - and let an answer draw a question nobody asked,
+# or a green "signed by attested enclave" badge under a reply whose signature failed.
+CODE_CLASSES = frozenset(c for c in STANDARD_TYPES.values() if c) | {
+    "codehilite", "hll", "linenos", "lineno", "filename"}
+
+
 class _Sanitiser(HTMLParser):
     """Allowlist filter for the HTML that Markdown produces.
 
@@ -92,7 +101,7 @@ class _Sanitiser(HTMLParser):
     }
     VOID = {"br", "hr", "img"}
     ALLOWED_ATTRS = {
-        "class": None,                       # pygments/codehilite styling
+        "class": None,                       # CODE_CLASSES only: see _attrs
         "title": None,
         "alt": None,
         "colspan": None,
@@ -124,6 +133,10 @@ class _Sanitiser(HTMLParser):
             name = name.lower()
             if name not in self.ALLOWED_ATTRS or value is None:
                 continue
+            if name == "class":
+                value = " ".join(c for c in value.split() if c in CODE_CLASSES)
+                if not value:
+                    continue
             prefixes = self._links if name == "href" else self.ALLOWED_ATTRS[name]
             if prefixes is not None:
                 lowered = value.strip().lower()

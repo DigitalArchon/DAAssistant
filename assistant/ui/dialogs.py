@@ -358,6 +358,13 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
             return
         self._done = True
         web_search = self.search_check.get_active()
+        if self.config is not None and getattr(self.config, "debug_save_captures", False):
+            # What is sent, as it is sent: blacked out where it was, and never a capture
+            # that was cancelled or re-cropped away.
+            try:
+                self.info["debug_path"] = imaging.save_sent_copy(self.image_base64)
+            except OSError as e:
+                print(f"[capture] could not keep a copy of the image sent: {e}")
         self.destroy()
         self.on_confirm(self.image, self.image_base64, self.info, prompt, web_search)
 

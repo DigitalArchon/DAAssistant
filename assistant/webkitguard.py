@@ -38,6 +38,13 @@ STATE_FILE = os.path.join(LOG_DIR, "webkit-crash")
 FORCE_OFF = "DA_ASSISTANT_NO_WEBKIT"
 STRIKES = 2
 
+# The WebViews of this run that have been built and not yet rendered. The breadcrumb is
+# one per run however many of them are loading at once: a process that dies takes every
+# window with it, and that is one strike. Counted per view, two windows opened together
+# were two strikes - the plain-text view for good, with "ended this app 2 times" for a
+# reason - and the first to render cleared the breadcrumb under the other still loading.
+_loading = set()
+
 
 def state_path():
     return STATE_FILE
@@ -70,8 +77,13 @@ def blocked():
     return False, ""
 
 
-def note_attempt():
-    """Count a WebView about to be built, in case building it is the last thing we do."""
+def note_attempt(view=None):
+    """Count a WebView about to be built, in case building it is the last thing we do.
+    `view` is whatever stands for it until note_success(view)."""
+    first = not _loading
+    _loading.add(view)
+    if not first:
+        return                  # this run's breadcrumb is down already
     count = _strikes() + 1      # read before the open below truncates the file
     try:
         os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
@@ -82,15 +94,21 @@ def note_attempt():
         pass
 
 
-def note_success():
-    """The view rendered, so whatever happens later was not it."""
+def note_success(view=None):
+    """The view rendered - or closed before it could - so whatever happens later was
+    not it. The breadcrumb stays while another view of this run is still loading."""
+    _loading.discard(view)
+    if _loading:
+        return
     try:
         os.unlink(STATE_FILE)
     except OSError:
         pass
 
 
-# A clean shutdown while a view was still loading is not a crash, so the app clears the
-# breadcrumb on its way out too. That is what keeps quitting mid-load from costing the
-# user their WebKit view.
-note_clean_exit = note_success
+def note_clean_exit():
+    """A clean shutdown while a view was still loading is not a crash, so the app clears
+    the breadcrumb on its way out too. That is what keeps quitting mid-load from costing
+    the user their WebKit view."""
+    _loading.clear()
+    note_success()

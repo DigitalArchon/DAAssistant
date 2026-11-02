@@ -852,8 +852,8 @@ class DictionaryWindow(unittest.TestCase):
 
             decision = types.SimpleNamespace(get_navigation_action=Navigation,
                                              ignore=lambda: None)
-            window._on_decide_policy(None, decision,
-                                     chat.WebKit2.PolicyDecisionType.NAVIGATION_ACTION)
+            window.guard._on_decide_policy(
+                None, decision, chat.WebKit2.PolicyDecisionType.NAVIGATION_ACTION)
             self._run_until(lambda: window.conversation[0]["word"] == "zib")
             self.assertEqual(len(window._pages), 2)
         finally:

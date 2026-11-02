@@ -14,7 +14,7 @@ from gi.repository import Gdk, Gtk
 
 from ..reference import encyclopedia_html
 from ..reference.encyclopedia import citation_of, text_of
-from . import encscheme
+from . import encscheme, webpolicy
 
 if gtkcompat.has_webkit():
     from gi.repository import WebKit2
@@ -61,9 +61,12 @@ class ArticlePane(Gtk.Box):
         if WebKit2 is not None:
             encscheme.install(encyclopedia)
             self.webview = WebKit2.WebView(web_context=encscheme.context())
-            self.webview.connect("decide-policy", self._on_decide_policy)
             self.webview.connect("load-changed", self._on_load_changed)
-            self.webview.connect("context-menu", lambda *a: False)
+            # Links between articles followed here, the rest in the browser, and the
+            # view never taken off the article (webpolicy). The window around it adds
+            # its own context menu items through self.guard.extra.
+            self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=self._on_web_link)
+            self.guard.expect("about:blank")
             settings = self.webview.get_settings()
             settings.set_enable_developer_extras(False)
             # Left on: WebKit's own controls for films are scripts. The page's policy
@@ -150,8 +153,9 @@ class ArticlePane(Gtk.Box):
         self._highlight = highlight
         page = encyclopedia_html.document(title, label, body, self.dark)
         # file:// as the base: WebKit plays the DVD's films only from file addresses.
-        self.webview.load_html(page, "file://" + (self.encyclopedia.dvd() or "/").rstrip("/")
-                               + "/")
+        base = "file://" + (self.encyclopedia.dvd() or "/").rstrip("/") + "/"
+        self.guard.expect(base)
+        self.webview.load_html(page, base)
 
     def message(self, title, text):
         """A page of words of our own: before the first search, or for what is missing."""
@@ -172,20 +176,13 @@ class ArticlePane(Gtk.Box):
                     text, WebKit2.FindOptions.CASE_INSENSITIVE
                     | WebKit2.FindOptions.WRAP_AROUND, 1)
 
-    def _on_decide_policy(self, _view, decision, decision_type):
-        if decision_type != WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
-            return False
-        action = decision.get_navigation_action()
-        if action.get_navigation_type() != WebKit2.NavigationType.LINK_CLICKED:
-            return False
-        decision.ignore()
-        uri = action.get_request().get_uri()
+    def _on_web_link(self, uri, _kind):
+        """Another of the encyclopedia's pages, opened here; True for those."""
         target = target_of(uri)
         if target is not None:
             self.open(target)
-        elif uri.startswith(("http://", "https://")):
-            Gtk.show_uri_on_window(self.get_toplevel(), uri, Gdk.CURRENT_TIME)
-        return True
+            return True
+        return False
 
 
 def find_text(quote, limit=120):
@@ -215,17 +212,12 @@ class FlashWindow(Gtk.Window):
         encscheme.install(encyclopedia)
         self.webview = WebKit2.WebView(web_context=encscheme.context())
         self.webview.get_settings().set_enable_developer_extras(False)
-        self.webview.connect("decide-policy", self._on_decide_policy)
+        # An animation may try to open a web page. Ruffle is told not to, and the
+        # window follows nothing but the animation's own page (webpolicy): no link,
+        # in the browser or here.
+        self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=lambda *_a: True)
+        self.guard.expect(f"enc://flash/{name}")
         self.add(self.webview)
         self.connect("destroy", lambda _w: setattr(self, "webview", None))
         self.show_all()
         self.webview.load_uri(f"enc://flash/{name}")
-
-    @staticmethod
-    def _on_decide_policy(_view, decision, decision_type):
-        # An animation may try to open a web page; Ruffle is told not to, and the
-        # window would not follow it anyway.
-        if decision_type == WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION:
-            decision.ignore()
-            return True
-        return False

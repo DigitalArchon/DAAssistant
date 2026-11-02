@@ -442,15 +442,23 @@ class WebKitThatKillsTheProcess(TempDir):
         for p in self.patches:
             p.start()
         os.environ.pop(webkitguard.FORCE_OFF, None)
+        self.restart()
 
     def tearDown(self):
         for p in self.patches:
             p.stop()
+        self.restart()
         super().tearDown()
+
+    @staticmethod
+    def restart():
+        """The app starting again: nothing of the last run's is loading."""
+        webkitguard._loading.clear()
 
     def test_two_views_that_never_rendered_disable_webkit(self):
         self.assertFalse(webkitguard.blocked()[0])
         webkitguard.note_attempt()          # the process dies here
+        self.restart()
         self.assertFalse(webkitguard.blocked()[0], "one strike is not a verdict")
         webkitguard.note_attempt()          # and again
         blocked, reason = webkitguard.blocked()
@@ -466,10 +474,24 @@ class WebKitThatKillsTheProcess(TempDir):
         # A logout or an OOM kill mid-load looks identical to a crash from here, and
         # must not cost the rendered view for good.
         webkitguard.note_attempt()
+        self.restart()
         webkitguard.note_attempt()
         webkitguard.note_success()
         webkitguard.note_attempt()
         self.assertFalse(webkitguard.blocked()[0])
+
+    def test_two_windows_loading_at_once_are_one_run_not_two_crashes(self):
+        first, second, third = object(), object(), object()
+        webkitguard.note_attempt(first)
+        webkitguard.note_attempt(second)
+        self.assertFalse(webkitguard.blocked()[0])
+        webkitguard.note_success(first)
+        self.assertTrue(os.path.exists(self.state), "the second is still loading")
+        webkitguard.note_attempt(third)
+        self.assertFalse(webkitguard.blocked()[0])
+        webkitguard.note_success(second)
+        webkitguard.note_success(third)
+        self.assertFalse(os.path.exists(self.state))
 
     def test_quitting_mid_load_does_not_count_as_a_crash(self):
         webkitguard.note_attempt()

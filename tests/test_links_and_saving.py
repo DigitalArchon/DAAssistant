@@ -86,7 +86,7 @@ class TheFallbackViewLinksToo(unittest.TestCase):
                                 or url.startswith("enc://"))
         click = types.SimpleNamespace(button=1, x=0, y=0, time=0)
         with mock.patch.object(markdown_text, "link_at") as link_at, \
-                mock.patch.object(Gtk, "show_uri_on_window") as browser:
+                mock.patch.object(markdown_text.hostenv, "open_uri") as browser:
             link_at.return_value = "enc://cite/1/2"
             markdown_text._on_link_click(view, click)
             browser.assert_not_called()
@@ -176,3 +176,97 @@ class SettingsDropDownsOpenBelowThemselves(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+class TheViewStaysOnItsPage(unittest.TestCase):
+    """Only the app's own loads may change what a WebKit view shows: a link goes to the
+    browser, and Open Link, Reload, Back, a dropped URL or a form go nowhere."""
+
+    def setUp(self):
+        from assistant.ui import webpolicy
+        self.webkit = chat.WebKit2
+        self.view = self.webkit.WebView()
+        self.opened, self.dropped, self.said, self.links = [], [], [], []
+        self.guard = webpolicy.Guard(
+            self.webkit, self.view, on_link=lambda uri, kind: self.links.append(uri)
+            or uri.startswith("lookup:"), on_drop=self.dropped.append,
+            say=self.said.append)
+        self.guard.expect("about:blank")
+        patch = mock.patch.object(webpolicy.hostenv, "open_uri", self.opened.append)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def decide(self, uri, kind, decision_type=None):
+        ignored = []
+        action = types.SimpleNamespace(
+            get_navigation_type=lambda: kind,
+            get_request=lambda: types.SimpleNamespace(get_uri=lambda: uri))
+        decision = types.SimpleNamespace(get_navigation_action=lambda: action,
+                                         ignore=lambda: ignored.append(True))
+        handled = self.guard._on_decide_policy(
+            None, decision, decision_type or self.webkit.PolicyDecisionType.NAVIGATION_ACTION)
+        return handled, bool(ignored)
+
+    def test_the_apps_own_page_loads(self):
+        self.assertEqual(self.decide("about:blank", self.webkit.NavigationType.OTHER),
+                         (False, False))
+
+    def test_a_clicked_link_goes_to_the_browser_and_the_view_stays(self):
+        self.assertEqual(self.decide("https://a.test/", self.webkit.NavigationType.LINK_CLICKED),
+                         (True, True))
+        self.assertEqual(self.opened, ["https://a.test/"])
+
+    def test_the_windows_own_links_are_its_own(self):
+        self.decide("lookup:zib", self.webkit.NavigationType.LINK_CLICKED)
+        self.assertEqual(self.links, ["lookup:zib"])
+        self.assertEqual(self.opened, [])
+
+    def test_open_link_from_a_menu_or_a_dropped_url_goes_nowhere(self):
+        for uri, kind in (("https://evil.test/", self.webkit.NavigationType.OTHER),
+                          ("about:blank", self.webkit.NavigationType.BACK_FORWARD),
+                          ("https://a.test/", self.webkit.NavigationType.FORM_SUBMITTED)):
+            self.assertEqual(self.decide(uri, kind), (True, True), (uri, kind))
+        self.assertEqual(self.opened, [])
+
+    def test_a_link_for_a_new_window_opens_in_the_browser(self):
+        self.decide("https://a.test/", self.webkit.NavigationType.LINK_CLICKED,
+                    self.webkit.PolicyDecisionType.NEW_WINDOW_ACTION)
+        self.assertEqual(self.opened, ["https://a.test/"])
+
+    def test_a_dropped_file_is_offered_not_opened(self):
+        self.decide("file:///tmp/notes.txt", self.webkit.NavigationType.OTHER)
+        self.assertEqual(self.dropped, ["file:///tmp/notes.txt"])
+
+    def test_a_link_nothing_can_open_is_said(self):
+        from gi.repository import GLib
+        from assistant.ui import webpolicy
+
+        def refuse(uri):
+            raise GLib.Error("no handler for mailto")
+
+        with mock.patch.object(webpolicy.hostenv, "open_uri", refuse):
+            self.decide("mailto:a@b.test", self.webkit.NavigationType.LINK_CLICKED)
+        self.assertTrue(self.said and "mailto" in self.said[0])
+
+    def test_the_context_menu_keeps_copying_and_drops_navigating(self):
+        actions = self.webkit.ContextMenuAction
+        menu = self.webkit.ContextMenu.new()
+        for action in (actions.OPEN_LINK, actions.OPEN_LINK_IN_NEW_WINDOW,
+                       actions.DOWNLOAD_LINK_TO_DISK, actions.COPY_LINK_TO_CLIPBOARD,
+                       actions.GO_BACK, actions.RELOAD, actions.COPY, actions.SELECT_ALL):
+            menu.append(self.webkit.ContextMenuItem.new_from_stock_action(action))
+        hit = types.SimpleNamespace(context_is_link=lambda: True,
+                                    get_link_uri=lambda: "https://a.test/")
+        self.assertFalse(self.guard._on_context_menu(self.view, menu, None, hit))
+        kept = [item.get_stock_action() for item in menu.get_items()]
+        self.assertEqual(kept[0], actions.CUSTOM)          # Open Link in Browser
+        self.assertEqual(set(kept[1:]), {actions.COPY_LINK_TO_CLIPBOARD, actions.COPY,
+                                         actions.SELECT_ALL})
+
+    def test_a_menu_with_nothing_left_is_not_shown(self):
+        menu = self.webkit.ContextMenu.new()
+        menu.append(self.webkit.ContextMenuItem.new_from_stock_action(
+            self.webkit.ContextMenuAction.RELOAD))
+        hit = types.SimpleNamespace(context_is_link=lambda: False)
+        self.assertTrue(self.guard._on_context_menu(self.view, menu, None, hit))

@@ -8,12 +8,13 @@ import json
 import os
 import re
 import time
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
-from . import bubbles, find, markdown_html, markdown_text, screenshot as screenshot_view
+from . import (bubbles, find, markdown_html, markdown_text, screenshot as screenshot_view,
+               webpolicy)
 from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
                 providers)
 from ..llm import LLMError
@@ -186,18 +187,38 @@ def markdown_filename(title, extension=".md"):
     return f"{stem} {time.strftime('%Y-%m-%d %H%M')}{extension}"
 
 
-def screenshot_beside(markdown_path, replacing):
-    """Where a saved conversation's screenshot goes: beside it, under the same name.
+_SAVED_SCREENSHOT = re.compile(r"^!\[Screenshot\]\(([^)\s/]+)\)$", re.M)
 
-    Replacing a saved conversation - the file dialog asked first - replaces its
-    screenshot too. Otherwise a picture already under that name is some other file, and
-    the next free name is used instead.
+
+def screenshot_beside(markdown_path, replacing):
+    """Where a saved conversation's screenshot goes: beside it, under the same name, or
+    the next free one when a picture of that name is already there.
+
+    Replacing a saved conversation - the file dialog asked about the .md - replaces the
+    screenshot that conversation links to, and nothing else. notes.png beside notes.md
+    is not that unless notes.md says so: the first save of notes.md beside someone's own
+    notes.png wrote "notes (2).png", and replacing it used to write over notes.png.
     """
+    if replacing:
+        own = _linked_screenshot(markdown_path)
+        if own:
+            return os.path.join(os.path.dirname(markdown_path), own)
     stem = os.path.splitext(markdown_path)[0]
     path, n = stem + ".png", 2
-    while not replacing and os.path.exists(path):
+    while os.path.exists(path):
         path, n = f"{stem} ({n}).png", n + 1
     return path
+
+
+def _linked_screenshot(markdown_path):
+    """The file name of the screenshot a saved conversation links to, or None."""
+    try:
+        with open(markdown_path, encoding="utf-8") as f:
+            found = _SAVED_SCREENSHOT.search(f.read(1 << 20))
+    except (OSError, UnicodeDecodeError):
+        return None
+    name = unquote(found.group(1)) if found else None
+    return name if name and os.path.basename(name) == name else None
 
 
 def _is_dark():
@@ -815,14 +836,14 @@ class ChatWindow(Gtk.Window):
 
         # From here to the first rendered frame is the stretch that can end the process
         # rather than raise; if it does, the next window opens as plain text.
-        webkitguard.note_attempt()
+        webkitguard.note_attempt(self)
         try:
             return self._build_webkit_view()
         except Exception as e:
             # Anything the typelib lets through: a library that loaded but does not
             # work leaves classes that raise on first use, not on import.
             errors.record(f"WebKit view unavailable, using plain text: {e!r}")
-            webkitguard.note_success()      # it raised rather than killed us
+            webkitguard.note_success(self)  # it raised rather than killed us
             self.app.notify(f"Chat view: WebKit failed ({e}); using plain text")
             return self._build_text_view()
 
@@ -877,8 +898,12 @@ class ChatWindow(Gtk.Window):
                                        user_content_manager=manager)
         self.webview.connect("load-changed", self._on_load_changed)
         self.webview.connect("web-process-terminated", self._on_web_process_gone)
-        self.webview.connect("decide-policy", self._on_decide_policy)
-        self.webview.connect("context-menu", lambda *a: False)
+        # Links to the browser, the view kept on the transcript, and a context menu
+        # with nothing in it that navigates (webpolicy). Every page here is load_html's.
+        self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=self._on_web_link,
+                                     on_drop=self._on_web_drop, say=self._set_status,
+                                     extra=self._context_menu_extra)
+        self.guard.expect("about:blank")
         settings = self.webview.get_settings()
         settings.set_enable_developer_extras(False)
         settings.set_enable_write_console_messages_to_stdout(False)
@@ -1025,7 +1050,7 @@ class ChatWindow(Gtk.Window):
 
     def _on_load_changed(self, _view, event):
         if event == WebKit2.LoadEvent.FINISHED:
-            webkitguard.note_success()      # it rendered; it is not what kills us
+            webkitguard.note_success(self)  # it rendered; it is not what kills us
             self._loaded = True
             for script in self._pending_js:
                 self.webview.run_javascript(script, None, None, None)
@@ -1035,33 +1060,18 @@ class ChatWindow(Gtk.Window):
         # The page went with it, and a redraw in place needs one: the next loads it anew.
         self._loaded = False
 
-    def _on_decide_policy(self, _view, decision, decision_type):
-        # Open real links in the user's browser; never navigate the chat view away. A
-        # dictionary's cross-reference looks its word up here instead.
-        if decision_type == WebKit2.PolicyDecisionType.NAVIGATION_ACTION:
-            nav = decision.get_navigation_action()
-            uri = nav.get_request().get_uri()
-            if uri.startswith("file://") and \
-                    nav.get_navigation_type() != WebKit2.NavigationType.LINK_CLICKED:
-                # A file dropped on the conversation: attached, never opened in it. Only
-                # a drop - a link in an answer must never pick a file of yours to send.
-                decision.ignore()
-                self.attach_files([GLib.filename_from_uri(uri)[0]])
-                return True
-            if nav.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED:
-                decision.ignore()
-                word = reference_markup.word_of(uri)
-                if word is not None:
-                    if self._lookup is not None:
-                        self.lookup_entry.set_text(word)
-                        self._look_up(word)
-                    return True
-                if uri.startswith("enc://"):
-                    self._follow_encyclopedia(uri)
-                    return True
-                Gtk.show_uri_on_window(None, uri, Gdk.CURRENT_TIME)
-                return True
-        return False
+    def _on_web_link(self, uri, _kind):
+        """A link clicked in the WebKit view (webpolicy.Guard): a dictionary's
+        cross-reference looks its word up here, an encyclopedia link opens the article;
+        True for those. Anything else is the browser's."""
+        return self._on_text_link(uri)
+
+    def _on_web_drop(self, uri):
+        """A file dropped on the conversation: attached, never opened in it."""
+        self.attach_files([GLib.filename_from_uri(uri)[0]])
+
+    def _context_menu_extra(self, menu, hit):
+        """Items of this window's own for the transcript's context menu."""
 
     def _on_copy_code(self, _manager, result):
         try:
@@ -1128,7 +1138,7 @@ class ChatWindow(Gtk.Window):
         if full:
             html = "".join(self._turn_html(t) for t in turns)
             self._js(
-                "document.querySelectorAll('.turn').forEach(function(t){t.remove();});"
+                "document.querySelectorAll('body > .turn').forEach(function(t){t.remove();});"
                 "document.getElementById('end').insertAdjacentHTML('beforebegin',"
                 f"{json.dumps(html)});"
                 + ("window.followEnd();" if self._streaming_text is not None else ""))
@@ -1141,7 +1151,7 @@ class ChatWindow(Gtk.Window):
         html = self._turn_html(turns[-1])
         # With no turn yet, the first goes before #end: after the screenshot, if any.
         self._js(
-            "(function(){var t=document.querySelectorAll('.turn');"
+            "(function(){var t=document.querySelectorAll('body > .turn');"
             f"var h={json.dumps(html)};"
             "if(t.length){t[t.length-1].outerHTML=h;}"
             "else{var e=document.getElementById('end');"
@@ -1150,11 +1160,15 @@ class ChatWindow(Gtk.Window):
             "window.followEnd();})();")
 
     def _scroll_text_to_end(self):
-        self.bubbles.follow_end()
+        # Queued while the window was open, and it may have closed since: a destroyed
+        # scrolled window's adjustment is a GTK critical, not None.
+        if not self._destroyed:
+            self.bubbles.follow_end()
         return False                                    # one-shot idle callback
 
     def _scroll_text_to_turn(self, index):
-        self.bubbles.scroll_to_turn(index)
+        if not self._destroyed:
+            self.bubbles.scroll_to_turn(index)
         return False
 
     def _append_turn(self, turn, replace_placeholder=False, scroll="end"):
@@ -1174,7 +1188,7 @@ class ChatWindow(Gtk.Window):
         """
         self.conversation.append(turn)
         # The first turn from the very top - a screenshot above it is part of it.
-        to_start = ("(function(){var t=document.querySelectorAll('.turn');"
+        to_start = ("(function(){var t=document.querySelectorAll('body > .turn');"
                     "if(t.length==1){window.scrollTo(0,0);}"
                     "else if(t.length){t[t.length-1].scrollIntoView({block:'start'});}"
                     "})();")
@@ -1197,7 +1211,7 @@ class ChatWindow(Gtk.Window):
             return
         if replace_placeholder:
             self._js(
-                "(function(){var t=document.querySelectorAll('.turn');"
+                "(function(){var t=document.querySelectorAll('body > .turn');"
                 f"var h={json.dumps(html)};"
                 "if(t.length){t[t.length-1].outerHTML=h;}"
                 "else{document.body.insertAdjacentHTML('beforeend',h);}"
@@ -1226,6 +1240,12 @@ class ChatWindow(Gtk.Window):
         attached = list(self._attachments)
         if (not text and not attached) or self._cancel is not None or \
                 not self._can_send(text):
+            return
+        if self._looking:
+            # The lookup, when it lands, makes a page of its own: an answer streaming
+            # into this one would land on that word's page, and this question stay
+            # unanswered on the last. The question waits in the box.
+            self.status.set_text("Wait for the lookup to finish, then send")
             return
         buf.set_text("")
         self._forget_undo()
@@ -1410,6 +1430,9 @@ class ChatWindow(Gtk.Window):
         the conversation goes on from. The answers since stay on screen, marked as
         earlier ones, and drop out of the history the new answer is given."""
         if self._cancel is not None:
+            return
+        if self._looking:
+            self.status.set_text("Wait for the lookup to finish, then ask again")
             return
         last = max((i for i, t in enumerate(self.conversation) if t["role"] == "user"),
                    default=None)
@@ -2160,7 +2183,7 @@ class ChatWindow(Gtk.Window):
         # Reaching here at all means the view did not end the process, whether or not
         # the page ever finished loading. A window closed early must not count against
         # WebKit - see webkitguard.
-        webkitguard.note_success()
+        webkitguard.note_success(self)
         self._destroyed = True
         if self.privacy is not None:
             self.privacy.listener = None

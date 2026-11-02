@@ -21,6 +21,11 @@ SHA-256 digest of each GPU's token. This module checks, before anything is belie
 Measured live (TEE/glm-5.3-flash, Sept 2026): eight H100 tokens, every digest matching,
 keys named nv-eat-kid-prod-<date>-<uuid> and rotated daily. A key missing from the
 cached key set is looked for once more before the token is refused.
+
+When the keys cannot be fetched at all (KeysUnavailable), the signatures go unchecked,
+but the answer still came over TLS from NVIDIA's own service: privacy.py then holds
+every token to the time and the nonce all the same (check_claims), and shows the
+verdict as unchecked only if they hold.
 """
 
 import base64
@@ -80,6 +85,18 @@ def _public_key(jwk):
                                          ec.SECP384R1()).public_key()
 
 
+def check_claims(claims, nonce, now):
+    """Raise NrasError unless a token's claims put it within its nbf/exp window, give or
+    take LEEWAY_SECONDS, and say it was made for `nonce`. Its signature is not looked
+    at: privacy.py holds an answer to this much even when NVIDIA's keys are out of
+    reach."""
+    if not (claims.get("nbf", 0) - LEEWAY_SECONDS <= now
+            <= claims.get("exp", 0) + LEEWAY_SECONDS):
+        raise NrasError("a token is outside its validity window")
+    if claims.get("eat_nonce") != nonce:
+        raise NrasError("NVIDIA's verdict was not made for this request's nonce")
+
+
 def verify_token(token, session, nonce, now):
     """The claims of one NRAS token, once its signature, issuer, time and nonce hold."""
     from cryptography.exceptions import InvalidSignature
@@ -111,11 +128,7 @@ def verify_token(token, session, nonce, now):
         raise NrasError("a token's signature does not verify against NVIDIA's key")
     if claims.get("iss") != ISSUER:
         raise NrasError(f"a token was issued by {claims.get('iss')}, not NVIDIA's service")
-    if not (claims.get("nbf", 0) - LEEWAY_SECONDS <= now
-            <= claims.get("exp", 0) + LEEWAY_SECONDS):
-        raise NrasError("a token is outside its validity window")
-    if claims.get("eat_nonce") != nonce:
-        raise NrasError("NVIDIA's verdict was not made for this request's nonce")
+    check_claims(claims, nonce, now)
     return claims
 
 

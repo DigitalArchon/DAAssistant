@@ -511,8 +511,15 @@ class TeeClient:
         check = _Checks("the Intel TDX quote binds the signing key to our nonce")
         self._check_quote(raw, check)
         payload = _json(body.get("nvidia_payload"))
-        self._check_gpus(payload if isinstance(payload, dict) else None, nonce, check,
-                         "this request's nonce")
+        if isinstance(payload, dict):
+            # Sent to NVIDIA with our nonce, whatever nano-gpt's copy names, so that its
+            # service holds the evidence to that nonce itself: evidence from an earlier
+            # request, passed on with the nonce it was made for, would otherwise come
+            # back vouched for.
+            payload = dict(payload, nonce=nonce)
+        else:
+            payload = None
+        self._check_gpus(payload, nonce, check, "this request's nonce")
         self.signing_address = address
         return check.attestation(self.model, "signing key bound to our nonce",
                                  signing_address=address)
@@ -644,10 +651,18 @@ class TeeClient:
         except ImportError:
             raise PrivacyError(_unchecked_without_cryptography(self.model))
         except nras.KeysUnavailable as e:
-            # Unchecked, but a verdict that says no is still believed.
-            if not any(c.get("x-nvidia-overall-att-result") is True
-                       for c in _jwt_claims(answer)):
+            # NVIDIA's signatures go unchecked, but its answer came over TLS from its
+            # own service, so what the answer says of itself is still held to: a
+            # verdict that says no is believed, and one made for another nonce or
+            # outside its time - evidence replayed from another request - is refused.
+            claims = _jwt_claims(answer)
+            if not any(c.get("x-nvidia-overall-att-result") is True for c in claims):
                 raise PrivacyError(f"NVIDIA rejected {self.model}'s GPU evidence")
+            try:
+                for token in claims:
+                    nras.check_claims(token, nonce, time.time())
+            except nras.NrasError as refused:
+                raise PrivacyError(f"{self.model}'s GPU attestation failed: {refused}")
             check.summary_gpu.add("NVIDIA's verdict unchecked")
             check.fall_short("NVIDIA signature unchecked")
             check.note(f"{e}, so NVIDIA's verdict is unchecked")

@@ -165,8 +165,12 @@ class FakeNanoGpt:
     def post(self, url, json=None, headers=None, data=None, stream=False, timeout=None):
         self.posts.append({"url": url, "data": data, "json": json})
         if url.startswith(privacy.NRAS_URL):
+            # As NVIDIA's tokens are: for the nonce it was sent, and current.
+            now = int(time.time())
             return FakeResponse(self.nras_status,
-                                [["JWT", jwt({"x-nvidia-overall-att-result": self.gpu})],
+                                [["JWT", jwt({"x-nvidia-overall-att-result": self.gpu,
+                                              "eat_nonce": (json or {}).get("nonce"),
+                                              "nbf": now - 60, "exp": now + 3600})],
                                  {}])
         if url == API_URL:
             return FakeResponse(200, None, sse_lines(self.reply))
@@ -277,6 +281,28 @@ class TeeAttestation(unittest.TestCase):
         keys = self.client(nvidia=nras.KeysUnavailable("keys could not be fetched"))
         self.assertIn("NVIDIA signature unchecked", keys.attest().headline)
 
+    def test_nvidia_is_asked_about_the_gpu_evidence_with_our_nonce(self):
+        """nano-gpt's copy of the GPU evidence names a nonce of its own, and NVIDIA was
+        sent that one: evidence replayed with the nonce it was made for came back
+        vouched for, for that nonce. Now NVIDIA checks it against ours."""
+        address = address_of(KEY).lower()
+        ours = []
+
+        def respond(nonce):
+            ours.append(nonce)
+            report = bytes.fromhex(address[2:]) + bytes(12) + bytes.fromhex(nonce)
+            return 200, {"signing_address": address, "intel_quote": fake_quote(report),
+                         "nvidia_payload": json.dumps({
+                             "nonce": "0d" * 32, "arch": "HOPPER",
+                             "evidence_list": [{"evidence": "e"}]})}
+
+        server = ShapedNanoGpt(respond)
+        server.tee_client(API_URL, "k", TEXT).attest()
+        self.assertEqual(server.nras_nonces, ours)
+        sent = next(p["json"] for p in server.posts if p["url"] == privacy.NRAS_URL)
+        self.assertEqual((sent["arch"], sent["evidence_list"]), ("HOPPER",
+                                                                 [{"evidence": "e"}]))
+
     def test_a_model_offering_no_attestation_is_refused(self):
         with self.assertRaisesRegex(PrivacyError, "offers no attestation"):
             self.client(attestation_status=400).attest()
@@ -341,6 +367,28 @@ class FixtureSession:
         if url == privacy.NRAS_URL:
             return FakeResponse(200, self.fixture["nras_answer"])
         return FakeResponse(404, {})
+
+
+class KeysOutOfReach(FakeNanoGpt):
+    """nano-gpt as FakeNanoGpt has it, a quote binding our nonce and all, but NVIDIA's
+    service answering with the verdict captured in tests/data - made for the nonce of
+    that request - and its signing keys out of reach."""
+
+    def __init__(self, fixture, **kwargs):
+        super().__init__(**kwargs)
+        self.fixture = fixture
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        if url == nras.JWKS_URL:
+            self.gets.append(url)
+            return FakeResponse(503, {})
+        return super().get(url, params, headers, timeout)
+
+    def post(self, url, json=None, **kwargs):
+        if url == privacy.NRAS_URL:
+            self.posts.append({"url": url, "json": json})
+            return FakeResponse(200, self.fixture["nras_answer"])
+        return super().post(url, json=json, **kwargs)
 
 
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
@@ -471,6 +519,41 @@ class RealEvidence(unittest.TestCase):
         session = FixtureSession(self.fixture, jwks={"keys": []})
         with self.assertRaisesRegex(nras.NrasError, "does not publish"):
             self.nvidia(session=session)
+
+    def attest_with_nvidias_keys_out_of_reach(self, nonce, now):
+        """The attestation, made with `nonce`, at `now`, of a TEE model whose GPU
+        evidence NVIDIA answered for with the captured verdict."""
+        server = KeysOutOfReach(self.fixture)
+        client = TeeClient(API_URL, "k", TEXT, session=server, intel=server.intel_verify)
+        try:
+            with mock.patch.object(privacy.secrets, "token_hex", return_value=nonce), \
+                    mock.patch("time.time", return_value=now):
+                return client.attest()
+        finally:
+            self.assertIn(nras.JWKS_URL, server.gets, "NVIDIA's keys were not looked for")
+
+    def test_with_nvidias_keys_out_of_reach_a_verdict_for_another_nonce_is_refused(self):
+        """Without its keys NVIDIA's signatures cannot be checked, and only the overall
+        verdict used to be read: one made for an earlier request passed as "unchecked".
+        The answer comes over TLS from NVIDIA itself, so its nonce and its time are
+        held to even then."""
+        with self.assertRaisesRegex(PrivacyError, "GPU attestation failed: NVIDIA's "
+                                                  "verdict was not made for this "
+                                                  "request's nonce"):
+            self.attest_with_nvidias_keys_out_of_reach("0d" * 32, self.now)
+
+    def test_with_nvidias_keys_out_of_reach_an_old_verdict_is_refused(self):
+        with self.assertRaisesRegex(PrivacyError, "GPU attestation failed: a token is "
+                                                  "outside its validity window"):
+            self.attest_with_nvidias_keys_out_of_reach(self.fixture["nonce"],
+                                                       self.now + 86400)
+
+    def test_with_nvidias_keys_out_of_reach_a_current_verdict_is_partial(self):
+        attestation = self.attest_with_nvidias_keys_out_of_reach(self.fixture["nonce"],
+                                                                 self.now)
+        self.assertEqual(attestation.level, "partial")
+        self.assertIn("NVIDIA signature unchecked", attestation.headline)
+        self.assertIn("NVIDIA's verdict unchecked", attestation.summary)
 
     # together
 

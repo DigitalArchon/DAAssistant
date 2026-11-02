@@ -18,8 +18,8 @@ import time
 
 import requests
 
-from . import (models as catalogue, privacy as privacy_module, prompts, providers,
-               websearch)
+from . import (models as catalogue, netguard, privacy as privacy_module, prompts,
+               providers, websearch)
 from .privacy import ModelRetired, PrivacyError
 
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
@@ -346,7 +346,9 @@ def strip_internal_keys(messages):
 class LLMClient:
     def __init__(self, config):
         self.config = config
-        self.session = requests.Session()
+        # Follows a redirect only where the request could have gone in the first place
+        # (netguard.session): a 307 would otherwise carry the conversation anywhere.
+        self.session = netguard.session()
 
     def _provider(self, model):
         """The provider `model` is asked of: the one it carries, or the one its model
@@ -413,6 +415,8 @@ class LLMClient:
                     stream=stream,
                     timeout=(CONNECT_TIMEOUT, self.config.request_timeout),
                 )
+            except netguard.RedirectRefused as e:
+                raise LLMError(str(e), model=payload.get("model"))
             except requests.exceptions.ConnectTimeout:
                 last_error = "Connection timed out"
             except requests.exceptions.Timeout:
@@ -426,7 +430,7 @@ class LLMClient:
             except requests.exceptions.RequestException as e:
                 last_error = str(e)
             else:
-                if response.status_code < 400:
+                if response.status_code < 300:
                     return response
                 detail = self._error_text(response)
                 last_error = f"HTTP {response.status_code}: {detail}"

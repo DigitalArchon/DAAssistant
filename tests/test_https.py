@@ -88,6 +88,117 @@ class WhichAddressesMayBeUsed(unittest.TestCase):
         self.assertEqual(netguard.check(" https://a.example/v1 "), "https://a.example/v1")
         self.assertEqual(netguard.check("http://localhost:1/v1"), "http://localhost:1/v1")
 
+    def test_an_address_two_parsers_read_differently_is_refused(self):
+        """urllib's parser saw localhost in these, and requests connected to evil.com."""
+        for url in ("http://evil.com\\@localhost/v1", "http://evil.com\\.local/v1",
+                    "http://evil.com\t.local/v1", "http://evil.com\n.local/v1",
+                    "http://local host/v1", "https://api.example.com/v1\\x",
+                    "http://localhost/v1\x00"):
+            found = netguard.problem(url)
+            self.assertIsNotNone(found, repr(url))
+            self.assertIn("Not a web address", found)
+
+    def test_requests_connects_to_the_host_that_was_judged(self):
+        from urllib3.util import parse_url
+        for url in ("http://localhost:11434/v1", "http://[::1]:8080/v1",
+                    "http://user:pw@192.168.1.5/v1", "http://[fe80::1%25eth0]:1/v1",
+                    "http://LOCALHOST./v1"):
+            self.assertIsNone(netguard.problem(url), url)
+            self.assertTrue(netguard.is_local(parse_url(url).host.strip("[]").split("%")[0])
+                            or "%" in url, url)
+
+    def test_a_half_typed_address_is_explained_not_raised(self):
+        for url in ("http://[fd00::5", "http://[", "https://[::1"):
+            found = netguard.problem(url)
+            self.assertIn("Not a web address", found)
+
+    def test_a_tor_onion_service_may_be_plain_http(self):
+        onion = "http://" + "a" * 56 + ".onion:8080/v1/chat/completions"
+        self.assertIsNone(netguard.problem(onion))
+        self.assertIsNone(netguard.problem("http://Example.ONION./v1"))
+        self.assertIsNotNone(netguard.problem("http://onion.example.com/v1"))
+        self.assertIsNotNone(netguard.problem("http://example.onion.evil.com/v1"))
+
+    def test_a_missing_scheme_is_told_what_will_do(self):
+        found = netguard.problem("localhost:11434")
+        self.assertIn("https://", found)
+        self.assertIn("http:// for this machine", found)
+
+
+class RedirectsKeepToTheRule(unittest.TestCase):
+    """requests follows a redirect by itself, and a 307 carries the body along."""
+
+    def session(self, location, status=307):
+        import requests
+        from requests.adapters import BaseAdapter
+        sent = []
+
+        class Fake(BaseAdapter):
+            def send(self, request, **_kwargs):
+                sent.append((request.url, request.body, request.headers.get("Authorization")))
+                response = requests.models.Response()
+                response.request, response.url = request, request.url
+                response._content = b"{}"
+                if len(sent) == 1:
+                    response.status_code = status
+                    response.headers["Location"] = location
+                else:
+                    response.status_code = 200
+                return response
+
+            def close(self):
+                pass
+
+        session = netguard.session()
+        session.mount("https://", Fake())
+        session.mount("http://", Fake())
+        return session, sent
+
+    def test_a_redirect_to_plain_http_elsewhere_is_not_followed(self):
+        session, sent = self.session("http://collector.example/steal")
+        with self.assertRaises(netguard.RedirectRefused) as refused:
+            session.post("https://api.example/v1/chat/completions", data=b"the conversation",
+                         headers={"Authorization": "Bearer k"})
+        self.assertEqual(len(sent), 1, "the body went on to the redirect")
+        self.assertIn("http://collector.example/steal", str(refused.exception))
+
+    def test_https_is_never_carried_on_over_plain_http_even_locally(self):
+        session, sent = self.session("http://192.168.1.5/v1/chat/completions")
+        with self.assertRaises(netguard.RedirectRefused):
+            session.post("https://api.example/v1/chat/completions", data=b"x")
+        self.assertEqual(len(sent), 1)
+
+    def test_a_redirect_that_keeps_to_https_is_followed(self):
+        session, sent = self.session("https://api2.example/v1/chat/completions", status=308)
+        response = session.post("https://api.example/v1/chat/completions", data=b"x")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sent[1][0], "https://api2.example/v1/chat/completions")
+
+    def test_a_relative_redirect_is_judged_where_it_lands(self):
+        session, sent = self.session("/v2/chat/completions")
+        session.post("http://localhost:11434/v1/chat/completions", data=b"x")
+        self.assertEqual(sent[1][0], "http://localhost:11434/v2/chat/completions")
+
+    def test_a_chat_request_stops_at_a_refused_redirect_without_retrying(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        config = Config(os.path.join(directory, "c.json"))
+        config.api_key = "k"
+        client = LLMClient(config)
+        client.session, sent = self.session("http://collector.example/steal")
+        with self.assertRaises(LLMError) as failed:
+            client.complete("m", [{"role": "user", "content": "the conversation"}])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("not followed", str(failed.exception))
+
+    def test_every_request_the_app_makes_itself_follows_the_rule(self):
+        """No plain requests.get/post/Session where the app makes its own requests."""
+        for name in ("llm.py", "websearch.py", "models.py"):
+            with open(os.path.join(ROOT, "assistant", name), encoding="utf-8") as f:
+                source = f.read()
+            for forbidden in ("requests.get(", "requests.post(", "requests.Session("):
+                self.assertNotIn(forbidden, source, f"{name}: {forbidden}")
+
 
 class NothingIsSentInTheClear(TempDir):
     """The check sits where each request leaves from, so no setting, no config.json
@@ -121,7 +232,7 @@ class NothingIsSentInTheClear(TempDir):
 
     def test_the_model_list_is_not_fetched(self):
         config = self.config(api_url=self.URL, api_key="sk-secret")
-        with mock.patch.object(models.requests, "get") as get:
+        with mock.patch.object(models, "_get") as get:
             with self.assertRaisesRegex(RuntimeError, "not https"):
                 models.fetch(config, force=True)
             self.assertEqual(models.fetch_private_ids(self.URL), [])

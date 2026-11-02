@@ -16,9 +16,18 @@ where the chat endpoint and the model list are, whether a key is sent, whether a
 body may be gzipped, and what a model has to be told to stop.
 """
 
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse as _urlparse, urlunparse
 
 from . import netguard
+
+
+def urlparse(url):
+    """urllib's parse of `url`, or of nothing when it cannot be read at all: a half-typed
+    "http://[fd00::5" raises, and what to say about it is netguard's to decide."""
+    try:
+        return _urlparse(url)
+    except ValueError:
+        return _urlparse("")
 
 NANOGPT, OPENROUTER, OLLAMA, CUSTOM = "nanogpt", "openrouter", "ollama", "custom"
 

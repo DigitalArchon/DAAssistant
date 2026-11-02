@@ -120,7 +120,7 @@ class Case(unittest.TestCase):
         self.config.vision_provider = "ollama"
         self.config.vision_model = "glm-ocr"
         # Ollama's /api/show, asked about each model when its list is read.
-        patch = mock.patch.object(models.requests, "post", side_effect=shown)
+        patch = mock.patch.object(models, "_post", side_effect=shown)
         self.show = patch.start()
         self.addCleanup(patch.stop)
 
@@ -275,7 +275,7 @@ class WhatEachIsSent(Case):
         self.assertEqual(self.sent(client, 1)[1]["Content-Encoding"], "gzip")
 
     def test_the_effort_is_sent_to_ollama(self):
-        with mock.patch.object(models.requests, "get", return_value=reply(TAGS)):
+        with mock.patch.object(models, "_get", return_value=reply(TAGS)):
             models.fetch(self.config, force=True, provider="ollama")
         self.config.reasoning_effort = "none"
         client = self.client()
@@ -398,7 +398,7 @@ class AModelOllamaDoesNotStop(Case):
 
 class TheModelLists(Case):
     def fetch(self, provider, *bodies):
-        with mock.patch.object(models.requests, "get",
+        with mock.patch.object(models, "_get",
                                side_effect=[reply(b) for b in bodies]) as get:
             listed, cached = models.fetch(self.config, force=True, provider=provider)
         return listed, get
@@ -484,7 +484,7 @@ class TheModelLists(Case):
 
     def test_an_address_that_may_not_be_used_is_not_asked(self):
         self.config.custom_url = "http://api.example.com/v1"
-        with mock.patch.object(models.requests, "get") as get:
+        with mock.patch.object(models, "_get") as get:
             with self.assertRaisesRegex(RuntimeError, "not https"):
                 models.fetch(self.config, force=True, provider="custom")
             get.assert_not_called()
@@ -498,7 +498,7 @@ class HowHardToThink(Case):
     def setUp(self):
         super().setUp()
         self.config.openrouter_api_key = "sk-or"
-        with mock.patch.object(models.requests, "get",
+        with mock.patch.object(models, "_get",
                                side_effect=[reply(TAGS), reply(OPENROUTER)]):
             models.fetch(self.config, force=True, provider="ollama")
             models.fetch(self.config, force=True, provider="openrouter")
@@ -619,7 +619,7 @@ class WhatMayBeSavedAndUsed(Case):
 class TheConnectionTest(Case):
     def test_it_looks_for_the_vision_model_on_its_own_provider(self):
         client = self.client(answer("ok"))
-        with mock.patch.object(models.requests, "get", return_value=reply(TAGS)) as get:
+        with mock.patch.object(models, "_get", return_value=reply(TAGS)) as get:
             ok, message = client.test_connection()
         self.assertTrue(ok, message)
         self.assertEqual(get.call_args[0][0], OLLAMA + "/api/tags")
@@ -630,14 +630,14 @@ class TheConnectionTest(Case):
     def test_a_model_the_server_does_not_have_fails_it(self):
         self.config.vision_model = "llava"
         client = self.client(answer("ok"))
-        with mock.patch.object(models.requests, "get", return_value=reply(TAGS)):
+        with mock.patch.object(models, "_get", return_value=reply(TAGS)):
             ok, message = client.test_connection()
         self.assertFalse(ok)
         self.assertIn("does not list the vision model, llava", message)
 
     def test_a_server_that_is_not_there_fails_it(self):
         client = self.client(answer("ok"))
-        with mock.patch.object(models.requests, "get", side_effect=models.requests.exceptions
+        with mock.patch.object(models, "_get", side_effect=models.requests.exceptions
                                .ConnectionError("refused")):
             ok, message = client.test_connection()
         self.assertFalse(ok)

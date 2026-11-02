@@ -257,13 +257,24 @@ def private_ids_in(body):
             and item["id"].startswith("private/")]
 
 
+def _get(url, **kwargs):
+    """A GET that follows a redirect only where netguard allows (netguard.session)."""
+    with netguard.session() as session:
+        return session.get(url, **kwargs)
+
+
+def _post(url, **kwargs):
+    with netguard.session() as session:
+        return session.post(url, **kwargs)
+
+
 def fetch_private_ids(api_url, timeout=30):
     """The Private Mode relay's model ids (a public list; no key is sent). [] on failure:
     the rest of the catalogue is still worth showing."""
     if netguard.problem(api_url):
         return []
     try:
-        response = requests.get(private_list_url(api_url), timeout=timeout)
+        response = _get(private_list_url(api_url), timeout=timeout)
         body = response.json() if response.status_code < 400 else {}
     except (requests.exceptions.RequestException, ValueError):
         return []
@@ -342,7 +353,7 @@ def _listed(body):
 def _get_json(url, headers, params, timeout):
     """The JSON at `url`, or raise ValueError with what went wrong in a few words."""
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        response = _get(url, headers=headers, params=params, timeout=timeout)
     except requests.exceptions.RequestException as e:
         raise ValueError(str(e))
     if response.status_code >= 400:
@@ -365,8 +376,8 @@ def _fetch_ollama(source, headers, timeout):
     show = source.models_url.rsplit("/", 1)[0] + "/show"
     for tag in tags[:OLLAMA_SHOW_LIMIT]:
         try:
-            response = requests.post(show, headers=headers, timeout=timeout,
-                                     json={"model": tag.get("name") or tag.get("model")})
+            response = _post(show, headers=headers, timeout=timeout,
+                             json={"model": tag.get("name") or tag.get("model")})
             shown = response.json() if response.status_code < 400 else {}
         except (requests.exceptions.RequestException, ValueError):
             continue

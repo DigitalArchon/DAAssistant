@@ -192,6 +192,13 @@ class _Balancer(HTMLParser):
     DROP_CONTENT = {"script", "style", "head", "title", "template", "iframe", "object",
                     "noscript", "textarea", "select"}
     SKIP = {"html", "body", "meta", "link", "base", "form", "frame", "frameset"}
+    # Preformatted text, written as the <pre> it looks like. A browser never closes a
+    # <plaintext>: let through, it took everything after it on the page - the entries
+    # below, the conversation - for text. An <xmp> shows what is in it as it stands,
+    # so its text, escaped like any other, was shown with the entities it was escaped
+    # to. The parser hands over the text of both as it stands, as a browser reads it,
+    # and in a <pre> that is escaped once. <listing>, their old cousin, holds markup.
+    PREFORMATTED = {"plaintext", "xmp", "listing"}
     # A new one of these ends the last one still open, inside the same list or table.
     SIBLINGS = {"li": {"ul", "ol"}, "dt": {"dl"}, "dd": {"dl"},
                 "tr": {"table", "tbody", "thead", "tfoot"}, "td": {"tr"}, "th": {"tr"},
@@ -275,6 +282,8 @@ class _Balancer(HTMLParser):
             return
         if self._suppress or tag in self.SKIP:
             return
+        if tag in self.PREFORMATTED:
+            tag = "pre"
         attributes = self._attrs(tag, attrs)
         if attributes is None:
             return                      # a picture that cannot be shown
@@ -306,6 +315,8 @@ class _Balancer(HTMLParser):
             return
         if self._suppress or tag in self.SKIP or tag in self.VOID:
             return
+        if tag in self.PREFORMATTED:
+            tag = "pre"
         for index in range(len(self._open) - 1, -1, -1):
             if self._open[index][0] == tag:
                 self._close_to(index, reopen=tag in self.REOPEN)

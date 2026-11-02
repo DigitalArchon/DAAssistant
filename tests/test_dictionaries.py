@@ -14,6 +14,7 @@ import threading
 import types
 import unittest
 import zlib
+from html.parser import HTMLParser
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -992,6 +993,29 @@ class DictionaryHTML(unittest.TestCase):
             '<img src="pic.png">&lt;tag&gt;')
         self.assertEqual(html, '<span class="x">kept</span><a>file</a> '
                                '<a href="https://a.test/">web</a>&lt;tag&gt;')
+
+    def test_plaintext_xmp_and_listing_are_written_as_pre(self):
+        # A browser never closes <plaintext>: let through, it took the rest of the page
+        # - every entry and answer after it - for text.
+        html = self.balance("<b>a</b><plaintext>x <i>y</i> &amp; z")
+        self.assertTrue(html.startswith("<b>a</b><pre>"), html)
+        self.assertTrue(html.endswith("</pre>"), html)
+        for tag in ("plaintext", "xmp", "listing", "XMP"):
+            html = self.balance(f"<{tag}>text</{tag}> after")
+            self.assertNotIn(f"<{tag.lower()}", html)
+            self.assertTrue(html.startswith("<pre>text"), html)
+        self.assertEqual(self.balance("<p>one<listing>two\n<b>three</b></listing>"),
+                         "<p>one</p><pre>two\n<b>three</b></pre>")
+
+    @unittest.skipUnless("xmp" in getattr(HTMLParser, "CDATA_CONTENT_ELEMENTS", ()),
+                         "this Python's HTML parser reads what is in <xmp> as markup")
+    def test_what_plaintext_and_xmp_hold_is_text_escaped_once(self):
+        self.assertEqual(self.balance("<b>a</b><plaintext>x <i>y</i> &amp; z"),
+                         "<b>a</b><pre>x &lt;i&gt;y&lt;/i&gt; &amp;amp; z</pre>")
+        # Escaped inside an <xmp>, which shows its text as it stands, it was shown
+        # escaped: "&lt;b&gt;".
+        self.assertEqual(self.balance("<xmp><b>x</b> &amp;</xmp> after"),
+                         "<pre>&lt;b&gt;x&lt;/b&gt; &amp;amp;</pre> after")
 
     def test_a_colour_in_a_style_gets_a_dark_variant_too(self):
         html = self.balance('<span style="background-color:#fff; color: navy">x</span>')

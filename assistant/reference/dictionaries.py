@@ -454,18 +454,26 @@ def as_context(lookup, budget):
 
 def as_markdown(lookup):
     """A lookup as Markdown: what Copy and Save write, and what the plain-text view
-    shows. Each dictionary's text, under its name."""
+    shows. Each dictionary's text, under its name.
+
+    Everything in it that the dictionaries or the reader wrote is escaped, not only
+    the entries: a dictionary is named by its own #NAME or bookname, and one named
+    "[Oxford](https://…)" was a live link under a name of its choosing, in the
+    plain-text view and in what Copy and Save wrote. Its suggestions are its
+    headwords, and the word is what was typed or selected."""
+    word, found = _markdown_escape(lookup["word"]), _markdown_escape(lookup["found"])
     if not lookup["results"]:
-        lines = [f"_No entry for “{lookup['word']}”._"]
+        lines = [f"_No entry for “{word}”._"]
         if lookup["suggestions"]:
-            lines.append("Nearby: " + ", ".join(lookup["suggestions"]))
+            lines.append("Nearby: " + ", ".join(_markdown_escape(suggestion)
+                                                for suggestion in lookup["suggestions"]))
         return "\n\n".join(lines)
     parts = []
     if lookup["found"] != lookup["word"]:
-        parts.append(f"_No entry for “{lookup['word']}”; showing “{lookup['found']}”._")
+        parts.append(f"_No entry for “{word}”; showing “{found}”._")
     for result in lookup["results"]:
         body = "\n\n".join(_markdown_escape(entry["text"]) for entry in result["entries"])
-        parts.append(f"### {result['dictionary']}\n\n{body}")
+        parts.append(f"### {_markdown_escape(result['dictionary'])}\n\n{body}")
     return "\n\n".join(parts)
 
 

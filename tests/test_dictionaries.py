@@ -765,6 +765,23 @@ class Lookups(unittest.TestCase):
         self.assertIn("### Invented Dictionary", text)
         self.assertIn(r"\[not a tag\]", text)
 
+    def test_markdown_makes_no_link_of_a_name_or_a_suggestion(self):
+        from assistant.ui.markdown_text import INLINE
+        trap = "[Oxford](https://phish.test/x)"
+        found = {"word": "<w>", "found": "*w*", "dictionaries": 1, "suggestions": [],
+                 "results": [{"dictionary": trap, "entries": [
+                     {"headword": "w", "html": "", "text": "an entry"}]}]}
+        nothing = dict(found, results=[], suggestions=[trap, "plain"])
+        for text in (dictionaries.as_markdown(found), dictionaries.as_markdown(nothing)):
+            self.assertNotIn(trap, text)
+            links = [m.group(2) for m in INLINE.finditer(text) if m.group(1)]
+            self.assertEqual(links, [], text)
+        self.assertIn(r"### \[Oxford\](https://phish.test/x)",
+                      dictionaries.as_markdown(found))
+        self.assertIn(r"“\<w\>”; showing “\*w\*”", dictionaries.as_markdown(found))
+        self.assertIn(r"Nearby: \[Oxford\](https://phish.test/x), plain",
+                      dictionaries.as_markdown(nothing))
+
 
 class ReplacedFiles(unittest.TestCase):
     """A dictionary replaced while the app runs - a newer edition copied over it - is

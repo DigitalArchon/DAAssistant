@@ -739,8 +739,11 @@ class Assistant:
             text = clipboard.get_selection()
             if not text:
                 hint = clipboard.unreadable_hint(selection=True)
-                self.notify("Nothing is highlighted. Select some text first"
-                            + (f". {hint}" if hint else ""), urgency="normal")
+                if clipboard.read_too_much(selection=True):
+                    self.notify(hint, urgency="normal")     # there was, and too much
+                else:
+                    self.notify("Nothing is highlighted. Select some text first"
+                                + (f". {hint}" if hint else ""), urgency="normal")
                 return
             kind = "text"
         else:

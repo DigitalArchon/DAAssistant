@@ -270,6 +270,14 @@ def _get_selection():
     return _gtk_text(primary) if wayland and _focused() else None
 
 
+def read_too_much(selection=False):
+    """Whether the last read of the clipboard, or of the highlighted text, came back
+    empty because there was more than it takes in (see _run) - not because there was
+    nothing."""
+    what = "the highlighted text" if selection else "the clipboard"
+    return _too_large is not None and _too_large[0] == what
+
+
 def unreadable_hint(selection=False):
     """Why 'empty' may mean 'unreadable', and what the user can do about it.
 

@@ -33,7 +33,7 @@ collector.install()
 
 from assistant import prompts
 from assistant.config import Config
-from assistant.reference import dictionaries, dsl, markup
+from assistant.reference import dictionaries, dsl, markup, stardict
 from assistant.reference.dictionaries import Library, fold, stems
 from assistant.reference.dictzip import DictzipFile
 from assistant.reference.stardict import StarDict
@@ -262,6 +262,42 @@ class DslFiles(unittest.TestCase):
         _html, text = shown("[s]one.wav [s]two.wav[/s] three")
         self.assertEqual(text, "one.wav  three")
 
+    def _entry(self, text):
+        path = os.path.join(self.dir, "entry.dsl")
+        write_dsl(path, text)
+        d = dsl.DSL(path)
+        (word, offset, size), = d.headwords()
+        return d.render(word, d.read(offset, size))
+
+    def test_tags_left_open_line_after_line_cost_no_more_than_the_lines(self):
+        # Every line reopened all the tags left open before it: eight thousand lines of
+        # "[b]x" made 224 MB of HTML.
+        started = time.monotonic()
+        html, text = self._entry("glorp\n" + "\t[b]x\n" * 8000)
+        self.assertLess(len(html), 2_000_000)
+        self.assertEqual(html.count("<b>"), html.count("</b>"))
+        self.assertEqual(text, "\n".join(["x"] * 8000))
+        self.assertLess(time.monotonic() - started, 5)
+        # Up to MAX_OPEN deep, what is open still carries to the next line.
+        html, _text = self._entry("glorp\n\t[b][i][u]a\n\tb[/u][/i][/b] c\n")
+        self.assertIn('<div class="m1"><b><i><u>b</u></i></b> c</div>', html)
+
+    def test_an_entry_is_shown_as_far_as_its_html_may_go(self):
+        with mock.patch.object(markup, "MAX_HTML", 2000):
+            html, text = self._entry("glorp\n" + "\t[m1]a line of the entry\n" * 500)
+            self.assertLess(len(html), 2200)
+            self.assertTrue(html.endswith('<div class="m1">[…]</div>'), html[-80:])
+            self.assertTrue(text.endswith("\n[…]"))
+            # A line of ~ is the headword over and over: cut short within the line.
+            html, text = self._entry("a-long-headword-indeed\n\t" + "~" * 5000 + "\n")
+            self.assertLess(len(html), 2200)
+            self.assertTrue(text.endswith("[…]"))
+
+    def test_no_more_of_an_entry_is_read_than_any_entry_needs(self):
+        d = dsl.DSL(self.path)
+        with mock.patch.object(markup, "MAX_ENTRY", 10):
+            self.assertEqual(len(d.read(0, 10 ** 9)), 10)
+
     def test_markup_never_closed_is_read_in_one_pass(self):
         # Each took seconds to show, under the lock every lookup in every window waits
         # on: twenty thousand "<<" six of them.
@@ -483,6 +519,24 @@ class StarDictFiles(unittest.TestCase):
         self.assertEqual(html.count("<img"), 1)
         self.assertIn('<img src="data:image/png;base64,iVBORyBtYWRlIHVw" width="15">',
                       html)
+
+    def test_an_entry_brings_in_only_so_many_pictures(self):
+        os.mkdir(os.path.join(self.dir, "res"))
+        for i in range(5):
+            with open(os.path.join(self.dir, "res", f"{i}.png"), "wb") as f:
+                f.write(b"\x89PNG" + bytes([i]) * 3000)         # 4,030 characters inline
+        ifo = write_stardict(self.dir, "h", [
+            ("alpha", b"".join(b"<img src='%d.png'>" % i for i in range(5)) + b" text")])
+        d = StarDict(ifo)
+        (word, offset, size), = d.headwords()
+        with mock.patch.object(stardict, "ENTRY_PICTURES", 9000), \
+                mock.patch.object(stardict, "PICTURES_KEPT", 9000):
+            html, text = d.render(word, d.read(offset, size))
+            self.assertEqual(html.count("<img"), 2)
+            self.assertEqual(text, "text")
+            self.assertLessEqual(len(d._pictures), 3)
+            # Read again, the pictures it let go of are read again.
+            self.assertEqual(d.render(word, d.read(offset, size)), (html, text))
 
     def test_a_nul_in_a_pictures_name_drops_the_picture_not_the_entry(self):
         os.mkdir(os.path.join(self.dir, "res"))

@@ -6,6 +6,7 @@ structure, none of the markup - a model reads "1. the act of..." better than the
 a dictionary wraps it in, and every tag is context window spent on nothing.
 """
 
+import functools
 import html
 import re
 from html.parser import HTMLParser
@@ -14,6 +15,12 @@ from urllib.parse import quote, unquote
 # The scheme a cross-reference links with. The chat window follows these itself - they
 # look the word up there - rather than letting the view navigate.
 LOOKUP_SCHEME = "lookup:"
+
+# What one entry may cost to show, however its dictionary was made: the bytes of it
+# read, at most - the longest entries in the largest dictionaries run to a megabyte or
+# so - and the HTML made of them, after which a reader shows "[…]" for the rest.
+MAX_ENTRY = 4 << 20
+MAX_HTML = 4 << 20
 
 
 def lookup_href(word):
@@ -114,6 +121,7 @@ def _contrast(a, b):
     return (la + 0.05) / (lb + 0.05)
 
 
+@functools.lru_cache(maxsize=1024)
 def dark_variant(colour):
     """`colour` (a CSS name or #hex) as the dark theme shows it: the same hue made
     light enough to read on a dark background, as "#rrggbb". None when it already
@@ -121,6 +129,8 @@ def dark_variant(colour):
 
     Dictionaries pick their colours for a white page - navy authors, maroon parts of
     speech, dark green quotations - and most of them all but vanish on a dark one.
+    Remembered: a dictionary has a handful of colours, and an entry may name one in
+    every line - working it out took a millisecond for every fifteen.
     """
     import colorsys
 

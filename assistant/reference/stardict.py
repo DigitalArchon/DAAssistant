@@ -15,6 +15,7 @@ import gzip
 import os
 import re
 import struct
+from collections import OrderedDict
 
 from . import markup
 from .dictzip import DictzipFile
@@ -28,6 +29,11 @@ PICTURE_TYPES = {".png": "image/png", ".gif": "image/gif", ".jpg": "image/jpeg",
                  ".jpeg": "image/jpeg", ".bmp": "image/bmp", ".webp": "image/webp",
                  ".svg": "image/svg+xml", ".ico": "image/x-icon"}
 MAX_PICTURE = 512 * 1024
+# How much of them one entry may bring inline, as data: URIs - a few hundred bytes a
+# picture is the rule, so this is a great many of them, or six of the largest - and how
+# much a dictionary keeps of those it has read, so as not to read them again.
+ENTRY_PICTURES = 8 * MAX_PICTURE
+PICTURES_KEPT = 8 * MAX_PICTURE
 
 
 def read_ifo(path):
@@ -57,7 +63,8 @@ class StarDict:
         self.icon = icon_beside(stem)
         self.res = os.path.join(os.path.dirname(ifo_path), "res")
         self._dict = None
-        self._pictures = {}
+        self._pictures = OrderedDict()      # name -> data: URI or None, the latest last
+        self._pictures_size = 0
         if not self.idx_path or not self.dict_path:
             raise ValueError(f"{self.name}: its .idx or .dict file is missing")
 
@@ -115,6 +122,7 @@ class StarDict:
     # ---- articles ---------------------------------------------------------
 
     def read(self, offset, size):
+        size = min(size, markup.MAX_ENTRY)
         if self.dict_path.lower().endswith(".dz"):
             if self._dict is None:
                 self._dict = DictzipFile(self.dict_path)
@@ -161,13 +169,22 @@ class StarDict:
 
     def render(self, headword, data):
         """(html, text) of one article."""
+        room = [ENTRY_PICTURES]
+
+        def picture(name):
+            uri = self.picture(name)
+            if uri is None or len(uri) > room[0]:
+                return None
+            room[0] -= len(uri)
+            return uri
+
         parts = []
         for kind, payload in self.fields(data):
             text = payload.decode("utf-8", "replace")
             if kind in "hg":
-                parts.append(markup.balance(_bword_links(text), LINKS, self.picture))
+                parts.append(markup.balance(_bword_links(text), LINKS, picture))
             elif kind == "x":
-                parts.append(markup.balance(xdxf_html(text), LINKS, self.picture))
+                parts.append(markup.balance(xdxf_html(text), LINKS, picture))
             elif kind in "mtylk":
                 parts.append(markup.escape(text).replace("\n", "<br>"))
             # Pictures, sounds and resource lists are not shown.
@@ -178,9 +195,15 @@ class StarDict:
         """A picture from the dictionary's res folder, as a data: URI the page can show
         (it loads nothing from disk itself). None for one that is not there, or not a
         picture, or would be outside the folder."""
-        if name not in self._pictures:
-            self._pictures[name] = self._read_picture(name)
-        return self._pictures[name]
+        if name in self._pictures:
+            self._pictures.move_to_end(name)
+            return self._pictures[name]
+        uri = self._pictures[name] = self._read_picture(name)
+        self._pictures_size += len(name) + len(uri or "")
+        while self._pictures_size > PICTURES_KEPT and len(self._pictures) > 1:
+            old_name, old = self._pictures.popitem(last=False)
+            self._pictures_size -= len(old_name) + len(old or "")
+        return uri
 
     def _read_picture(self, name):
         kind = PICTURE_TYPES.get(os.path.splitext(name)[1].lower())

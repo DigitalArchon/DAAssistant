@@ -18,10 +18,12 @@ headword lines are decoded.
 """
 
 import codecs
+import heapq
 import itertools
 import mmap
 import os
 import re
+from array import array
 
 from . import markup
 from .dictzip import DictzipFile
@@ -278,10 +280,11 @@ class DSL:
     # ---- articles ---------------------------------------------------------
 
     def read(self, offset, size):
-        return self._read(offset, size)
+        return self._read(offset, min(size, markup.MAX_ENTRY))
 
     def render(self, headword, data):
-        """(html, text) of one entry: its headword lines, then its body."""
+        """(html, text) of one entry: its headword lines, then its body - as far as
+        markup.MAX_HTML of HTML goes, and "[\u2026]" for the rest."""
         text = data.decode(self.encoding.name, "replace").lstrip("\ufeff")
         heads, body = [], []
         for line in text.replace("\r", "").split("\n"):
@@ -295,12 +298,19 @@ class DSL:
         tilde = unsorted_free(heads[0]) if heads else headword
         html_lines, text_lines = [], []
         stack = []
+        size = 0
         for line in body:
-            html_line, text_line, indent, stack = render_line(line.strip(), tilde, stack)
+            html_line, text_line, indent, stack = render_line(
+                line.strip(), tilde, stack, markup.MAX_HTML - size)
             if html_line.strip():
                 html_lines.append(f'<div class="m{indent}">{html_line}</div>')
+                size += len(html_lines[-1])
             if text_line.strip():
                 text_lines.append(text_line.strip())
+            if size > markup.MAX_HTML:
+                html_lines.append('<div class="m1">[\u2026]</div>')
+                text_lines.append("[\u2026]")
+                break
         html = (f'<div class="hw">{" · ".join(markup.escape(s) for s in shown)}</div>'
                 + "".join(html_lines))
         return html, markup.tidy("\n".join(text_lines))
@@ -414,6 +424,11 @@ TAGS = {
 }
 TRANSPARENT = {"trn", "trn1", "!trs", "trs", "lang", "preview", "!preview", "'", "url",
                "ref", "video"}
+# How many of those tags may be open at once; one opened past that is let go. Each line
+# closes what is open at its end and opens it again at the next, so tags left open -
+# eight thousand lines of "[b]x", 47 KB - had the HTML grow with the square of the
+# lines: 224 MB of it. A real entry nests three or four deep.
+MAX_OPEN = 8
 # Where a token of Lingvo's markup may begin, and what a tag is from its [ to its ].
 _TOKEN_START = re.compile(r"[\\{<\[~]")
 _TAG = re.compile(r"\[(/?)([a-z*'!0-9]+)(?:\s([^\]]*))?\]")
@@ -488,12 +503,15 @@ def _closing(tag):
     return "</font>" if tag == "c" else TAGS[tag][1]
 
 
-def _unclosed(tokens):
-    """The numbers of the [s], [ref] and [url] tags among `tokens` that nothing on their
-    line closes - [/s] for [s], [/ref] or [/url] for either of the others, each closing
-    the last one still open."""
-    still_open = {"s": [], "link": []}
-    for number, (_start, _end, kind, what) in enumerate(tokens):
+def _unclosed(line):
+    """The numbers, among the tokens of `line`, of the [s], [ref] and [url] tags that
+    nothing on it closes - [/s] for [s], [/ref] or [/url] for either of the others,
+    each closing the last one still open - in order.
+
+    Read in a pass of its own over the line, keeping the numbers only: a list of the
+    tokens themselves, for a line of a few megabytes of markup, was hundreds."""
+    still_open = {"s": array("q"), "link": array("q")}
+    for number, (_start, _end, kind, what) in enumerate(_tokens(line)):
         if kind != "tag" or what[1] not in ("s", "ref", "url"):
             continue
         opened = still_open["s" if what[1] == "s" else "link"]
@@ -501,47 +519,66 @@ def _unclosed(tokens):
             opened.append(number)
         elif opened:
             opened.pop()
-    return set(still_open["s"] + still_open["link"])
+    return heapq.merge(still_open["s"], still_open["link"])
 
 
-def render_line(line, tilde, stack):
+def render_line(line, tilde, stack, room=markup.MAX_HTML):
     """One body line -> (html, text, indent, tags still open).
 
     Tags may span lines. Each line is its own <div>, so whatever is open at the end of
     one is closed there and opened again at the start of the next: `stack` holds each
-    one open as (tag, the HTML that opened it).
+    one open as (tag, the HTML that opened it) - at most MAX_OPEN of them.
 
     A sound's [s], a cross-reference's [ref] and a link's [url] are closed on their own
     line, or they are no tags at all: what follows one left open is text. Taken for a
     sound's file name or a link's address, it went - the rest of the line with it -
     and "see [ref]house and the rest" was shown as "see ".
+
+    The line is cut short once it has made more than `room` characters: each ~ is the
+    headword again, and a line of them a thousand times the line.
     """
     indent = 1
-    html, text = [opening for _t, opening in stack], []
     stack = list(stack)
-    skipping = 0                       # inside [s]...[/s]: a media file name
-    linking = None                     # inside [ref] or [url]: (kind, collected text)
+    html, text = [], []
+    made = 0                            # characters of HTML, and of a link collected
+    skipping = 0                        # inside [s]...[/s]: a media file name
+    linking = None                      # inside [ref] or [url]: (kind, collected text)
     position = 0
 
+    def out(piece, words=""):
+        nonlocal made
+        html.append(piece)
+        made += len(piece)
+        if words:
+            text.append(words)
+
     def emit(piece):
-        if skipping:
+        nonlocal made
+        if skipping or not piece:
             return
         if linking is not None:
             linking[1].append(piece)
+            made += len(piece)
             return
-        html.append(markup.escape(piece))
-        text.append(piece)
+        out(markup.escape(piece), piece)
 
     if line.startswith("@"):
         word = line[1:].strip()
         return (f'<b class="sub">{markup.escape(word)}</b>', word, 1, stack)
 
-    tokens = list(_tokens(line))
-    unclosed = _unclosed(tokens)
-    for number, (start, end, kind, what) in enumerate(tokens):
+    for _tag, opening in stack:
+        out(opening)
+    unclosed = _unclosed(line)
+    next_unclosed = next(unclosed, None)
+    cut = False
+    for number, (start, end, kind, what) in enumerate(_tokens(line)):
+        if made > room:
+            cut = True
+            break
         emit(line[position:start])
         position = end
-        if number in unclosed:
+        if number == next_unclosed:
+            next_unclosed = next(unclosed, None)
             continue
         if kind == "escaped":
             emit(what)
@@ -550,9 +587,8 @@ def render_line(line, tilde, stack):
         elif kind == "reference":
             word = _unescape(what)
             if not skipping:
-                html.append(f'<a href="{markup.attr(markup.lookup_href(word))}">'
-                            f"{markup.escape(word)}</a>")
-                text.append(word)
+                out(f'<a href="{markup.attr(markup.lookup_href(word))}">'
+                    f"{markup.escape(word)}</a>", word)
         elif kind == "tilde":
             emit(tilde)
         else:
@@ -561,8 +597,7 @@ def render_line(line, tilde, stack):
                 if not closing and len(tag) == 2:
                     indent = int(tag[1])
             elif tag == "br":
-                html.append("<br>")
-                text.append("\n")
+                out("<br>", "\n")
             elif tag == "s":
                 skipping += -1 if closing else 1
                 skipping = max(skipping, 0)
@@ -572,8 +607,7 @@ def render_line(line, tilde, stack):
                         # One opened inside another: what the outer one has so far is
                         # text, not to be lost to the inner one.
                         collected = "".join(linking[1])
-                        html.append(markup.escape(collected))
-                        text.append(collected)
+                        out(markup.escape(collected), collected)
                     linking = (tag, [])
                 elif linking is not None:
                     link, collected = linking
@@ -585,11 +619,10 @@ def render_line(line, tilde, stack):
                         href = target if target.lower().startswith(("http:", "https:")) \
                             else None
                     if href:
-                        html.append(f'<a href="{markup.attr(href)}">'
-                                    f"{markup.escape(target)}</a>")
+                        out(f'<a href="{markup.attr(href)}">{markup.escape(target)}</a>',
+                            target)
                     else:
-                        html.append(markup.escape(target))
-                    text.append(target)
+                        out(markup.escape(target), target)
             elif tag in TAGS or tag == "c":
                 tags = [t for t, _opening in stack]
                 if closing:
@@ -597,20 +630,23 @@ def render_line(line, tilde, stack):
                         # Close down to it, then reopen what was inside it.
                         index = len(tags) - 1 - tags[::-1].index(tag)
                         inner = stack[index + 1:]
-                        html.extend(_closing(t) for t, _o in reversed(stack[index:]))
+                        for t, _o in reversed(stack[index:]):
+                            out(_closing(t))
                         stack = stack[:index] + inner
-                        html.extend(opening for _t, opening in inner)
-                else:
+                        for _t, opening in inner:
+                            out(opening)
+                elif len(stack) < MAX_OPEN:
                     opening = _opening(tag, argument)
                     stack.append((tag, opening))
-                    html.append(opening)
+                    out(opening)
             # Anything else ([trn], [lang id=1], [!trs]...) changes nothing shown.
-    emit(line[position:])
+    if not cut:
+        emit(line[position:])
     if linking is not None:
         # _unclosed() leaves none open by the end of the line; were one to be, what it
         # holds would be text all the same.
         collected = "".join(linking[1])
-        html.append(markup.escape(collected))
-        text.append(collected)
-    html.extend(_closing(t) for t, _opening in reversed(stack))
+        out(markup.escape(collected), collected)
+    for t, _o in reversed(stack):
+        out(_closing(t))
     return "".join(html), "".join(text), indent, stack

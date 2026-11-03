@@ -583,7 +583,6 @@ class LLMClient:
         stops = self._provider(model).stops(model)
         if stops:
             payload["stop"] = stops
-        self._prompt_caching(payload, self._provider(model))
         # Within the model's context, the reply's room and a margin kept aside.
         context = catalogue.context_for(self.config, model)
         if context:
@@ -591,6 +590,10 @@ class LLMClient:
             payload["messages"], dropped = fit_context(payload["messages"], budget)
             if dropped and status is not None:
                 status(f"{dropped} earlier messages left out, to fit {model}'s context")
+        # After the fitting: the cache's breakpoint is an index into the messages sent.
+        # Placed before, it counted the messages left out, and pointed past the end of
+        # a conversation cut to fit.
+        self._prompt_caching(payload, self._provider(model))
         return payload
 
     def _prompt_caching(self, payload, provider):

@@ -354,6 +354,26 @@ class TheRequestBody(unittest.TestCase):
         self.assertNotIn("promptCaching", self.client._payload(
             "deepseek/deepseek-v4-pro", [{"role": "user", "content": "q"}]))
 
+    def test_the_place_is_counted_in_the_conversation_as_it_is_sent(self):
+        # A long conversation is cut to fit the model's context, and the place has to
+        # be in what is left: counted before the cut, it pointed past the end of it.
+        from unittest import mock
+        from assistant import llm
+        self.client.config.prompt_caching = "5m"
+        said = "x" * 3000
+        messages = [{"role": role, "content": f"{role} {n} {said}"}
+                    for n in range(10) for role in ("user", "assistant")]
+        messages.append({"role": "user", "content": "the latest question"})
+        with mock.patch.object(llm.catalogue, "context_for", lambda _c, _m: 8000):
+            payload = self._payload_of(messages)
+        sent = payload["messages"]
+        self.assertLess(len(sent), len(messages), "nothing was left out")
+        place = payload["promptCaching"]["cutAfterMessageIndex"]
+        self.assertEqual(sent[place]["content"], "the latest question")
+
+    def _payload_of(self, messages):
+        return self.client._payload("anthropic/claude-sonnet-5", messages)
+
     def test_openrouter_is_given_the_place_as_a_marker(self):
         self.client.config.prompt_caching = "5m"
         self.client.config.text_provider = "openrouter"

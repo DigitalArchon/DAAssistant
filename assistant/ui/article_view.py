@@ -13,7 +13,7 @@ import os
 import pathlib
 import re
 
-from .. import gtkcompat
+from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, Gtk
 
 from ..reference import encyclopedia_html
@@ -62,10 +62,39 @@ class ArticlePane(Gtk.Box):
         self.current = None                 # (kind, ident) shown, or None
         self.dark = _is_dark()
         self._highlight = None              # text to find once the page has loaded
-        if WebKit2 is not None:
+        self.webview = None
+        self._webkit_tried = False          # whether this pane counts in webkitguard
+        view = self._build_webkit_view(encyclopedia)
+        if view is None:
+            # No WebKit, or none that may be used: the article's text, which is still
+            # worth reading and asking about. Pictures and films need the WebKit view.
+            self.textview = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
+            for margin in ("left", "right", "top", "bottom"):
+                getattr(self.textview, f"set_{margin}_margin")(18)
+            view = Gtk.ScrolledWindow()
+            view.add(self.textview)
+        self.pack_start(view, True, True, 0)
+        self.connect("destroy", self._on_destroy)
+
+    def _build_webkit_view(self, encyclopedia):
+        """The article's WebKit view, scrolled; None to read the article as text.
+
+        Guarded as the chat window's view is (ChatWindow._build_view): not built where
+        the typelib is missing or webkitguard has seen WebKit end the process, or where
+        DA_ASSISTANT_NO_WEBKIT says not to, and counted while it is first loading. A
+        chat fell back to plain text there, but Search Encyclopedia still built its
+        WebView, and on a host whose WebKit kills the process the app died with it -
+        and with no strike recorded, every time.
+        """
+        if WebKit2 is None or webkitguard.blocked()[0]:
+            return None
+        self._webkit_tried = True
+        webkitguard.note_attempt(self)
+        try:
             encscheme.install(encyclopedia)
             self.webview = WebKit2.WebView(web_context=encscheme.context())
             self.webview.connect("load-changed", self._on_load_changed)
+            self.webview.connect("load-changed", self._on_first_load)
             # Links between articles followed here, the rest in the browser, and the
             # view never taken off the article (webpolicy). The window around it adds
             # its own context menu items through self.guard.extra.
@@ -83,22 +112,27 @@ class ArticlePane(Gtk.Box):
             colour = Gdk.RGBA()
             colour.parse("#1e1f22" if self.dark else "#ffffff")
             self.webview.set_background_color(colour)
-            view = Gtk.ScrolledWindow()
-            view.add(self.webview)
-        else:
-            # No WebKit: the article's text, which is still worth reading and asking
-            # about. Pictures and films need the WebKit view.
+        except Exception as e:
+            # A library that loaded but does not work raises on first use; see gtkcompat.
+            errors.record(f"WebKit article view unavailable, using text: {e!r}")
+            webkitguard.note_success(self)  # it raised rather than killed us
             self.webview = None
-            self.textview = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
-            for margin in ("left", "right", "top", "bottom"):
-                getattr(self.textview, f"set_{margin}_margin")(18)
-            view = Gtk.ScrolledWindow()
-            view.add(self.textview)
-        self.pack_start(view, True, True, 0)
-        self.connect("destroy", self._on_destroy)
+            return None
+        view = Gtk.ScrolledWindow()
+        view.add(self.webview)
+        return view
+
+    def _on_first_load(self, view, event):
+        if event == WebKit2.LoadEvent.FINISHED:
+            view.disconnect_by_func(self._on_first_load)
+            webkitguard.note_success(self)  # it rendered; it is not what kills us
 
     def _on_destroy(self, _widget):
-        # Its web process goes with it, rather than at Python's next collection.
+        # Closed, loaded or not: a view built did not end the process (see webkitguard;
+        # one never built says nothing, and must not clear the strikes). And its web
+        # process goes with it, rather than at Python's next collection.
+        if self._webkit_tried:
+            webkitguard.note_success(self)
         self.webview = None
 
     def text_views(self):
@@ -301,19 +335,44 @@ class FlashWindow(Gtk.Window):
             self.set_transient_for(parent)
         self.set_default_size(760, 520)
         self.set_position(Gtk.WindowPosition.CENTER_ON_PARENT)
-        if WebKit2 is None:
-            self.add(Gtk.Label(label="Animations need the WebKit view."))
+        self.webview = None
+        # Guarded as every WebKit view of the app's is: see ArticlePane._build_webkit_view.
+        blocked, reason = webkitguard.blocked() if WebKit2 is not None else (True, "")
+        self._webkit_tried = not blocked
+        if not blocked:
+            webkitguard.note_attempt(self)
+            try:
+                encscheme.install(encyclopedia)
+                self.webview = WebKit2.WebView(web_context=encscheme.context())
+                self.webview.get_settings().set_enable_developer_extras(False)
+                # An animation may try to open a web page. Ruffle is told not to, and
+                # the window follows nothing but the animation's own page (webpolicy):
+                # no link, in the browser or here.
+                self.guard = webpolicy.Guard(WebKit2, self.webview,
+                                             on_link=lambda *_a: True)
+                self.guard.expect(f"enc://flash/{name}")
+            except Exception as e:
+                errors.record(f"WebKit animation view unavailable: {e!r}")
+                webkitguard.note_success(self)
+                self.webview, reason = None, f"WebKit failed ({e})"
+        self.connect("destroy", self._on_destroy)
+        if self.webview is None:
+            self.add(Gtk.Label(label="Animations need the WebKit view"
+                               + (f", which is off here: {reason}." if reason else "."),
+                               wrap=True, max_width_chars=70))
             self.show_all()
             return
-        encscheme.install(encyclopedia)
-        self.webview = WebKit2.WebView(web_context=encscheme.context())
-        self.webview.get_settings().set_enable_developer_extras(False)
-        # An animation may try to open a web page. Ruffle is told not to, and the
-        # window follows nothing but the animation's own page (webpolicy): no link,
-        # in the browser or here.
-        self.guard = webpolicy.Guard(WebKit2, self.webview, on_link=lambda *_a: True)
-        self.guard.expect(f"enc://flash/{name}")
+        self.webview.connect("load-changed", self._on_load_changed)
         self.add(self.webview)
-        self.connect("destroy", lambda _w: setattr(self, "webview", None))
         self.show_all()
         self.webview.load_uri(f"enc://flash/{name}")
+
+    def _on_load_changed(self, view, event):
+        if event == WebKit2.LoadEvent.FINISHED:
+            view.disconnect_by_func(self._on_load_changed)
+            webkitguard.note_success(self)  # it rendered; it is not what kills us
+
+    def _on_destroy(self, _widget):
+        if self._webkit_tried:
+            webkitguard.note_success(self)  # closed, loaded or not
+        self.webview = None

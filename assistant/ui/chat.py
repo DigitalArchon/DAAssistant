@@ -947,6 +947,7 @@ class ChatWindow(Gtk.Window):
         the window never appears, and the user is left looking at a screenshot they just
         sent into nothing.
         """
+        self._webkit_tried = False          # whether this window counts in webkitguard
         blocked, reason = webkitguard.blocked()
         if WebKit2 is None or blocked:
             # No usable WebKit (see gtkcompat), or one already seen to take the process
@@ -957,6 +958,7 @@ class ChatWindow(Gtk.Window):
 
         # From here to the first rendered frame is the stretch that can end the process
         # rather than raise; if it does, the next window opens as plain text.
+        self._webkit_tried = True
         webkitguard.note_attempt(self)
         try:
             return self._build_webkit_view()
@@ -2527,8 +2529,11 @@ class ChatWindow(Gtk.Window):
             self._save_prompt_height()          # dragged, and closed straight after
         # Reaching here at all means the view did not end the process, whether or not
         # the page ever finished loading. A window closed early must not count against
-        # WebKit - see webkitguard.
-        webkitguard.note_success(self)
+        # WebKit - see webkitguard. Only a window that built a view says so: one that
+        # did not, WebKit having ended the process twice, cleared those strikes when it
+        # closed, and the next window built the WebView that ends it.
+        if self._webkit_tried:
+            webkitguard.note_success(self)
         self._destroyed = True
         if self.privacy is not None:
             self.privacy.listener = None

@@ -885,7 +885,8 @@ WebKitGTK (see [packaging/README.md](packaging/README.md) for exactly what is in
 from source, every package the [README](README.md#from-source) lists is optional except
 `python3-gi`, `python3-pil` and `python3-requests`:
 
-- Without WebKitGTK the chat window falls back to plain text.
+- Without WebKitGTK the chat window falls back to plain text, and Search Encyclopedia
+  to each article's text.
 - Without an indicator library the tray falls back to `XApp.StatusIcon` or
   `Gtk.StatusIcon`.
 - Without `python3-xlib` the app cannot listen for shortcuts on X11; it writes them into
@@ -1090,7 +1091,8 @@ and for the second names the library or symbol at fault: usually a half-installe
 partly updated WebKitGTK, which reinstalling or updating fixes. `DA_ASSISTANT_NO_WEBKIT=1` forces plain text by hand, and if WebKit ever ends the
 process outright the app switches to plain text by itself after the second time. That
 verdict belongs to the version that recorded it, so an update always gets a fresh try
-(or delete `~/.cache/da-assistant/webkit-crash`).
+(or delete `~/.cache/da-assistant/webkit-crash`). Search Encyclopedia then shows each
+article's text, without its pictures and films, and animations do not play.
 
 ## For developers
 

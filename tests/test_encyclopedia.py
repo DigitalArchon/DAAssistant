@@ -701,6 +701,30 @@ class Quotes(unittest.TestCase):
             check, = check_quotes(f'"{quote}" [1]', self.SMITH)
             self.assertTrue(check["ok"], quote)
 
+    def test_a_bracket_round_a_sentence_hides_neither_its_end_nor_its_start(self):
+        # The text compared keeps brackets, and the sentence check left them to the
+        # sentence either side: a part beginning at "(" began before the next sentence,
+        # one ending after ".)" after its own, and no sentence seemed to end between.
+        for text, quote in (
+                ("Smith was not present. (Jones was found guilty of fraud.)",
+                 "Smith was … (Jones was found guilty of fraud"),
+                ("Smith was not present. [Jones was found guilty of fraud.]",
+                 "Smith was … [Jones was found guilty of fraud"),
+                ("Jones was tried. (Smith was not present.) Nobody found Jones guilty.",
+                 "(Smith was not present.) … found Jones guilty"),
+                ("Jones was tried. [Smith was not present.] Nobody found Jones guilty.",
+                 "[Smith was not present.] … found Jones guilty")):
+            check, = check_quotes(f"“{quote}” [1]", [{"text": text}])
+            self.assertFalse(check["ok"], quote)
+        # Whole sentences left out, a bracket ends the one before and begins the next.
+        for text, quote in (
+                ("Smith was not present. Later he left. (Jones was found guilty of fraud.)",
+                 "Smith was not present. … (Jones was found guilty of fraud"),
+                ("Jones was tried. (Smith was not present.) He left. Nobody found Jones "
+                 "guilty.", "(Smith was not present.) … Nobody found Jones guilty")):
+            check, = check_quotes(f"“{quote}” [1]", [{"text": text}])
+            self.assertTrue(check["ok"], quote)
+
     def test_a_word_on_its_own_beside_an_ellipsis_is_not_enough(self):
         # Found almost anywhere: "was … found … guilty of fraud" was word for word.
         for quote in ("was … found … guilty of fraud", "Smith … not present at the trial",

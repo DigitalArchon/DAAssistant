@@ -264,7 +264,7 @@ class _Passage:
     def __init__(self, text):
         self.text = text or ""
         self.plain, self._starts, self._ends = _mapped(self.text)
-        self._breaks = self._begins = None  # where sentences end and begin, once asked
+        self._stops = self._begins = None   # where sentences end and begin, once asked
 
     def find(self, quote):
         """Where `quote` is word for word in the passage: (start, end) of the passage's
@@ -328,19 +328,29 @@ class _Passage:
     def _joins(self, end, start):
         """Whether an ellipsis can stand for the text between `end` and `start`: words of
         one sentence, or whole sentences, but not the end of one with the start of the
-        next - that joins what was said of one thing to another."""
-        if self._breaks is None:
+        next - that joins what was said of one thing to another.
+
+        Between one sentence's last word and the next one's first are the marks that
+        close the one and open the other, and the text compared keeps the brackets
+        among them: a part ending after ".)" still ends its sentence, and one beginning
+        at "(" still begins the next."""
+        if self._stops is None:
             text = self.text
-            self._breaks = [(m.start(), m.end()) for m in _SENTENCE.finditer(text)
-                            if not m.group(1) or (text[m.end()].isupper() and not (
-                                m.group(1) == "." and _abbreviated(text, m.start())))]
-            self._begins = {begin for _end, begin in self._breaks}
-        after = bisect.bisect_left(self._breaks, (end, -1))
-        if after == len(self._breaks) or self._breaks[after][1] > start:
+            breaks = [(m.start(), m.end()) for m in _SENTENCE.finditer(text)
+                      if not m.group(1) or (text[m.end()].isupper() and not (
+                          m.group(1) == "." and _abbreviated(text, m.start())))]
+            self._stops = [stop for stop, _begin in breaks]
+            self._begins = [begin for _stop, begin in breaks]
+        stops, begins = self._stops, self._begins
+        # The first sentence to end at or after `end` - or that `end` is in the closing
+        # marks of - and the last to end before `start`.
+        first = bisect.bisect_right(begins, end)
+        if first == len(stops) or stops[first] >= start:
             return True                     # no sentence ends between them
-        ends = not self.text[end:self._breaks[after][0]].strip(_CLOSERS)
-        begins = start in self._begins or not self.text[:start].strip(_OPENERS)
-        return ends and begins
+        last = bisect.bisect_left(stops, start) - 1
+        return (not self.text[end:stops[first]].strip(_CLOSERS)
+                and start <= begins[last]
+                and not self.text[start:begins[last]].strip(_OPENERS))
 
 
 def _contains(text, quote):

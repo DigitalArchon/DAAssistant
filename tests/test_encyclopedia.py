@@ -937,6 +937,20 @@ class Sources(unittest.TestCase):
         self.assertNotIn("switch Strict off", html)
         self.assertIn('<li value="1">', html)
 
+    def test_a_passage_before_the_first_heading_is_shown_by_its_first_sentence(self):
+        # Shown by its heading, it was looked for as "Introduction", which is only what
+        # the passages call the text before an article's first heading.
+        from assistant.ui.article_view import page_text, place
+        from assistant.ui.encyclopedia_windows import _highlight
+        text = "Zorblaxes hum at dusk. Its introduction to the marsh came late."
+        highlight = _highlight({"heading": "Introduction", "section": 0, "text": text},
+                               None)
+        self.assertEqual(highlight.text, "Zorblaxes hum at dusk.")
+        searched, _passed = place(page_text("Zorblax", "", f"<p>{text}</p>"), highlight)
+        self.assertNotIn("introduction", searched.casefold())
+        later = {"heading": "Diet", "section": 2, "text": "They eat glimmer moss."}
+        self.assertEqual(_highlight(later, None).text, "Diet")
+
 
 class ViewerPages(unittest.TestCase):
     def media(self, name):

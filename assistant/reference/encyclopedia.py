@@ -664,12 +664,16 @@ def contributors_of(page):
     return list(dict.fromkeys(name for name in names if name))
 
 
+# What sections_of calls the text before an article's first heading, which has none.
+LEAD = "Introduction"
+
+
 def sections_of(page):
     """[(heading, text)] of an article, in order, the empty ones left out. Each
     section's contributors end it as a line of their own: "By A and B"."""
     body = _ASSEMBLY.sub(" ", body_of(page))
     body = with_bylines(body, lambda names: f"<p>{html_module.escape(byline(names))}</p>")
-    parts, heading, last = [], "Introduction", 0
+    parts, heading, last = [], LEAD, 0
     for match in _HEADING.finditer(body):
         parts.append((heading, body[last:match.start()]))
         heading = text_of(match.group(2)) or heading

@@ -24,7 +24,7 @@ from gi.repository import GLib, Gtk, Pango
 
 from .. import prompts
 from ..llm import LLMError
-from ..reference.encyclopedia import (ARTICLE_CONTEXT_CHARS, AUDIENCE_NAMES,
+from ..reference.encyclopedia import (ARTICLE_CONTEXT_CHARS, AUDIENCE_NAMES, LEAD,
                                       RESEARCH_CHARS, byline, check_quotes, cited,
                                       read_json, research_context)
 from . import markdown_html
@@ -627,7 +627,15 @@ def _highlight(passage, quoted):
         return Highlight.at(passage["text"], quoted["span"])
     if quoted and quoted.get("text"):
         return Highlight(quoted["text"])
-    return Highlight(passage["heading"], after="\n" + passage["text"][:80])
+    text = passage["text"]
+    if passage.get("section") == 0 and passage["heading"] == LEAD:
+        # The text before an article's first heading, which has none: "Introduction"
+        # is only what the passages call it, so the reader went to that word where
+        # the page had it - "Its introduction to the marsh" - or nowhere. Its first
+        # sentence is on the page.
+        end = re.search(r"[.!?](?=\s|$)", text[:240])
+        return Highlight.at(text, (0, end.end() if end else min(len(text), 80)))
+    return Highlight(passage["heading"], after="\n" + text[:80])
 
 
 def _md(text):

@@ -228,15 +228,19 @@ _UNSPACED = ((re.compile(r"[\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf
 
 def _word_count(text):
     """How many words `text` has, as a reader would count them: what stands between
-    spaces - and in a script with none between its words, so many of its letters
-    (_UNSPACED) - never less than one between two spaces."""
+    spaces with a letter or a digit in it - "wasn't", "well-known", "1914–18" and
+    "U.S." are one word each, "…" and "—" none - and in a script with no spaces
+    between its words, so many of its letters (_UNSPACED); never less than one between
+    two spaces."""
     count = 0
     for chunk in text.split():
         words = 0
         for script, letters in _UNSPACED:
             words += sum(char.isalnum() for char in script.findall(chunk)) / letters
             chunk = script.sub(" ", chunk)
-        count += max(1, words + len(chunk.split()))
+        words += sum(1 for piece in chunk.split() if _COUNTED.search(piece))
+        if words:
+            count += max(1, words)
     return count
 
 
@@ -276,11 +280,17 @@ class _Passage:
 
         An ellipsis in the passage's own text is word for word too, where a quotation
         has it: it leaves out nothing, so it splits no part of the quotation in two."""
-        parts = [part for part in (_plain(p).strip(" .,;:!?'\"")
-                                   for p in _ELLIPSIS.split(quote or "")) if part]
+        # Each part's words are counted as the quotation writes them: in the text
+        # compared, "wasn't" is "wasn t", and "1914–18" "1914-18".
+        parts, counts = [], []
+        for written in _ELLIPSIS.split(quote or ""):
+            part = _plain(written).strip(" .,;:!?'\"")
+            if part:
+                parts.append(part)
+                counts.append(_word_count(written))
         if not parts:
             return None
-        plain, counts = self.plain, [len(_COUNTED.findall(part)) for part in parts]
+        plain = self.plain
 
         @functools.cache
         def end(index, at, words, omitted):
@@ -478,11 +488,11 @@ def check_quotes(answer, passages, question=None, strict=True):
     is not in "illegal in Ireland", nor "of 12" in "of 125,000", nor "violent protest"
     in "non-violent protest", nor "40 °C" in "−40 °C". An ellipsis can leave out words
     of one sentence, or whole sentences, but not the end of one sentence with the start
-    of the next, and at least PART_WORDS words stand between it and the next ellipsis,
-    or either end: a word on its own is found almost anywhere, and words joined across
-    sentences say what the passage does not - "Smith was … found guilty" is not word
-    for word in "Smith was not guilty. Jones was found guilty", though each part of it
-    is there.
+    of the next, and at least PART_WORDS words, as written (_word_count), stand between
+    it and the next ellipsis, or either end: a word on its own is found almost
+    anywhere, and words joined across sentences say what the passage does not - "Smith
+    was … found guilty" is not word for word in "Smith was not guilty. Jones was found
+    guilty", though each part of it is there.
 
     Not everything in quotation marks is quoted from the passages, and what is not is
     left alone - not checked, not marked, not counted among the quotations checked: a

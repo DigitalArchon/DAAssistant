@@ -748,6 +748,24 @@ class Quotes(unittest.TestCase):
             check, = check_quotes(f'"{quote}" [1]', passages)
             self.assertTrue(check["ok"], quote)
 
+    def test_the_words_beside_an_ellipsis_are_counted_as_written(self):
+        # Counted in the text compared, "wasn't" was two words, "wasn" and "t", and so
+        # were "well-known", "1914–18" and "U.S.": "proven … guilty of fraud" failed
+        # and "wasn't … guilty of fraud" passed.
+        passages = [{"text": "It wasn't proven that he was guilty of fraud. The well-known "
+                             "U.S. zorblax trials of 1914–18 were a matter of record."}]
+        for quote in ("wasn't … guilty of fraud", "proven … guilty of fraud",
+                      "well-known … zorblax trials", "U.S. … of 1914–18 were",
+                      "1914–18 … a matter of record"):
+            check, = check_quotes(f"“{quote}” [1]", passages)
+            self.assertFalse(check["ok"], quote)
+        for quote in ("It wasn't … guilty of fraud", "The well-known … zorblax trials",
+                      "of 1914–18 … a matter of record"):
+            check, = check_quotes(f"“{quote}” [1]", passages)
+            self.assertTrue(check["ok"], quote)
+        # One word between two ellipses is a word, not a quotation found word for word.
+        self.assertEqual(check_quotes("“… guilty …” [1]", passages), [])
+
     def test_a_part_found_where_the_next_cannot_follow_is_looked_for_again(self):
         passages = [{"text": "They cross the sea. Every winter they cross the glimmer sea, "
                              "humming as they go."}]

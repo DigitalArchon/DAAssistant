@@ -687,29 +687,28 @@ Every quotation in an answer is then checked against the passage it cites, in wh
 quotation marks the answer's language uses: “…”, "…", ‘…’, „…“, «…», »…«, ”…”, »…», 「…」
 or 『…』. A ’ that a letter follows is an apostrophe, not the end of a ‘…’ quotation; one
 with a plural's apostrophe in it (‘the soldiers’ pay’) is read only to there, unless
-citations follow its closing mark. Word for word
-means the same words in the same order, case, spacing, quotation marks and dashes aside
-("Europe — and" is "Europe—and"), with an ellipsis ("…", "...", ". . .", "[…]") where
-words are left out, and each stretch between ellipses beginning and ending where a word
-of the passage does: "legal in Ireland" is not in "illegal in Ireland", nor "a
-population of 12" in "a population of 125,000". An ellipsis can leave out words within
-a sentence, or whole sentences, but not the end of one sentence with the start of the
-next - "Smith was … found guilty" is not word for word in "Smith was not guilty. Jones
-was found guilty", though each part of it is there - and at least two words must stand
-between one ellipsis and the next, or either end of the quotation, since a word on its
-own is found almost anywhere. A full stop after an initial or a title ("U.S.", "Mr.")
-ends no sentence; after any other abbreviation it is taken for the end of one, which
-can only mark a true quotation ⚠.
-What is in quotation marks but not quoted from the passages is left
-alone, and not counted among the quotations checked: a word or two, a passage's title or
-section heading, your question quoted back with no citation after it (cited, it is
-checked like any other), and with Strict off, what is under the heading *Not from the
-encyclopedia*, up to the next heading as high as it. With Strict on nothing is set
-apart: a quotation under such a heading is checked like the rest. A quotation not found
-word for word is marked ⚠ where it stands, and
-listed under the answer; an answer with nothing quoted to check says so there ("none"),
-rather than looking like one whose every quotation was found. Click the
-⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
+citations follow its closing mark. Word for word means the same words in the same order,
+case, spacing, quotation marks and dashes aside ("Europe — and" is "Europe—and"), with
+an ellipsis ("…", "...", ". . .", "[…]") where words are left out, and each stretch
+between ellipses beginning and ending where a word of the passage does: "legal in
+Ireland" is not in "illegal in Ireland", nor "a population of 12" in "a population of
+125,000". An ellipsis can leave out words within a sentence, or whole sentences, but not
+the end of one sentence with the start of the next - "Smith was … found guilty" is not
+word for word in "Smith was not guilty. Jones was found guilty", though each part of it
+is there - and at least two words must stand between one ellipsis and the next, or
+either end of the quotation, since a word on its own is found almost anywhere. A full
+stop after an initial or a title ("U.S.", "Mr.") ends no sentence; after any other
+abbreviation it is taken for the end of one, which can only mark a true quotation ⚠.
+
+What is in quotation marks but not quoted from the passages is left alone, and not
+counted among the quotations checked: a word or two, a passage's title or section
+heading, your question quoted back with no citation after it (cited, it is checked like
+any other), and with Strict off, what is under the heading *Not from the encyclopedia*,
+up to the next heading as high as it. With Strict on nothing is set apart: a quotation
+under such a heading is checked like the rest. A quotation not found word for word is
+marked ⚠ where it stands, and listed under the answer; an answer with nothing quoted to
+check says so there ("none"), rather than looking like one whose every quotation was
+found. Click the ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
 passage's own words highlighted - where it was found under another number, or where the
 passage comes closest to it, so you can see straight away what the source really says.
 A ⚠ that is not a link is a quotation nothing in the passages comes near. Each

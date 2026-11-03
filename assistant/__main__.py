@@ -29,18 +29,22 @@ def build_parser():
     return parser
 
 
-def tray_host(shown, wayland):
+def tray_host(shown, wayland, xembed=None):
     """What --probe says shows the tray icon, `shown` being whether a
-    StatusNotifierWatcher is on the session bus. Without one, an icon cannot show on
-    Wayland; on X11 it goes to the older XEmbed tray instead, as Tray.unseen knows, and
-    "will not show" was said there of icons that showed."""
+    StatusNotifierWatcher is on the session bus, and `xembed` whether an XEmbed system
+    tray is on the X display (None: not known). Without a watcher, an icon cannot show
+    on Wayland; on X11 it goes to the older XEmbed tray instead, as Tray.unseen knows,
+    and "will not show" was said there of icons that showed. But only where there is
+    such a tray: GNOME on Xorg without the AppIndicator extension has neither, nor
+    has a bare window manager, and an icon that showed nowhere was said to go to it."""
     if shown:
         return "yes"
-    if wayland:
-        return ("none - the icon will not show; on GNOME, turn on the AppIndicator "
-                "extension")
+    if wayland or xembed is False:
+        return ("none - the icon will not show"
+                + ("" if wayland else ": there is no XEmbed system tray either")
+                + "; on GNOME, turn on the AppIndicator extension")
     return ("no StatusNotifierWatcher - on X11 the icon goes to the XEmbed system tray "
-            "instead")
+            + ("instead" if xembed else "instead, if there is one"))
 
 
 def probe():
@@ -66,8 +70,10 @@ def probe():
         from .ui import tray
         shown = tray.watcher_present()
         if shown is not None:
-            print(f"Tray host      : "
-                  f"{tray_host(shown, session.session_type() == 'wayland')}")
+            wayland = session.session_type() == "wayland"
+            # Asked only where it decides what is said: X11 with no watcher.
+            xembed = None if shown or wayland else tray.xembed_tray_present()
+            print(f"Tray host      : {tray_host(shown, wayland, xembed)}")
         # WebKit is tried for real, and without a display GTK aborts the process.
         print(f"WebKit view    : {gtkcompat.webkit_status()}")
     from . import bundle

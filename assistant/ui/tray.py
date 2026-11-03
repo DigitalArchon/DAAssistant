@@ -39,6 +39,33 @@ def watcher_present():
     return bool(reply.unpack()[0])
 
 
+def xembed_tray_present():
+    """Whether an XEmbed system tray is on this X display: a client that owns the
+    _NET_SYSTEM_TRAY_S<screen> selection, which is how the System Tray Protocol finds
+    one. None when that cannot be asked - no python-xlib, no X display. Asked over a
+    connection of its own, which opens no window and leaves nothing behind: an atom no
+    client has named is not made by asking, and was never any tray's."""
+    try:
+        from Xlib import X, display, error
+    except ImportError:
+        return None
+    try:
+        connection = display.Display()
+    except (error.DisplayError, error.ConnectionClosedError):
+        return None
+    try:
+        name = f"_NET_SYSTEM_TRAY_S{connection.get_default_screen()}"
+        atom = connection.intern_atom(name, only_if_exists=True)
+        return atom != X.NONE and connection.get_selection_owner(atom) != X.NONE
+    except (error.XError, error.ConnectionClosedError):
+        return None
+    finally:
+        try:
+            connection.close()
+        except error.ConnectionClosedError:
+            pass
+
+
 class Tray:
     def __init__(self, app_id, title, menu, icon=None):
         # app_icon.name() also registers the bundled icons with the GTK icon theme,

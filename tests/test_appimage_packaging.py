@@ -614,6 +614,90 @@ class ReproducibleBuild(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(bin_dir)), ["pydoc3.12", "python3", "python3.12"])
 
 
+class TheImageCarriesEveryLicence(unittest.TestCase):
+    """3.4.0 carried DA Assistant's licence and the fallbacks' copyright files and nothing
+    else: not the bundled Python's or the OpenSSL, SQLite and the rest built into it, not
+    the runtime's or the libfuse and squashfuse linked into it."""
+
+    def setUp(self):
+        self.build = (PACKAGING / "build.sh").read_text()
+        self.licenses = ROOT / "packaging" / "licenses"
+        self.sources = (self.licenses / "SOURCES").read_text()
+
+    def test_they_are_of_the_releases_the_build_pins(self):
+        # A bump of either, or of tinfoil-ehbp, fails here until the texts are taken
+        # again from the new release.
+        pins = (PACKAGING / "pins.sh").read_text()
+        release, python = re.search(r"releases/download/(\d+)/cpython-([\d.]+)%2B", pins).groups()
+        self.assertIn(f"python-build-standalone {release}, CPython {python} ", self.sources)
+        self.assertIn(f"/download/{release}/cpython-{python}%2B{release}-x86_64-unknown-linux-gnu-"
+                      "pgo%2Blto-full.tar.zst", self.sources)
+        runtime = re.search(r'RUNTIME_URL="[^"]*/releases/download/(\d+)/runtime-x86_64"', pins)[1]
+        self.assertIn(f"type2-runtime {runtime}, built from commit ", self.sources)
+        lock = (ROOT / "packaging" / "private-mode.lock").read_text()
+        ehbp = re.search(r"^tinfoil-ehbp==(\S+)", lock, re.M)[1]
+        self.assertIn(f"tinfoil-ehbp {ehbp} (MIT)", self.sources)
+
+    def test_every_text_is_accounted_for_and_every_one_named_is_there(self):
+        named = set(re.findall(r"^  (LICENSE\.[\w.+-]+\.txt) ", self.sources, re.M))
+        present = {path.name for path in (self.licenses / "python").iterdir()}
+        self.assertEqual(named, present)
+        for part in ("openssl-3", "sqlite", "libedit", "ncurses", "libffi", "liblzma", "bzip2",
+                     "zlib", "expat", "mpdecimal", "libuuid", "bdb", "tcl", "tk", "libX11",
+                     "cpython"):
+            self.assertIn(f"LICENSE.{part}.txt", present)
+        folders = set(re.findall(r"^  ([a-z]+)/ ", self.sources, re.M))
+        self.assertEqual(folders, {"libfuse", "squashfuse", "zstd", "zlib", "mimalloc", "musl"})
+        for folder in folders:
+            self.assertTrue(any((self.licenses / "runtime" / folder).iterdir()), folder)
+        self.assertIn("LGPL2.txt", os.listdir(self.licenses / "runtime" / "libfuse"))
+        for text in ("runtime/LICENSE", "tinfoil-ehbp/LICENSE"):
+            self.assertTrue((self.licenses / text).is_file(), text)
+
+    def test_each_archive_they_came_from_is_named_with_its_checksum(self):
+        for url in re.findall(r"^\s+(https://\S+\.(?:tar\.\w+|tgz))$", self.sources, re.M):
+            following = self.sources[self.sources.index(url) + len(url):].lstrip()
+            self.assertRegex(following, r"^sha(256 [0-9a-f]{64}|512 [0-9a-f]{128})\b", url)
+
+    def test_the_build_puts_them_in_the_image(self):
+        self.assertIn('cp -r "$W/src/packaging/licenses/." "$D/"', self.build)
+        self.assertIn('"$W/srcs/pycairo/COPYING-LGPL-2.1"', self.build)
+        self.assertIn('} > "$D/fallbacks/SOURCES"', self.build)
+        self.assertIn("https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/", self.build)
+        self.assertIn("${source:Package} ${source:Version}", self.build)
+
+    def test_the_build_stops_on_a_package_that_carries_no_licence(self):
+        import shutil
+        import tempfile
+        start = self.build.index('"$PY" - "$D" "$W"/AppDir/usr/python/lib/python3.*/site-packages')
+        check = re.search(r"<<'PY'\n(.*?)\nPY\n", self.build[start:], re.S)[1]
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        licenses, site = os.path.join(tmp, "licenses"), os.path.join(tmp, "site")
+        for folder in ("pycairo-1.29.2.dist-info", "tinfoil_ehbp-0.4.1.dist-info",
+                       "requests-2.34.2.dist-info/licenses"):
+            os.makedirs(os.path.join(site, folder))
+        open(os.path.join(site, "requests-2.34.2.dist-info/licenses/LICENSE"), "w").close()
+        os.makedirs(os.path.join(licenses, "pycairo"))
+
+        def run():
+            return subprocess.run([sys.executable, "-I", "-", licenses, site], input=check,
+                                  text=True, capture_output=True)
+
+        refused = run()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("tinfoil_ehbp-0.4.1.dist-info", refused.stderr)
+        self.assertNotIn("pycairo", refused.stderr)
+        self.assertNotIn("requests", refused.stderr)
+        os.makedirs(os.path.join(licenses, "tinfoil-ehbp"))
+        self.assertEqual(run().returncode, 0)
+
+    def test_the_fallbacks_are_not_called_lgpl_where_they_are_gpl(self):
+        readme = (ROOT / "packaging" / "README.md").read_text()
+        self.assertNotIn("Ayatana indicator and libnotify are LGPL", readme)
+        self.assertIn("The Ayatana tray indicator is GPL-3", readme)
+
+
 class PillowsFontsAreLeftOut(unittest.TestCase):
     """Pillow's font module is the only thing that loads the Brotli it bundles (FreeType reads
     WOFF2 with it), and Brotli 1.2.0 has CVE-2026-111497 (Oct 2026). The build leaves the module

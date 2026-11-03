@@ -1207,9 +1207,12 @@ published to the panel, which draws the icon in a different process.
 
 `tests/test_appimage_packaging.py` guards the AppImage's handover to the host: every
 variable `AppRun` overrides has to be stashed for `hostenv.py` to give back, or the
-screenshot and clipboard tools start failing on somebody else's distribution. It also
-checks that a fallback is used only where the system lacks it, and that every input to
-the build stays pinned by hash.
+screenshot and clipboard tools start failing on somebody else's distribution, and it runs
+`AppRun` to see that it is. It also checks that a fallback is used only where the system
+lacks it; that every input to the build stays pinned by hash and is fetched over https only;
+that the commit is built as committed, whatever the builder's git settings; that nothing in
+the image names the folder it was built in; and that the image carries the licence of
+everything it bundles.
 
 `tests/test_https.py` guards the API key never crossing the network unencrypted: which
 addresses may be used, that Settings will not save any other, and that the chat, the

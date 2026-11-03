@@ -204,14 +204,69 @@ for so in libayatana-ido3-0.4.so.0 libdbusmenu-glib.so.4 libdbusmenu-gtk3.so.4 \
     install -D -m 644 "$(readlink -f "$L/$so")" "$F/libs/$so"
 done
 
-# DA Assistant's licence, and the copyright notice of each Ubuntu package a fallback came from
-# (the Python packages carry theirs in their dist-info, Ruffle its LICENSE files)
+# Licences, in usr/share/licenses/da-assistant: DA Assistant's; the bundled Python's, the
+# runtime's, those of the libraries built into each, and tinfoil-ehbp's, from
+# packaging/licenses, whose SOURCES says where each came from; pycairo's, from its sdist,
+# since the wheel built from it carries none; and the copyright file of each Ubuntu package
+# a fallback came from, with where their source is. Every other Python package carries its
+# licence in its dist-info (checked below), and Ruffle its LICENSE files.
 D="$W/AppDir/usr/share/licenses/da-assistant"
 install -D -m 644 "$W/src/LICENSE" "$D/LICENSE"
-for pkg in $(find "$F" -type f -printf '%f\n' | while read -r f; do
-                 dpkg -S "*/$f" | cut -d: -f1 | tr "," " "; done | sort -u); do
+cp -r "$W/src/packaging/licenses/." "$D/"
+install -D -m 644 -t "$D/pycairo" "$W/srcs/pycairo/COPYING" "$W/srcs/pycairo/COPYING-LGPL-2.1" \
+    "$W/srcs/pycairo/COPYING-MPL-1.1"
+packages="$(find "$F" -type f -printf '%f\n' | while read -r f; do
+                dpkg -S "*/$f" | cut -d: -f1 | tr "," " "; done | sort -u)"
+for pkg in $packages; do
     install -D -m 644 "/usr/share/doc/$pkg/copyright" "$D/fallbacks/$pkg.copyright"
 done
+# The GPL and LGPL ask that whoever gets these binaries can get their source: it is in the
+# snapshot of the archive the build installed them from, which is named here, beside them.
+{
+    printf '%s\n' \
+        "The fallback libraries and typelibs in usr/lib/fallback are these packages of Ubuntu" \
+        "24.04, as the Ubuntu archive had them at $APT_SNAPSHOT. Their source is in the same" \
+        "snapshot of the archive:" \
+        "" \
+        "  https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/" \
+        "  suites noble, noble-updates and noble-security; components main and universe" \
+        "" \
+        "On a system with apt, a file in /etc/apt/sources.list.d ending .sources holding" \
+        "" \
+        "  Types: deb-src" \
+        "  URIs: https://snapshot.ubuntu.com/ubuntu/$APT_SNAPSHOT/" \
+        "  Suites: noble noble-updates noble-security" \
+        "  Components: main universe" \
+        "  Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" \
+        "" \
+        "then apt-get update, and apt-get source <source package>=<version> fetches one." \
+        "Each package's copyright file is beside this one, as <package>.copyright." \
+        ""
+    printf '%-34s %-26s %s\n' "package" "version" "source package and version"
+    for pkg in $packages; do
+        dpkg-query -W -f='${Package}\t${Version}\t${source:Package} ${source:Version}\n' "$pkg"
+    done | sort | while IFS=$'\t' read -r name version source; do
+        printf '%-34s %-26s %s\n' "$name" "$version" "$source"
+    done
+} > "$D/fallbacks/SOURCES"
+# Every Python package in the image carries its licence: in its dist-info, or, where its
+# wheel has none, in a folder of its name above.
+"$PY" - "$D" "$W"/AppDir/usr/python/lib/python3.*/site-packages "$A/private-mode" <<'PY'
+import pathlib, re, sys
+
+licenses, folders = pathlib.Path(sys.argv[1]), sys.argv[2:]
+bare = []
+for folder in folders:
+    for info in sorted(pathlib.Path(folder).glob("*.dist-info")):
+        name = re.sub(r"[-_.]+", "-", info.name[:-len(".dist-info")].rpartition("-")[0]).lower()
+        carried = [path for path in info.rglob("*") if path.is_file()
+                   and re.match(r"(LICEN[CS]E|COPYING|NOTICE)", path.name, re.I)]
+        if not carried and not (licenses / name).is_dir():
+            bare.append(info.name)
+if bare:
+    sys.exit("No licence in the image for " + ", ".join(bare) + ": add it to "
+             "packaging/licenses, and say in its SOURCES where it came from")
+PY
 
 find "$W/AppDir" -name direct_url.json -delete    # build paths
 find "$W/AppDir" -name __pycache__ -type d -prune -exec rm -rf {} +

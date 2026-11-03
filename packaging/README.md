@@ -21,9 +21,17 @@ before anything imports GTK, and only those the host has no copy of; `--probe` l
 *Fallbacks* line.
 
 Licences travel with the image, in `usr/share/licenses/da-assistant`: DA Assistant's own
-(GPL-3.0-or-later), and the Ubuntu copyright file of every package a fallback came from (the
-Ayatana indicator and libnotify are LGPL; their source is in the apt snapshot the build
-pins). Each Python package carries its licence in its `dist-info`, and Ruffle its own
+(GPL-3.0-or-later); in `python/`, the bundled Python's and those of the libraries built into
+it (OpenSSL, SQLite, libedit, ncurses, libffi, xz, bzip2, zlib, expat, mpdecimal, libuuid,
+Berkeley DB, Tcl/Tk and the X11 libraries Tk links); in `runtime/`, the AppImage runtime's and
+those of what is linked into it (libfuse, squashfuse, zstd, zlib, mimalloc, musl); pycairo's
+and tinfoil-ehbp's, whose wheels carry none; and in `fallbacks/`, the Ubuntu copyright file of
+every package a fallback came from. The Ayatana tray indicator is GPL-3; its ido and
+appindicator libraries and libdbusmenu are part GPL-3, part LGPL; libnotify and the typelibs
+are LGPL: all of it within what GPL-3.0-or-later allows. Beside them, `fallbacks/SOURCES`
+names the apt snapshot their source is in, and `SOURCES` the archive every other text was
+taken from; those texts are kept in `packaging/licenses`. Every other Python package carries
+its licence in its `dist-info` (the build stops if one has none), and Ruffle its own
 `LICENSE` files.
 
 The bundled PyGObject needs GLib 2.80 or newer, which sets the oldest supported systems:
@@ -70,6 +78,7 @@ never plain http, not even through a redirect; downloads are cached in
 | Privacy Mode's client (wheels, with hashes) | `private-mode.lock`, by `lock-private-mode.sh`, resolved against `requirements.lock` |
 | Ruffle (npm tarball, SHA-512) | `ruffle.lock` |
 | The fallback libraries and typelibs | the apt snapshot in `appimage/pins.sh` |
+| The licence texts of the Python build, the runtime and tinfoil-ehbp | `licenses/`, each with its archive and checksum in `licenses/SOURCES` |
 
 Changing any of these changes the AppImage, which is the point: an update is a reviewed commit.
 

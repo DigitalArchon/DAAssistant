@@ -44,15 +44,15 @@ EPOCH="$(git log -1 --format=%ct HEAD)"
 # AppImage. Only plain files are taken; the tree has nothing else.
 mkdir "$WORK/tree"
 git ls-tree -r -z HEAD | while IFS= read -r -d '' entry; do
-    read -r mode type oid <<< "${entry%%$'\t'*}"
+    read -r fmode ftype oid <<< "${entry%%$'\t'*}"
     path="${entry#*$'\t'}"
-    case "$mode" in
+    case "$fmode" in
         100644|100755) ;;
-        *) echo "$path is a $type of mode $mode, which the build does not take" >&2; exit 1 ;;
+        *) echo "$path is a $ftype of mode $fmode, which the build does not take" >&2; exit 1 ;;
     esac
     mkdir -p "$WORK/tree/$(dirname "$path")"
     git cat-file blob "$oid" > "$WORK/tree/$path"
-    chmod "${mode#100}" "$WORK/tree/$path"
+    chmod "${fmode#100}" "$WORK/tree/$path"
 done
 (cd "$WORK/tree" && shopt -s dotglob && tar -cf "$WORK/src.tar" --sort=name --owner=0 \
     --group=0 --numeric-owner --mode=u+rwX,go+rX,go-w --mtime="@$EPOCH" -- *)

@@ -15,6 +15,7 @@ import ast
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import unittest
@@ -29,11 +30,18 @@ from assistant import bundle, hostenv
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PACKAGING = ROOT / "packaging" / "appimage"
 APPRUN = PACKAGING / "AppRun"
+# The modules known to run host programs; the test looks through every module, and
+# these must be among what it finds.
 SPAWNS_HOST_BINARIES = [
     ROOT / "assistant" / "session.py",
     ROOT / "assistant" / "clipboard.py",
     ROOT / "assistant" / "capture" / "cli.py",
+    ROOT / "assistant" / "keybindings.py",
 ]
+SUBPROCESS_SPAWN = re.compile(r"subprocess\.(run|Popen|call|check_call|check_output"
+                              r"|getoutput|getstatusoutput)")
+OTHER_SPAWN = re.compile(r"os\.(system|popen|exec\w*|spawn\w*|posix_spawn\w*)"
+                         r"|GLib\.spawn\w*|Gio\.Subprocess(\.\w+)?")
 
 
 class HostEnvironmentHandback(unittest.TestCase):
@@ -118,6 +126,37 @@ class HostEnvironmentHandback(unittest.TestCase):
                                lambda uri, context: launched.append(context)):
             hostenv.open_uri("mailto:someone@example.org")
         self.assertEqual(launched, [None])
+
+    def test_unrelated_variables_are_passed_through(self):
+        with mock.patch.dict(os.environ, {hostenv.KEYS: "LD_LIBRARY_PATH",
+                                          "XDG_SESSION_TYPE": "wayland"}):
+            self.assertEqual(hostenv.host_env()["XDG_SESSION_TYPE"], "wayland")
+
+    def test_every_call_that_spawns_a_host_binary_passes_the_host_environment(self):
+        # Every module of the app, not a list of the ones known to spawn: a new caller
+        # is exactly the one nobody thought to add.
+        spawning = set()
+        for path in sorted((ROOT / "assistant").rglob("*.py")):
+            where = path.relative_to(ROOT)
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                    self.fail(f"{where}:{node.lineno} imports from subprocess: call it as "
+                              "subprocess.run or subprocess.Popen, which this test sees")
+                if not isinstance(node, ast.Call):
+                    continue
+                target = ast.unparse(node.func)
+                if OTHER_SPAWN.fullmatch(target):
+                    self.fail(f"{where}:{node.lineno} spawns with {target}, which this "
+                              "test cannot hold to hostenv.host_env(): use subprocess")
+                if not SUBPROCESS_SPAWN.fullmatch(target):
+                    continue
+                spawning.add(where.as_posix())
+                env = {kw.arg: ast.unparse(kw.value) for kw in node.keywords}.get("env")
+                self.assertEqual(env, "hostenv.host_env()",
+                                 f"{where}:{node.lineno} spawns a host binary without "
+                                 f"env=hostenv.host_env()")
+        self.assertLessEqual(
+            {path.relative_to(ROOT).as_posix() for path in SPAWNS_HOST_BINARIES}, spawning)
 
 
 class TheSuitesOwnCache(unittest.TestCase):
@@ -207,25 +246,6 @@ class TheTwoLocksAgree(unittest.TestCase):
             self.assertEqual(out[3:], ["flag"] + ([flag] if flag else []))
         self.assertIn('${upgrade:+"$upgrade"}', script)
 
-    def test_unrelated_variables_are_passed_through(self):
-        os.environ[hostenv.KEYS] = "LD_LIBRARY_PATH"
-        with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}):
-            self.assertEqual(hostenv.host_env()["XDG_SESSION_TYPE"], "wayland")
-
-    def test_every_call_that_spawns_a_host_binary_passes_the_host_environment(self):
-        for path in SPAWNS_HOST_BINARIES:
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                target = ast.unparse(node.func)
-                if target not in ("subprocess.run", "subprocess.Popen"):
-                    continue
-                keywords = {kw.arg for kw in node.keywords}
-                self.assertIn("env", keywords,
-                              f"{path.name}:{node.lineno} spawns a host binary without "
-                              f"env=hostenv.host_env()")
-
 
 class AppRunStashesWhatItOverrides(unittest.TestCase):
     """Every variable AppRun exports must appear in the list hostenv reads."""
@@ -239,41 +259,80 @@ class AppRunStashesWhatItOverrides(unittest.TestCase):
         return set(match.group(1).split())
 
     def test_declared_keys_cover_every_export(self):
-        exported = set(re.findall(r'^export ([A-Z0-9_]+)=', self.text, re.MULTILINE))
-        exported -= {"APPIMAGE_HOST_ENV_KEYS"}
-        missing = exported - self._declared_keys()
+        # Indented too: every export AppRun makes is inside an if.
+        exported = set()
+        for line in re.findall(r"^\s*export\s+(.+)$", self.text, re.MULTILINE):
+            exported.update(word.split("=", 1)[0] for word in shlex.split(line, comments=True))
+        self.assertIn("SSL_CERT_FILE", exported)
+        stashes = {name for name in exported if name.startswith(hostenv.PREFIX)}
+        missing = exported - stashes - self._declared_keys()
         self.assertEqual(missing, set(),
                          f"AppRun overrides {sorted(missing)} without stashing the host's "
                          f"value; add them to APPIMAGE_HOST_ENV_KEYS")
 
-    def _cert_file(self, env, hide=()):
-        """What SSL_CERT_FILE AppRun's certificate block settles on, run on its own
-        with `hide` made unreadable by pointing the candidates elsewhere."""
-        start = self.text.index('if [ -z "${SSL_CERT_FILE:-}" ]; then')
-        end = self.text.index("\nfi\n", start) + 4
-        block = self.text[start:end]
+    def _apprun(self, env, here="/opt/bundle", hide=()):
+        """The environment AppRun starts the app with: AppRun up to its exec, run as
+        if it sat in `here`, with the CA bundles in `hide` made unreadable by pointing
+        the candidates elsewhere. Without the variables the shell keeps for itself."""
+        head = self.text[:self.text.index('exec "$HERE/usr/python/bin/python3"')]
         for path in hide:
-            block = block.replace(path, "/nonexistent" + path)
-        script = f'HERE=/opt/bundle\n{block}\nprintf %s "${{SSL_CERT_FILE-}}"'
-        return subprocess.run(["sh", "-c", script], env=env, capture_output=True,
-                              text=True, check=True).stdout
+            head = head.replace(path, "/nonexistent" + path)
+        out = subprocess.run(["sh", "-c", head + "env -0\n", os.path.join(here, "AppRun")],
+                             env=env, capture_output=True, check=True).stdout
+        started = dict(item.split("=", 1) for item in out.decode().split("\0") if item)
+        for shells_own in ("PWD", "OLDPWD", "SHLVL", "_"):
+            started.pop(shells_own, None)
+        return started
+
+    def test_the_host_programs_get_back_what_apprun_changed(self):
+        """Whatever AppRun changes, by whatever means, hostenv hands back: the app's
+        children see the environment the AppImage was started with."""
+        path = os.environ.get("PATH", "")
+        for host in ({"PATH": path},
+                     {"PATH": path, "SSL_CERT_FILE": "/my/bundle.pem"},
+                     {"PATH": path, "REQUESTS_CA_BUNDLE": "/my/requests.pem"}):
+            started = self._apprun(host)
+            self.assertNotEqual(started, host)
+            with mock.patch.dict(os.environ, started, clear=True), \
+                    mock.patch.dict(hostenv._own, clear=True):
+                self.assertEqual(hostenv.host_env(), host)
+
+    def _certificates(self, env, here="/opt/bundle", hide=()):
+        started = self._apprun(env, here, hide)
+        return started.get("SSL_CERT_FILE"), started.get("REQUESTS_CA_BUNDLE")
 
     def test_the_bundled_openssl_is_given_a_ca_bundle_that_exists(self):
         # The regression: a host without /usr/lib/ssl (Arch, Fedora) could not verify
         # Sigstore's TUF server, so no private/ model could be attested.
-        chosen = self._cert_file({"PATH": os.environ.get("PATH", "")})
+        chosen, requests_bundle = self._certificates({"PATH": os.environ.get("PATH", "")})
         self.assertTrue(chosen and os.access(chosen, os.R_OK), chosen)
+        self.assertEqual(requests_bundle, chosen)
 
     def test_a_host_with_no_bundle_falls_back_to_the_bundled_certifi(self):
+        import shutil
+        import tempfile
         hosts = ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt",
                  "/etc/ssl/ca-bundle.pem", "/etc/pki/tls/cert.pem", "/etc/ssl/cert.pem"]
-        start = self.text.index('if [ -z "${SSL_CERT_FILE:-}" ]; then')
-        self.assertIn("private-mode/certifi/cacert.pem", self.text[start:start + 1200])
-        self.assertEqual(self._cert_file({"PATH": os.environ.get("PATH", "")}, hosts), "")
+        # A space in the AppImage's mount path, as an extracted one can have
+        here = os.path.join(tempfile.mkdtemp(), "Squashfs root")
+        self.addCleanup(shutil.rmtree, os.path.dirname(here), True)
+        private = os.path.join(here, "usr/lib/da-assistant/private-mode/certifi/cacert.pem")
+        site = os.path.join(here, "usr/python/lib/python3.12/site-packages/certifi/cacert.pem")
+        for bundle in (private, site):
+            os.makedirs(os.path.dirname(bundle))
+            open(bundle, "w").close()
+        env = {"PATH": os.environ.get("PATH", "")}
+        self.assertEqual(self._certificates(env, here, hosts), (private, private))
+        os.remove(private)
+        self.assertEqual(self._certificates(env, here, hosts), (site, site))
+        os.remove(site)
+        self.assertEqual(self._certificates(env, here, hosts), (None, None))
 
     def test_a_ca_bundle_the_user_chose_is_left_alone(self):
         env = {"PATH": os.environ.get("PATH", ""), "SSL_CERT_FILE": "/my/bundle.pem"}
-        self.assertEqual(self._cert_file(env), "/my/bundle.pem")
+        self.assertEqual(self._certificates(env), ("/my/bundle.pem", "/my/bundle.pem"))
+        env["REQUESTS_CA_BUNDLE"] = "/my/requests.pem"
+        self.assertEqual(self._certificates(env), ("/my/bundle.pem", "/my/requests.pem"))
 
     def test_the_retired_hotkey_installer_says_where_shortcuts_went(self):
         # Shortcuts are set in the app (Settings > Shortcuts); a binding or a habit that
@@ -343,14 +402,24 @@ class ReproducibleBuild(unittest.TestCase):
             self.assertRegex(pins, rf'{name}_SHA256="[0-9a-f]{{64}}"')
             self.assertIn(f'fetch "${name}_URL" "${name}_SHA256"', self.build)
 
+    def _commands(self):
+        """build.sh's commands, one to a line: a command continued over several lines
+        is joined into one."""
+        return re.sub(r"\\\n\s*", " ", self.build).splitlines()
+
     def test_every_package_installed_from_a_lock_is_hash_checked(self):
-        for line in re.findall(r'pip"? install[^\n]*-r [^\n]*', self.build):
+        installs = [line for line in self._commands() if re.search(r'pip"? install .*-r ', line)]
+        for line in installs:
             self.assertIn("--require-hashes", line, line)
+        locks = {re.search(r'-r "([^"]+)"', line)[1] for line in installs}
+        self.assertLessEqual({"$P/build-requirements.lock", "$P/requirements.lock",
+                              "$W/src/packaging/private-mode.lock"}, locks)
         self.assertIn("--only-binary :all: -r \"$P/requirements.lock\"", self.build)
 
     def test_every_locked_package_carries_a_hash(self):
-        for name in ("requirements", "build-requirements", "sdists"):
-            path = PACKAGING / f"{name}.lock"
+        for path in [PACKAGING / f"{name}.lock" for name in
+                     ("requirements", "build-requirements", "sdists")] + \
+                [ROOT / "packaging" / "private-mode.lock"]:
             if not path.exists():
                 self.skipTest(f"{path.name} not generated yet: packaging/build-appimage.sh lock")
             entries = re.findall(r"^([\w.-]+)==([^\s]+)((?:\s*\\\s*--hash=sha256:\w+)*)",

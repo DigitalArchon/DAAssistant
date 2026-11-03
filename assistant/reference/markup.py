@@ -18,8 +18,10 @@ from urllib.parse import quote, unquote
 LOOKUP_SCHEME = "lookup:"
 
 # What one entry may cost to show, however its dictionary was made: the bytes of it
-# read, at most - the longest entries in the largest dictionaries run to a megabyte or
-# so - and the HTML made of them, after which a reader shows "[…]" for the rest.
+# shown, at most - the longest entries in the largest dictionaries run to a megabyte or
+# so - and the HTML made of them; past either, a reader shows "[…]" for the rest. It
+# reads a byte more than MAX_ENTRY where there is more, to tell the one from an entry
+# that ends there.
 MAX_ENTRY = 4 << 20
 MAX_HTML = 4 << 20
 

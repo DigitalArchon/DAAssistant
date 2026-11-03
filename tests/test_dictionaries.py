@@ -410,7 +410,27 @@ class DslFiles(unittest.TestCase):
     def test_no_more_of_an_entry_is_read_than_any_entry_needs(self):
         d = dsl.DSL(self.path)
         with mock.patch.object(markup, "MAX_ENTRY", 10):
-            self.assertEqual(len(d.read(0, 10 ** 9)), 10)
+            # And a byte more, where there is more, for render() to tell it cut short.
+            self.assertEqual(len(d.read(0, 10 ** 9)), 11)
+
+    def test_an_entry_cut_short_where_its_reading_ends_says_so_too(self):
+        # Cut where MAX_ENTRY ends what is read of it, short of MAX_HTML - as a UTF-16
+        # entry of text is - an entry was shown without the "[…]" for the rest.
+        path = os.path.join(self.dir, "entry.dsl")
+        write_dsl(path, "glorp\n" + "\t[m1]a line of the entry\n" * 50)
+        d = dsl.DSL(path)
+        (word, offset, size), = d.headwords()
+        whole = d.render(word, d.read(offset, size))
+        with mock.patch.object(markup, "MAX_ENTRY", 400):
+            html, text = d.render(word, d.read(offset, size))
+            self.assertTrue(html.endswith('<div class="m1">[…]</div>'), html[-80:])
+            self.assertTrue(text.endswith("\n[…]"), text[-80:])
+            self.assertLess(text.count("a line of the entry"), 10)
+        # Read to its end, where that is within the bound, it is shown whole.
+        self.assertNotIn("[…]", whole[1])
+        self.assertEqual(whole[1].count("a line of the entry"), 50)
+        with mock.patch.object(markup, "MAX_ENTRY", size):
+            self.assertEqual(d.render(word, d.read(offset, size)), whole)
 
     def test_markup_never_closed_is_read_in_one_pass(self):
         # Each took seconds to show, under the lock every lookup in every window waits
@@ -651,6 +671,27 @@ class StarDictFiles(unittest.TestCase):
             self.assertLessEqual(len(d._pictures), 3)
             # Read again, the pictures it let go of are read again.
             self.assertEqual(d.render(word, d.read(offset, size)), (html, text))
+
+    def test_an_entry_longer_than_any_is_shown_so_far_and_said_to_be(self):
+        # Read to MAX_ENTRY, an entry was cut short there, and nothing said so.
+        entry = b"<b>glorp</b> " + b"zib " * 100
+        ifo = write_stardict(self.dir, "long", [("glorp", entry),
+                                                ("flimble", b"short")])
+        d = StarDict(ifo)
+        index = {word: (offset, size) for word, offset, size in d.headwords()}
+        with mock.patch.object(markup, "MAX_ENTRY", 100):
+            html, text = d.render("glorp", d.read(*index["glorp"]))
+            self.assertTrue(html.startswith("<b>glorp</b> zib zib"), html[:40])
+            self.assertTrue(html.endswith(" zib<div>[…]</div>"), html[-40:])
+            self.assertTrue(text.endswith(" zib\n[…]"), text[-40:])
+            self.assertLess(text.count("zib"), 30)
+            self.assertEqual(d.render("flimble", d.read(*index["flimble"])),
+                             ("short", "short"))
+        # One that ends where the bound does is shown whole.
+        with mock.patch.object(markup, "MAX_ENTRY", len(entry)):
+            html, text = d.render("glorp", d.read(*index["glorp"]))
+        self.assertNotIn("[…]", html)
+        self.assertEqual(text.count("zib"), 100)
 
     def test_a_nul_in_a_pictures_name_drops_the_picture_not_the_entry(self):
         os.mkdir(os.path.join(self.dir, "res"))

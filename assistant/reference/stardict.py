@@ -167,7 +167,8 @@ class StarDict:
     # ---- articles ---------------------------------------------------------
 
     def read(self, offset, size):
-        size = min(size, markup.MAX_ENTRY)
+        # A byte more than is shown, where there is more, for render() to say so.
+        size = min(size, markup.MAX_ENTRY + 1)
         if self.dict_path.lower().endswith(".dz"):
             if self._dict is None:
                 self._dict = DictzipFile(self.dict_path)
@@ -213,7 +214,10 @@ class StarDict:
         return out
 
     def render(self, headword, data):
-        """(html, text) of one article."""
+        """(html, text) of one article - as far as markup.MAX_ENTRY of it goes, and
+        "[…]" for the rest, as a DSL's has. Cut there, it ended with no word said."""
+        cut = len(data) > markup.MAX_ENTRY
+        data = data[:markup.MAX_ENTRY]
         room = [ENTRY_PICTURES]
 
         def picture(name):
@@ -234,6 +238,8 @@ class StarDict:
                 parts.append(markup.escape(text).replace("\n", "<br>"))
             # Pictures, sounds and resource lists are not shown.
         body = "".join(parts)
+        if cut:
+            body += "<div>[…]</div>"
         return body, markup.html_to_text(body)
 
     def picture(self, name):

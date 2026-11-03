@@ -304,11 +304,16 @@ class DSL:
     # ---- articles ---------------------------------------------------------
 
     def read(self, offset, size):
-        return self._read(offset, min(size, markup.MAX_ENTRY))
+        # A byte more than is shown, where there is more, for render() to say so.
+        return self._read(offset, min(size, markup.MAX_ENTRY + 1))
 
     def render(self, headword, data):
         """(html, text) of one entry: its headword lines, then its body - as far as
-        markup.MAX_HTML of HTML goes, and "[…]" for the rest."""
+        markup.MAX_ENTRY of it and markup.MAX_HTML of HTML go, and "[…]" for the rest.
+        Cut short where its reading ends, an entry was shown without it: a UTF-16 one
+        of text makes less HTML than it has bytes."""
+        cut = len(data) > markup.MAX_ENTRY
+        data = data[:markup.MAX_ENTRY]
         text = data.decode(self.encoding.name, "replace").lstrip("\ufeff")
         heads, body = [], []
         for line in text.replace("\r", "").split("\n"):
@@ -332,9 +337,11 @@ class DSL:
             if text_line.strip():
                 text_lines.append(text_line.strip())
             if size > markup.MAX_HTML:
-                html_lines.append('<div class="m1">[…]</div>')
-                text_lines.append("[…]")
+                cut = True
                 break
+        if cut:
+            html_lines.append('<div class="m1">[…]</div>')
+            text_lines.append("[…]")
         html = (f'<div class="hw">{" · ".join(markup.escape(s) for s in shown)}</div>'
                 + "".join(html_lines))
         return html, markup.tidy("\n".join(text_lines))

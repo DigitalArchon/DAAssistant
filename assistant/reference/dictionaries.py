@@ -258,6 +258,7 @@ class Library:
         self.cache_dir = cache_dir
         self._readers_lock = threading.Lock()       # self._opened
         self._index_lock = threading.RLock()        # the index, and lookups in it
+        self._unusable = []     # names of the dictionaries switched on but not usable
         self._db = None
         # path -> (the dictionary object, or the error opening it; the signature of
         # its files when it was opened)
@@ -521,6 +522,9 @@ class Library:
                     continue
                 if ident is not None:
                     ready.append((dictionary, ident))
+            usable = {id(dictionary) for dictionary, _ident in ready}
+            self._unusable = [dictionary.name for dictionary, _opened in dictionaries
+                              if id(dictionary) not in usable]
             return ready
 
     # ---- lookups ----------------------------------------------------------
@@ -620,8 +624,11 @@ class Library:
                     found = stem
                     break
         suggestions = [] if results else self.suggestions(ready, word)
+        # Those that could not be indexed, by name: with none other to search, "No
+        # dictionaries found" was all the window said of one it had just tried.
         return {"word": word, "found": found, "results": results,
-                "suggestions": suggestions, "dictionaries": len(ready)}
+                "suggestions": suggestions, "dictionaries": len(ready),
+                "unusable": list(self._unusable)}
 
 
 def _unreadable(error):

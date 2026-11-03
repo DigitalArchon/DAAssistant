@@ -2106,9 +2106,16 @@ class ChatWindow(Gtk.Window):
             self.status.set_text(f"Found in {len(found['results'])} of "
                                  f"{found['dictionaries']} dictionaries")
             self.entry.grab_focus()
+        elif found["dictionaries"]:
+            self.status.set_text("No entry")
+        elif found.get("unusable"):
+            names = found["unusable"]
+            self.status.set_text(
+                (f"{names[0]} could not be read: its button says why" if len(names) == 1
+                 else f"None of the {len(names)} dictionaries could be read: their "
+                      f"buttons say why"))
         else:
-            self.status.set_text("No entry" if found["dictionaries"]
-                                 else "No dictionaries found - see Settings > Reference")
+            self.status.set_text("No dictionaries found - see Settings > Reference")
         return False
 
     def _turn_page(self, step):

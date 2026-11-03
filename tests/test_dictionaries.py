@@ -1248,6 +1248,8 @@ class IndexProblems(unittest.TestCase):
         with mock.patch.object(dsl.DSL, "headwords", side_effect=OSError("not just now")):
             found, indexing = self.look_up(self.library)
             self.assertEqual((found["results"], len(indexing)), ([], 1))
+            self.assertEqual((found["dictionaries"], found["unusable"]),
+                             (0, ["Invented Dictionary"]))
             self.assertEqual(self.look_up(self.library)[1], [])
             self.assertEqual(self.about(self.library)["Invented Dictionary"],
                              "Not indexed: OSError: not just now")

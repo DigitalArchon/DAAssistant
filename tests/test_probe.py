@@ -1,4 +1,5 @@
 """--probe: a report, whatever the session it is run in."""
+import json
 import os
 import subprocess
 import sys
@@ -18,8 +19,15 @@ class WithoutADisplay(unittest.TestCase):
     It used to end in a traceback from the icon theme, and then a core dump from the
     WebKit check."""
 
-    def test_it_reports_what_it_can_and_says_what_needs_the_desktop(self):
+    def probe(self, config=None):
+        """What --probe printed, run in a home of its own with `config` as its
+        config.json."""
         with tempfile.TemporaryDirectory() as home:
+            if config is not None:
+                folder = os.path.join(home, ".config", "da-assistant")
+                os.makedirs(folder)
+                with open(os.path.join(folder, "config.json"), "w") as f:
+                    json.dump(config, f)
             env = {key: value for key, value in os.environ.items()
                    if key not in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
                                   "XDG_RUNTIME_DIR")}
@@ -28,9 +36,24 @@ class WithoutADisplay(unittest.TestCase):
                                    "--probe"], env=env, capture_output=True, text=True,
                                   timeout=120)
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+        return done
+
+    def test_it_reports_what_it_can_and_says_what_needs_the_desktop(self):
+        done = self.probe()
         self.assertIn("Display        : none", done.stdout)
         self.assertIn("Shortcuts      :", done.stdout)
         self.assertIn("Privacy Mode   :", done.stdout)
+
+    def test_an_address_with_a_password_is_reported_without_it(self):
+        """Its output is what the README asks to be shared. A provider's address was
+        printed without its password, and then why it could not be used, in words that
+        named it, password and all."""
+        done = self.probe({"privacy_mode": True, "text_provider": "custom",
+                           "custom_url": "http://alice:s3cret@llm.example.com/v1",
+                           "api_url": "http://alice:s3cret@nano.example/api/v1"})
+        self.assertIn("http://…@llm.example.com/v1/chat/completions is not https",
+                      done.stdout)
+        self.assertNotIn("s3cret", done.stdout + done.stderr)
 
 
 class TrayHost(unittest.TestCase):

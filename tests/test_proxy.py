@@ -202,6 +202,20 @@ class APasswordForAProxyElsewhere(Environment):
                     "socks5h://127.0.0.1:9050"):
             self.assertIsNone(proxy.problem(url), url)
 
+    def test_and_is_in_no_message_about_the_proxy(self):
+        """Why a proxy cannot be used is the startup notice, and what every request held
+        back says, in the chat and its saved copies: it named the proxy, password and
+        all."""
+        for url in ("socks6://alice:s3cret@proxy.example:1080",     # no such scheme
+                    "http://alice:s3cret@proxy.example:port",         # no such port
+                    "http://alice:s3cret@proxy exa.mple:3128",        # a space
+                    "alice:s3cret@proxy.example:3128",                # no scheme
+                    "http://alice:s3cret@[fd00::5",                   # half typed
+                    "http://alice:s3cret@proxy.example:3128"):        # in the clear
+            found = proxy.problem(url)
+            self.assertIsNotNone(found, url)
+            self.assertNotIn("s3cret", found, url)
+
 
 class TheSettingsDialogWaitsForAProxyToBeSaved(unittest.TestCase):
     """Every request reads the proxy in force, so Test connection, Check attestation

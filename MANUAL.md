@@ -1023,7 +1023,8 @@ Settings is used until the app quits, and Settings shows why it cannot be kept. 
 a space, a line break or a character no API key has in it - picked up where it was
 copied from - is refused when Settings is saved, and by every request, in words that do
 not repeat it. `--probe` shows a provider's address without any user name or password
-written into it.
+written into it, and so does every message that names an address or the proxy - why it
+cannot be used, in Settings, the chat or the startup notice included.
 
 A value edited into `config.json` by hand is read as its setting's kind where that is
 plain (`"3600"` for a number, `"true"` for a tick); one that cannot be is left out, its

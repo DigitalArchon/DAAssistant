@@ -476,7 +476,8 @@ def fetch(config, force=False, timeout=60, provider=None):
         save_cache(models, url, source.id)
         return models, False
 
-    raise RuntimeError(f"Could not fetch {source.name}'s models from {url}: {last_error}")
+    raise RuntimeError(f"Could not fetch {source.name}'s models from "
+                       f"{netguard.shown(url)}: {last_error}")
 
 
 def search(models, query, vision_only=False, free_only=False, private_only=False):

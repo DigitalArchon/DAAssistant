@@ -45,6 +45,9 @@ LOCAL_NETWORKS = tuple(ipaddress.ip_network(network) for network in (
     "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
     "169.254.0.0/16", "fe80::/10", "fc00::/7"))
 UNSAFE = re.compile(r"[\\\s\x00-\x1f\x7f]")
+# Everything of a text up to its last "@" before a query or a fragment, the scheme and
+# "//" aside: where an address that cannot be read may have a user name and password.
+_UP_TO_AT = re.compile(r"^((?:[^:/?#]+:)?//)?[^?#]*@")
 
 
 class InsecureURL(ValueError):
@@ -121,41 +124,59 @@ def _requests_host(text):
 
 
 def problem(url):
-    """Why `url` may not be used, or None when it may."""
+    """Why `url` may not be used, or None when it may. The address is named as shown()
+    has it, without a password written into it: --probe prints these, the chat,
+    Settings and the startup notice show them, and they are copied into bug reports."""
     text = (url or "").strip()
     if not text:
         return "No address given."
     if UNSAFE.search(text):
-        return (f"Not a web address: {text!r}. An address has no spaces, backslashes or "
-                f"control characters in it.")
+        return (f"Not a web address: {shown(text)!r}. An address has no spaces, "
+                f"backslashes or control characters in it.")
     try:
         parsed = urlparse(text)
         scheme = parsed.scheme.lower()
         host = parsed.hostname
+        # Raises on a port no address can have, which requests would refuse in words
+        # that quote the address whole: "Failed to parse: https://alice:secret@...".
+        parsed.port
     except ValueError:              # "http://[fd00::5", half typed
-        return f"Not a web address: {text!r}."
+        return f"Not a web address: {shown(text)!r}."
     if scheme not in ("http", "https") or not host:
-        return (f"Not a web address: {text!r}. It must start with https:// - or "
+        return (f"Not a web address: {shown(text)!r}. It must start with https:// - or "
                 f"http:// for this machine or its local network.")
     if scheme == "https":
         return None
     if not (is_local(host) or is_onion(host)):
-        return (f"{text} is not https, so the API key and everything sent with it would "
-                f"cross the network unencrypted. Use an https:// address. Plain http is "
-                f"accepted only for this machine and its local network (localhost, "
-                f"10.x, 172.16-31.x, 192.168.x, .local), and for Tor onion services.")
+        return (f"{shown(text)} is not https, so the API key and everything sent with "
+                f"it would cross the network unencrypted. Use an https:// address. "
+                f"Plain http is accepted only for this machine and its local network "
+                f"(localhost, 10.x, 172.16-31.x, 192.168.x, .local), and for Tor onion "
+                f"services.")
     theirs = _requests_host(text)
     if theirs is not None and not _same_host(host, theirs):
-        return f"Not a web address: {text!r}."
+        return f"Not a web address: {shown(text)!r}."
     return None
 
 
 def shown(url):
     """`url` as it may be shown, or copied into a bug report: without the user name and
-    password an address may carry (https://alice:secret@host/v1)."""
-    parsed = urlparse(url or "")
+    password an address may carry (https://alice:secret@host/v1).
+
+    For any text at all, and never raising: what is said of an address that cannot be
+    used names it too. One that cannot be read as an address - half typed, without a
+    scheme ("alice:secret@host"), or with a port no address can have - says nothing
+    certain of where its host begins, so all it has up to its last "@" goes."""
+    text = str(url or "")
+    try:
+        parsed = urlparse(text)
+        parsed.port                 # raises on a port that is not a number
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.netloc:
+        return _UP_TO_AT.sub(r"\1…@", text, count=1)
     if "@" not in parsed.netloc:
-        return url
+        return text
     return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
 
 
@@ -183,11 +204,13 @@ def redirect_problem(source, target):
     """Why a redirect from `source` to `target` may not be followed, or None."""
     found = problem(target)
     if found:
-        return f"The server sent the request on to {target}, which was not followed: {found}"
+        return (f"The server sent the request on to {shown(target)}, which was not "
+                f"followed: {found}")
     if urlparse(source).scheme.lower() == "https" and \
             urlparse(target).scheme.lower() != "https":
-        return (f"The server sent the request on from https to {target}, which was not "
-                f"followed: an https request is never carried on over plain http.")
+        return (f"The server sent the request on from https to {shown(target)}, which "
+                f"was not followed: an https request is never carried on over plain "
+                f"http.")
     return None
 
 

@@ -405,6 +405,16 @@ class TheModelLists(Case):
             listed, cached = models.fetch(self.config, force=True, provider=provider)
         return listed, get
 
+    def test_a_list_not_read_names_its_address_without_the_password(self):
+        self.config.custom_url = "https://alice:s3cret@llm.example.com/v1"
+        refused = models.requests.exceptions.ConnectionError("Connection refused")
+        with mock.patch.object(models, "_get", side_effect=refused), \
+                self.assertRaises(RuntimeError) as failed:
+            models.fetch(self.config, force=True, provider="custom")
+        self.assertIn("from https://…@llm.example.com/v1/models: Connection refused",
+                      str(failed.exception))
+        self.assertNotIn("s3cret", str(failed.exception))
+
     def test_ollama_is_asked_for_its_own_list_which_says_what_sees(self):
         listed, get = self.fetch("ollama", TAGS)
         self.assertEqual(get.call_args[0][0], OLLAMA + "/api/tags")

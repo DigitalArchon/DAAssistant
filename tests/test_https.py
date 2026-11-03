@@ -183,6 +183,61 @@ class SecretsStayOutOfWhatIsShown(TempDir):
                          "https://…@llm.example.com/v1")
         self.assertEqual(netguard.shown("http://192.168.1.20:11434/v1"),
                          "http://192.168.1.20:11434/v1")
+        self.assertEqual(netguard.shown("https://llm.example.com/v1/@cf/x"),
+                         "https://llm.example.com/v1/@cf/x")
+        # One that cannot be read as an address loses all it has up to its last "@".
+        for typed, shown in (("http://alice:s3cret@[fd00::5", "http://…@[fd00::5"),
+                             ("alice:s3cret@proxy.example:3128",
+                              "…@proxy.example:3128"),
+                             ("https://alice:s3cret@llm.example.com:99999/v1",
+                              "https://…@llm.example.com:99999/v1"),
+                             ("https://alice:s3/cret@llm.example.com/v1",
+                              "https://…@llm.example.com/v1")):
+            self.assertEqual(netguard.shown(typed), shown, typed)
+
+    # Each written with a password, and none of them one that can be used.
+    WITH_PASSWORDS = ("http://alice:s3cret@llm.example.com/v1",         # not https
+                      "https://alice:s3cret@llm.example.com:99999/v1",  # no such port
+                      "http://alice:s3cret@[fd00::5",                    # half typed
+                      "https://alice:s3cret@llm.exa mple.com/v1",        # a space
+                      "alice:s3cret@llm.example.com/v1",                 # no scheme
+                      "ftp://alice:s3cret@llm.example.com/v1",           # not the web
+                      "https://alice:s3cret@/v1",                        # no host
+                      "http://alice:s3cret@" + "a" * 56 + ".onion/v1")   # no Tor to it
+
+    def test_no_message_about_an_address_repeats_its_password(self):
+        """--probe printed a provider's address without its password, and then why it
+        could not be used - in words that named it, password and all. So did the chat,
+        Settings and the startup notice, which show the same words."""
+        from assistant import providers, proxy
+        # No proxy from the environment, which would reach the onion.
+        unset = mock.patch.dict(os.environ, dict.fromkeys(proxy.VARIABLES, ""))
+        unset.start()
+        self.addCleanup(unset.stop)
+        for address in self.WITH_PASSWORDS:
+            config = self.config(custom_url=address, api_url=address, privacy_mode=True,
+                                 text_provider=providers.CUSTOM)
+            said = [netguard.problem(address),
+                    netguard.redirect_problem("https://api.example/v1", address),
+                    providers.refused(config), providers.unready(config),
+                    *[provider.problem() for provider in providers.in_use(config)],
+                    *privacy.problems(config)]
+            self.assertIsNotNone(providers.get(config, providers.CUSTOM).problem(),
+                                 address)
+            for message in said:
+                self.assertNotIn("s3cret", message or "", address)
+
+    def test_nor_does_a_request_refused_for_it(self):
+        """requests refuses a port that is not a number in words that quote the address
+        whole, and those were shown in the chat."""
+        for address in self.WITH_PASSWORDS[:2]:
+            client = LLMClient(self.config(api_url=address, api_key="k"))
+            with mock.patch("requests.adapters.HTTPAdapter.send") as sent, \
+                    mock.patch("assistant.llm.time.sleep"), \
+                    self.assertRaises(LLMError) as refused:
+                client.complete("m", [{"role": "user", "content": "x"}])
+            self.assertNotIn("s3cret", str(refused.exception), address)
+            sent.assert_not_called()
 
 
 class RedirectsKeepToTheRule(unittest.TestCase):

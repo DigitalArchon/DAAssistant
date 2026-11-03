@@ -200,9 +200,9 @@ class Provider:
         if found is None and netguard.is_onion(urlparse(self.chat_url).hostname or ""):
             from . import proxy
             if not proxy.reaches_onion(self.chat_url, self.proxy):
-                return (f"{self.address} is a Tor onion service, reached only through "
-                        f"Tor: set Settings > Advanced > Proxy to its SOCKS port, "
-                        f"socks5h://127.0.0.1:9050 as a rule.")
+                return (f"{netguard.shown(self.address)} is a Tor onion service, "
+                        f"reached only through Tor: set Settings > Advanced > Proxy to "
+                        f"its SOCKS port, socks5h://127.0.0.1:9050 as a rule.")
         return found
 
     def key_problem(self):

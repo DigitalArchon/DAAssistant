@@ -45,21 +45,23 @@ def _missing_for_socks():
 
 
 def problem(url):
-    """Why `url` cannot be the proxy, or None when it can, or is empty."""
+    """Why `url` cannot be the proxy, or None when it can, or is empty. The address is
+    named without the password a proxy's often carries (netguard.shown): this is the
+    startup notice, and what a request held back says."""
     text = (url or "").strip()
     if not text:
         return None
     if netguard.UNSAFE.search(text):
-        return f"Not a proxy address: {text!r}."
+        return f"Not a proxy address: {netguard.shown(text)!r}."
     try:
         parsed = urlparse(text)
         scheme, host = parsed.scheme.lower(), parsed.hostname
         parsed.port                 # raises on a port that is not a number
     except ValueError:
-        return f"Not a proxy address: {text!r}."
+        return f"Not a proxy address: {netguard.shown(text)!r}."
     if scheme not in SCHEMES or not host:
-        return (f"Not a proxy address: {text!r}. It starts with socks5h://, socks5://, "
-                f"http:// or https://.")
+        return (f"Not a proxy address: {netguard.shown(text)!r}. It starts with "
+                f"socks5h://, socks5://, http:// or https://.")
     if scheme.startswith("socks"):
         missing = _missing_for_socks()
         if missing:

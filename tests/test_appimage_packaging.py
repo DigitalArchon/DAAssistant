@@ -169,6 +169,44 @@ class TheTwoLocksAgree(unittest.TestCase):
         self.assertIn("pysocks", self.pins("packaging/appimage/requirements.lock"))
         self.assertIn("socksio", self.pins("packaging/private-mode.lock"))
 
+    def test_the_lock_meets_every_floor_the_in_file_sets(self):
+        # A relock keeps what the lock already pins, so a floor added for an advisory
+        # (certifi's root, pyasn1's and dnspython's denials of service) is only as good
+        # as the relock that followed it.
+        def version(text):
+            return tuple(int(part) for part in text.split("."))
+
+        private = self.pins("packaging/private-mode.lock")
+        with open(os.path.join(ROOT, "packaging/private-mode.in"), encoding="utf-8") as f:
+            floors = re.findall(r"^([A-Za-z0-9_.-]+)>=([0-9.]+)$", f.read(), re.M)
+        self.assertIn(("pyasn1", "0.6.5"), floors)
+        self.assertIn(("dnspython", "2.9.0"), floors)
+        for name, floor in floors:
+            locked = private[re.sub(r"[-_.]+", "-", name).lower()]
+            self.assertGreaterEqual(version(locked), version(floor), f"{name}=={locked}")
+
+    def test_a_relock_takes_no_index_from_this_machine(self):
+        """UV_NO_CONFIG skips only uv's config files: an index, a find-links folder or
+        an insecure host named in the environment would still be used."""
+        with open(os.path.join(ROOT, "packaging/lock-private-mode.sh"), encoding="utf-8") as f:
+            script = f.read()
+        start = script.index('unset "${!UV_@}"')
+        end = script.index("\nfi\n", script.index('if [ "${UPGRADE:-0}" = 1 ]', start)) + 4
+        planted = {"UV_INDEX_URL": "https://mirror.example/simple",
+                   "UV_EXTRA_INDEX_URL": "https://mirror.example/extra",
+                   "UV_DEFAULT_INDEX": "https://mirror.example/simple",
+                   "UV_INDEX": "mirror=https://mirror.example/simple",
+                   "UV_FIND_LINKS": "/tmp/wheels", "UV_INSECURE_HOST": "mirror.example"}
+        for upgrade, flag in (("0", ""), ("1", "--upgrade")):
+            env = dict(planted, PATH=os.environ.get("PATH", ""), UPGRADE=upgrade)
+            shell = (f'set -euo pipefail\nCACHE=/cache\n{script[start:end]}\n'
+                     'env | grep "^UV_" | cut -d= -f1 | sort\necho "flag ${upgrade:+$upgrade}"')
+            out = subprocess.run(["bash", "-c", shell], env=env, capture_output=True,
+                                 text=True, check=True).stdout.split()
+            self.assertEqual(out[:3], ["UV_CACHE_DIR", "UV_NO_CONFIG", "UV_PYTHON_DOWNLOADS"])
+            self.assertEqual(out[3:], ["flag"] + ([flag] if flag else []))
+        self.assertIn('${upgrade:+"$upgrade"}', script)
+
     def test_unrelated_variables_are_passed_through(self):
         os.environ[hostenv.KEYS] = "LD_LIBRARY_PATH"
         with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}):

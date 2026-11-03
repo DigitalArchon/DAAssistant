@@ -40,11 +40,14 @@ packaging/build-appimage.sh check    # build twice from scratch, compare: must b
 packaging/test-appimage.sh           # smoke-test it on Ubuntu, Debian, Fedora, Arch, CachyOS
 packaging/build-appimage.sh lock     # lock what the .in files add (review the diff, commit)
 UPGRADE=1 packaging/build-appimage.sh lock    # re-resolve every pin to today's newest
+packaging/lock-private-mode.sh       # the same for private-mode.in (UPGRADE=1 too)
 DIST=/some/dir packaging/build-appimage.sh check   # results there instead of dist/
 ```
 
-`lock` keeps the pins already in a lock, so a package added to a `.in` file is locked
-without moving everything else; `UPGRADE=1` is for a deliberate update of the lot.
+`lock` and `lock-private-mode.sh` keep the pins already in a lock, so a package added to a
+`.in` file is locked without moving everything else, and a pin moves only when the `.in`
+file rules it out: a floor such as `pyasn1>=0.6.5` is how a security fix gets in.
+`UPGRADE=1` is for a deliberate update of the lot.
 
 Only committed files are built (`git archive HEAD`), and every timestamp is HEAD's commit
 time (`SOURCE_DATE_EPOCH`). Builds run in `packaging/appimage/Containerfile`: Ubuntu 24.04 pinned

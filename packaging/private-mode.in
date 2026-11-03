@@ -17,3 +17,11 @@ pyhpke==0.6.5
 certifi>=2026.10.19
 # SOCKS proxies for httpx, which the sealed client sends through (assistant/proxy.py).
 socksio
+# pyasn1, which tinfoil and sigstore decode attestation certificates' extensions with:
+# 0.6.5 fixes four denials of service in its decoders (GHSA-2qm8-x737-gmw5,
+# GHSA-fm9c-5rcf-2q5p, GHSA-mm57-4v3p-rchx, GHSA-9m75-vc3g-4x39; Oct 2026). dnspython,
+# under pydantic's email-validator: 2.9.0 fixes one in its name parser
+# (GHSA-45c3-73f7-pv4m). A relock keeps what the lock already pins, so without the floors
+# it stood still on 0.6.4 and 2.8.0 (Nov 2 2026).
+pyasn1>=0.6.5
+dnspython>=2.9.0

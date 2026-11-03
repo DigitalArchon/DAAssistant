@@ -7,6 +7,9 @@
 # build and tools/install-private-mode.sh install only what the lock names, and only if
 # every hash matches.
 #
+#   packaging/lock-private-mode.sh             lock what private-mode.in adds or changes
+#   UPGRADE=1 packaging/lock-private-mode.sh   re-resolve everything to today's newest
+#
 # The resolver is uv at a fixed release, checked against its published sha256 before
 # it runs - the same one StoryLoom locks the same SDK with.
 set -euo pipefail
@@ -36,7 +39,19 @@ if [ ! -x "$UV" ]; then
 fi
 
 # Nothing from this machine's uv or pip settings: no other index, no other cache.
+# UV_NO_CONFIG skips only uv's config files; uv reads UV_INDEX_URL, UV_DEFAULT_INDEX,
+# UV_FIND_LINKS, UV_INSECURE_HOST and the rest from the environment as well, so every UV_
+# variable is cleared first. (pip's settings uv doesn't read at all.)
+unset "${!UV_@}"
 export UV_NO_CONFIG=1 UV_CACHE_DIR="$CACHE/uv" UV_PYTHON_DOWNLOADS=never
+
+# uv keeps the versions a lock it writes over already pins, so a package added to
+# private-mode.in is locked without moving everything else to whatever is newest today.
+# UPGRADE=1 re-resolves the lot, as it does for packaging/build-appimage.sh lock.
+upgrade=""
+if [ "${UPGRADE:-0}" = 1 ]; then
+  upgrade="--upgrade"
+fi
 
 # Python 3.12 is what the AppImage bundles and what Ubuntu 24.04 runs from source;
 # manylinux_2_28 keeps the compiled wheels (cryptography, pydantic-core) loadable on any
@@ -50,5 +65,5 @@ cd "$ROOT/packaging"
 "$UV" pip compile --quiet private-mode.in -o private-mode.lock \
   --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
   --only-binary :all: --generate-hashes --constraint appimage/requirements.lock \
-  --custom-compile-command "packaging/lock-private-mode.sh"
+  --custom-compile-command "packaging/lock-private-mode.sh" ${upgrade:+"$upgrade"}
 echo "Locked $(grep -c '==' private-mode.lock) packages into packaging/private-mode.lock"

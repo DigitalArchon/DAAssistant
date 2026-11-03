@@ -658,6 +658,16 @@ class Quotes(unittest.TestCase):
             check, = check_quotes(f'They say "{quote}".', passages)
             self.assertTrue(check["ok"], quote)
 
+    def test_an_invisible_character_between_letters_splits_no_word(self):
+        # A soft hyphen, a zero-width space or joiner is no letter, so "legal" began a
+        # word in "illegal" written with one inside it.
+        for mark in ("\N{SOFT HYPHEN}", "\N{ZERO WIDTH SPACE}", "\N{ZERO WIDTH JOINER}"):
+            passages = [{"text": f"Divorce was il{mark}legal in Zorbland until 1996."}]
+            for quote, ok in (("legal in Zorbland until 1996", False),
+                              ("in Zorbland until 1996", True)):
+                check, = check_quotes(f"“… {quote}” [1]", passages)
+                self.assertEqual(check["ok"], ok, (mark, quote))
+
     def test_a_numbers_sign_is_part_of_it(self):
         # "40" began where a word does, after "−": a quotation could drop the minus, or
         # put an ellipsis in its place, which left out no word, so split nothing.

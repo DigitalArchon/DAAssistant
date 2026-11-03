@@ -187,8 +187,11 @@ _SIGNS = "+-±" + _DASHES
 
 
 def _letter(char):
-    """A letter or a digit, or a mark on one."""
-    return char.isalnum() or unicodedata.category(char)[0] == "M"
+    """A letter or a digit, or a mark on one - or one of the characters that are not
+    seen, such as a soft hyphen or a zero-width space or joiner: between two letters,
+    they are one word to the reader."""
+    category = unicodedata.category(char)
+    return char.isalnum() or category[0] == "M" or category == "Cf"
 
 
 def _joined(left, mark, right):

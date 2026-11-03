@@ -652,6 +652,69 @@ class OneRedrawWaitsAtATime(unittest.TestCase):
             window.destroy()
 
 
+class AnAnswerThatComesBeforeThePageHasLoaded(unittest.TestCase):
+    """A window's first page takes a while to load - its web process has to start - and
+    the answer can be arriving by then. Every redraw before the page had loaded loaded
+    it again, restarting the load: one slower than the redraw interval never finished
+    until the answer did, and a load replaced still reports itself finished, so a
+    redraw could go to a page about to be replaced."""
+
+    setUpClass = StreamingDom.setUpClass
+    setUp, tearDown = StreamingDom.setUp, StreamingDom.tearDown
+    _turn_count = StreamingDom._turn_count
+
+    def _wait(self, predicate, timeout=20):
+        import time
+        deadline = time.monotonic() + timeout
+
+        def poll():
+            if predicate() or time.monotonic() >= deadline:
+                Gtk.main_quit()
+            return True
+
+        source = GLib.timeout_add(30, poll)
+        try:
+            while not predicate() and time.monotonic() < deadline:
+                Gtk.main()
+        finally:
+            GLib.source_remove(source)
+        return predicate()
+
+    def test_the_page_is_loaded_once_and_the_answer_lands_on_it(self):
+        loads = []
+        real = chat.WebKit2.WebView.load_html
+
+        def counting(view, html, base):
+            loads.append(html)
+            return real(view, html, base)
+
+        client = StubClient("word " * 40, chunks=40, delay=0.03)
+        with mock.patch.object(chat.WebKit2.WebView, "load_html", counting):
+            window = ChatWindow(StubApp(self.config, client), "Test",
+                                [{"role": "user", "content": "p", "display": "Q"}],
+                                autostart=True)
+            try:
+                self.assertTrue(self._wait(lambda: window._cancel is None
+                                           and len(window.conversation) >= 2
+                                           and window._loaded))
+                self.assertEqual(len(loads), 1, "loaded again while it was loading")
+                self.assertEqual(self._turn_count(window), 2)
+                got = {}
+
+                def finish(view, result):
+                    got["text"] = view.evaluate_javascript_finish(result).to_string()
+
+                window.webview.evaluate_javascript(
+                    "document.querySelectorAll('.turn')[1].textContent + "
+                    "document.querySelectorAll('.cursor').length", -1, None, None, None,
+                    finish)
+                self.assertTrue(self._wait(lambda: "text" in got))
+                self.assertIn("word word", got["text"])
+                self.assertTrue(got["text"].endswith("0"), "the cursor is still there")
+            finally:
+                window.destroy()
+
+
 class WebKitStrikesFollowTheProcess(unittest.TestCase):
     """The crash guard must only count a WebView that ended the process.
 

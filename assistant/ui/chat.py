@@ -372,6 +372,8 @@ class ChatWindow(Gtk.Window):
         self._cancel = None
         self._destroyed = False
         self._loaded = False
+        self._page_loading = False          # a load_html not yet finished
+        self._after_load = None             # the redraw asked for meanwhile: page, full
         self._pending_js = []
         self._lookup = lookup
         self._encyclopedia = encyclopedia
@@ -1191,14 +1193,22 @@ class ChatWindow(Gtk.Window):
     def _on_load_changed(self, _view, event):
         if event == WebKit2.LoadEvent.FINISHED:
             webkitguard.note_success(self)  # it rendered; it is not what kills us
+            self._page_loading = False
+            after, self._after_load = self._after_load, None
+            if after == "page":
+                self._render(new_page=True)     # asked for while this one loaded
+                return
             self._loaded = True
+            if after == "full":
+                self._render(full=True)         # what changed while it loaded
             for script in self._pending_js:
                 self.webview.run_javascript(script, None, None, None)
             self._pending_js.clear()
 
     def _on_web_process_gone(self, _view, _reason):
         # The page went with it, and a redraw in place needs one: the next loads it anew.
-        self._loaded = False
+        self._loaded = self._page_loading = False
+        self._after_load = None
 
     def _on_web_link(self, uri, _kind):
         """A link clicked in the WebKit view (webpolicy.Guard): a dictionary's
@@ -1354,10 +1364,22 @@ class ChatWindow(Gtk.Window):
             GLib.idle_add(self._scroll_text_to_end)     # after the new rows are sized
             return
 
+        if self._page_loading:
+            # One load at a time, and this redraw once it is done (_on_load_changed):
+            # loaded again on every redraw, as an answer streaming in asked for, a load
+            # slower than the redraw interval never finished, and a load replaced still
+            # says it has, so the redraws after it went to a page about to go.
+            if new_page or self._after_load == "page":
+                self._after_load = "page"
+            else:
+                self._after_load = "full"
+            return
+
         if new_page or not self._loaded:
             body = self._screenshot_html + "".join(self._turn_html(t, i)
                                                    for i, t in enumerate(turns))
             self._loaded = False
+            self._page_loading = True
             self.webview.load_html(markdown_html.document(body, self.dark), None)
             return
 

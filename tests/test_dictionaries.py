@@ -242,6 +242,22 @@ class DslFiles(unittest.TestCase):
         self.assertEqual(html.count('<font color="green"'), 2)
         self.assertNotIn("red;x", html)
 
+    def test_markup_never_closed_is_read_in_one_pass(self):
+        # Each took seconds to show, under the lock every lookup in every window waits
+        # on: twenty thousand "<<" six of them.
+        started = time.monotonic()
+        for opener in ("{{", "<<", "[b ", "[c "):
+            line = opener * 20000
+            html, text, _indent, _stack = dsl.render_line(line, "w", [])
+            self.assertEqual(text, line, opener)
+            self.assertEqual(html, markup.escape(line), opener)
+        self.assertLess(time.monotonic() - started, 2)
+        # What does close is markup still, however much comes before it.
+        html, text, _indent, _stack = dsl.render_line(
+            "{{" * 500 + "}} <<" * 500 + "zib>> [b " * 500 + "x]bold[/b]", "w", [])
+        self.assertEqual(text, " " + "}} <<" * 499 + "zib" + " " + "bold")
+        self.assertIn("<b>bold</b>", html)
+
     def test_a_misaligned_newline_byte_pair_is_not_a_line(self):
         d = dsl.DSL(self.path)
         offset, size = self._index(d)["café"]

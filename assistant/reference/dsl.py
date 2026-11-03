@@ -414,8 +414,66 @@ TAGS = {
 }
 TRANSPARENT = {"trn", "trn1", "!trs", "trs", "lang", "preview", "!preview", "'", "url",
                "ref", "video"}
-TOKEN = re.compile(r"\\(.)|\{\{.*?\}\}|<<(.*?)>>|\[(/?)([a-z*'!0-9]+)(?:\s([^\]]*))?\]|~",
-                   re.S)
+# Where a token of Lingvo's markup may begin, and what a tag is from its [ to its ].
+_TOKEN_START = re.compile(r"[\\{<\[~]")
+_TAG = re.compile(r"\[(/?)([a-z*'!0-9]+)(?:\s([^\]]*))?\]")
+
+
+def _tokens(line):
+    """The markup in one body line, in order, as (start, end, kind, what):
+
+        "escaped"    \\x                   what: the character
+        "comment"    {{...}}
+        "reference"  <<word>>             what: the word, as written
+        "tag"        [b], [/b], [c red]   what: ("/" or "", the name, the argument)
+        "tilde"      ~
+
+    Anything else is text, and so is an opener with no closer after it.
+
+    In one pass. One regular expression for all of them searched the rest of the line
+    for "}}", ">>" or "]" from every "{{", "<<" or "[" that had none after it: a body
+    line of twenty thousand "<<" took six seconds to show, under the lock that every
+    lookup in every window waits on. Here the closer each kind needs is searched for
+    again only past the last one found, and so each part of the line at most once.
+    """
+    found = {}                          # closer -> where it last was, or -1 for nowhere
+
+    def closer(text, start):
+        at = found.get(text)
+        if at is None or -1 < at < start:
+            at = found[text] = line.find(text, start)
+        return at
+
+    position = 0
+    while True:
+        match = _TOKEN_START.search(line, position)
+        if match is None:
+            return
+        start = match.start()
+        char = line[start]
+        position = start + 1            # unless it begins a token, it is text
+        if char == "\\":
+            if start + 1 < len(line):
+                yield start, start + 2, "escaped", line[start + 1]
+                position = start + 2
+        elif char == "~":
+            yield start, start + 1, "tilde", None
+        elif char == "{" and line.startswith("{{", start):
+            end = closer("}}", start + 2)
+            if end != -1:
+                yield start, end + 2, "comment", None
+                position = end + 2
+        elif char == "<" and line.startswith("<<", start):
+            end = closer(">>", start + 2)
+            if end != -1:
+                yield start, end + 2, "reference", line[start + 2:end]
+                position = end + 2
+        elif char == "[":
+            end = closer("]", start + 1)
+            tag = _TAG.match(line, start, end + 1) if end != -1 else None
+            if tag is not None:
+                yield start, tag.end(), "tag", tag.groups()
+                position = tag.end()
 
 
 def _opening(tag, argument=None):
@@ -457,24 +515,23 @@ def render_line(line, tilde, stack):
         word = line[1:].strip()
         return (f'<b class="sub">{markup.escape(word)}</b>', word, 1, stack)
 
-    for match in TOKEN.finditer(line):
-        emit(line[position:match.start()])
-        position = match.end()
-        escaped, reference, closing, tag, argument = match.groups()
-        whole = match.group(0)
-        if escaped is not None:
-            emit(escaped)
-        elif whole.startswith("{{"):
-            continue                    # a comment
-        elif reference is not None:
-            word = _unescape(reference)
+    for start, end, kind, what in _tokens(line):
+        emit(line[position:start])
+        position = end
+        if kind == "escaped":
+            emit(what)
+        elif kind == "comment":
+            continue
+        elif kind == "reference":
+            word = _unescape(what)
             if not skipping:
                 html.append(f'<a href="{markup.attr(markup.lookup_href(word))}">'
                             f"{markup.escape(word)}</a>")
                 text.append(word)
-        elif whole == "~":
+        elif kind == "tilde":
             emit(tilde)
-        elif tag is not None:
+        else:
+            closing, tag, argument = what
             if re.fullmatch(r"m\d?", tag):
                 if not closing and len(tag) == 2:
                     indent = int(tag[1])
@@ -488,10 +545,10 @@ def render_line(line, tilde, stack):
                 if not closing:
                     linking = (tag, [])
                 elif linking is not None:
-                    kind, collected = linking
+                    link, collected = linking
                     linking = None
                     target = "".join(collected).strip()
-                    if kind == "ref":
+                    if link == "ref":
                         href = markup.lookup_href(target)
                     else:
                         href = target if target.lower().startswith(("http:", "https:")) \

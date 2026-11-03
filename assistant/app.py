@@ -204,6 +204,26 @@ class Assistant:
             label = named.get(name, name)
             key = self.hotkeys.trigger_label(name)
             item.set_label(f"{label}\t{key}" if key else label)
+        self._warn_lost_shift()
+
+    def _warn_lost_shift(self):
+        """Once a run: GNOME holds shortcuts that no key press matches, as 3.4.0 left
+        them (hotkeys.shift_lost) - said, with where to change them, since nothing the
+        app sends now will make GNOME ask again."""
+        problems = getattr(self.hotkeys, "problems", None)
+        if not isinstance(problems, dict):
+            return
+        lost = [name for name, problem in problems.items()
+                if str(problem).startswith("GNOME holds")]
+        if not lost or getattr(self, "_lost_shift_said", False):
+            return
+        self._lost_shift_said = True
+        from . import shortcuts
+        keys = ", ".join(shortcuts.label(self.hotkeys.wanted[name]) for name in lost
+                         if name in self.hotkeys.wanted)
+        self.notify(f"GNOME keeps {keys} as keys no press matches (set by version 3.4.0). "
+                    f"Change them in GNOME's Settings > Apps > DA Assistant.",
+                    urgency="normal")
 
     def _sync_custom_items(self):
         """The user's own actions in the menu, under their own names; slots with none

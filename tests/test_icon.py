@@ -173,3 +173,21 @@ class NothingShowsTheTray(unittest.TestCase):
         assistant.notify.reset_mock()
         assistant._check_tray()
         assistant.notify.assert_not_called()
+
+
+class GnomeKeysThatLostTheirShift(unittest.TestCase):
+    def test_said_once_with_the_keys_and_where_to_change_them(self):
+        from unittest import mock
+        from assistant import app as app_module
+        assistant = app_module.Assistant.__new__(app_module.Assistant)
+        assistant.hotkeys = mock.Mock(
+            problems={"translate_text": "GNOME holds it as Ctrl+!, which no key press "
+                                        "matches; change it in GNOME's Settings"},
+            wanted={"translate_text": "<Control><Shift>1"})
+        assistant.notify = mock.Mock()
+        assistant._warn_lost_shift()
+        assistant._warn_lost_shift()
+        assistant.notify.assert_called_once()
+        message = assistant.notify.call_args[0][0]
+        self.assertIn("Ctrl+Shift+1", message)
+        self.assertIn("Settings > Apps > DA Assistant", message)

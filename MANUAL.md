@@ -760,7 +760,11 @@ accepts that only from an app with a `.desktop` entry. So the app keeps a hidden
 `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop`, which is also the
 name its shortcuts appear under in the desktop's shortcut settings. KDE names a key with
 Shift by the symbol it makes: Ctrl+Shift+9 shows as `Ctrl+(` on a US layout, in KDE's
-dialog, beside each action in Settings, and in the tray menu. It is the same key.
+dialog, beside each action in Settings, and in the tray menu. It is the same key. GNOME
+names it as written, `Shift+Ctrl+9`. Up to 3.4.0 GNOME was sent the symbol too, and kept
+`Ctrl+(` as a key that no press matches; GNOME does not ask again for a shortcut it
+already holds, so such a key stays until it is changed in GNOME's Settings > Apps > DA
+Assistant. The app says so when it finds one, and Settings > Shortcuts marks it.
 
 Only the app's own entries are ever touched - those named `da-assistant-…`, or the block
 between the markers - and the rest of your shortcuts stay as they are. A binding names

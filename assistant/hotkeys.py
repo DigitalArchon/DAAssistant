@@ -178,6 +178,16 @@ def migrate(config):
     return True
 
 
+def shift_lost(accel, trigger):
+    """Whether GNOME holds `accel`, a key with Shift that makes a symbol of its own, as
+    that symbol without Shift: what 3.4.0 sent every desktop's portal (Ctrl+! for
+    Ctrl+Shift+1), which KDE matches and GNOME never does. GNOME keeps a shortcut it was
+    once given, and is not asked again, so it stays until changed in its own Settings."""
+    mods, key = shortcuts.parts(accel)
+    return ("shift" in mods and shortcuts.shifted(key) is not None
+            and "shift" not in trigger.lower())
+
+
 class X11Hotkeys:
     """python-xlib grabs on the root window. X11 sessions only."""
 
@@ -422,9 +432,12 @@ class PortalHotkeys:
 
     def _bind(self):
         from gi.repository import Gio
+        from . import session
+        desktop = session.desktop()
         listed = [(name, {"description": GLib.Variant("s", self.labels.get(name, label)),
                           "preferred_trigger": GLib.Variant(
-                              "s", shortcuts.portal_trigger(self.wanted[name]))})
+                              "s", shortcuts.portal_trigger(self.wanted[name],
+                                                            desktop=desktop))})
                   for name, label, _ in ACTIONS if name in self.wanted]
         token = self._token()
 
@@ -445,14 +458,20 @@ class PortalHotkeys:
 
     def _take(self, listed):
         """Note what the desktop says each shortcut is bound to."""
+        from . import session
+        gnome = session.desktop() == "gnome"
         for name, props in listed:
             if name in self.wanted:
                 trigger = (props or {}).get("trigger_description") or ""
                 self.triggers[name] = trigger
-                if trigger:
-                    self.failed.pop(name, None)
-                else:
+                if not trigger:
                     self.failed[name] = "not assigned by the desktop"
+                elif gnome and shift_lost(self.wanted[name], trigger):
+                    self.failed[name] = (f"GNOME holds it as {trigger}, which no key press "
+                                         f"matches; change it in GNOME's Settings > Apps > "
+                                         f"DA Assistant")
+                else:
+                    self.failed.pop(name, None)
         self.on_change()
 
     def _on_changed(self, _c, _s, _p, _i, _sig, params):

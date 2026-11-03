@@ -123,16 +123,20 @@ def shifted(key, keymap=None):
     return Gdk.keyval_name(symbol)
 
 
-def portal_trigger(accel, keymap=None):
+def portal_trigger(accel, keymap=None, desktop="kde"):
     """The GlobalShortcuts portal's preferred_trigger: "CTRL+SHIFT+k", "LOGO+F5".
 
-    Shift with a key it does not just capitalise is sent as the symbol it makes, with
-    no SHIFT: "CTRL+parenleft" for Ctrl+Shift+9 on a US layout. KDE matches a key press
-    by the symbol it produced, so a stored Ctrl+Shift+9 never fired - a real Ctrl+Shift+9
-    arrives as Ctrl+( - while Ctrl+( does (Plasma 6.7 on Wayland). Worked out from this
-    keyboard's own layout, which is what the desktop will see."""
+    On KDE, Shift with a key it does not just capitalise is sent as the symbol it makes,
+    with no SHIFT: "CTRL+parenleft" for Ctrl+Shift+9 on a US layout. KDE matches a key
+    press by the symbol it produced, so a stored Ctrl+Shift+9 never fired - a real
+    Ctrl+Shift+9 arrives as Ctrl+( - while Ctrl+( does (Plasma 6.7 on Wayland). Worked
+    out from this keyboard's own layout, which is what the desktop will see.
+
+    GNOME is the other way round: sent Ctrl+(, it stored <Control>parenleft, and a real
+    Ctrl+Shift+9 never matched it; sent CTRL+SHIFT+9, it stored <Shift><Control>9, which
+    did (GNOME 50, Nov 2026). So every desktop but KDE is sent the keys as written."""
     mods, key = parts(accel)
-    if "shift" in mods:
+    if "shift" in mods and desktop == "kde":
         symbol = shifted(key, keymap)
         if symbol:
             mods, key = mods - {"shift"}, symbol

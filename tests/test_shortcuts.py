@@ -123,6 +123,37 @@ class Spelling(unittest.TestCase):
         self.assertEqual(shortcuts.portal_trigger("<Control><Shift>1"), "CTRL+exclam")
         self.assertEqual(shortcuts.portal_trigger("<Shift><Super>F5"), "SHIFT+LOGO+F5")
 
+    def test_gnome_is_sent_the_keys_as_written(self):
+        # GNOME 50 stored Ctrl+( as <Control>parenleft, which a real Ctrl+Shift+9 never
+        # matched; CTRL+SHIFT+9 it stored as <Shift><Control>9, which fired.
+        for desktop in ("gnome", "unknown"):
+            self.assertEqual(shortcuts.portal_trigger("<Control><Shift>9", desktop=desktop),
+                             "CTRL+SHIFT+9")
+            self.assertEqual(shortcuts.portal_trigger("<Control><Shift>k", desktop=desktop),
+                             "CTRL+SHIFT+k")
+        self.assertEqual(shortcuts.portal_trigger("<Control><Shift>9", desktop="kde"),
+                         "CTRL+parenleft")
+
+    def test_a_gnome_shortcut_that_lost_its_shift_is_found(self):
+        self.assertTrue(hotkeys.shift_lost("<Control><Shift>1", "Ctrl+!"))
+        self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", "Shift+Ctrl+1"))
+        self.assertFalse(hotkeys.shift_lost("<Control><Shift>k", "Ctrl+K"))   # a letter
+        self.assertFalse(hotkeys.shift_lost("<Control>1", "Ctrl+1"))
+
+    def test_what_gnome_reports_back_is_checked_for_it(self):
+        portal = hotkeys.PortalHotkeys(lambda name: None,
+                                       {"translate_text": "<Control><Shift>1",
+                                        "ask_anything": "<Control><Shift>9"})
+        listed = [("translate_text", {"trigger_description": "Ctrl+!"}),
+                  ("ask_anything", {"trigger_description": "Shift+Ctrl+9"})]
+        with mock.patch.object(session, "desktop", return_value="gnome"):
+            portal._take(listed)
+        self.assertIn("GNOME holds it as Ctrl+!", portal.failed["translate_text"])
+        self.assertNotIn("ask_anything", portal.failed)
+        with mock.patch.object(session, "desktop", return_value="kde"):
+            portal._take(listed)                # KDE's own way of naming it
+        self.assertEqual(portal.failed, {})
+
     def test_another_layout_gives_its_own_symbol(self):
         class German:
             def get_entries_for_keyval(self, keyval):

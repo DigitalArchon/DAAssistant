@@ -246,14 +246,22 @@ def _word_count(text):
 
 # Where one sentence ends and the next begins: a full stop, a question or exclamation
 # mark, then a space and a capital - or a line's end; and the Chinese and Japanese
-# marks, which need neither. A full stop after an initial or an abbreviated title ends
-# none: "J. R. R. Tolkien", "U.S. Army", "St. Louis". Others are taken for the end of
-# a sentence - "Mass. The" - which can only make a quotation fail.
+# marks, which need neither. A full stop after an abbreviated title ends none: "Mr.
+# Jones", "St. Louis". After anything else it ends one, an initial and "U.S." among
+# them, as Unicode's sentence breaks (UAX #29) have it: "World War I. Jones" is two
+# sentences. That can only make a quotation fail, where taking "I." for an initial let
+# an ellipsis join the two.
 _SENTENCE = re.compile(r"([.!?])[\"'”’»)\]]*\s+[\"'“‘«(\[]*(?=\w)"
                        r"|\n[\s\"'“‘«(\[]*|[。！？][\s\"'“‘«(\[]*")
 _ABBREVIATIONS = set("""Mr Mrs Ms Dr St Mt Ft Jr Sr Gen Col Lt Capt Sgt Adm Gov Sen Rep
                      Pres Prof Rev Hon Inc Corp Co Ltd Bros No Vol vs""".split())
 _CLOSERS = "\"'”’»)] \t"
+# What says no. An ellipsis may leave none of it out: "Smith was … found guilty" is
+# not what "Smith was not found guilty" says, though both its stretches are there. An
+# omission may change nothing of what is said, as the style guides have it, and this is
+# the change that the words alone show.
+_NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|none|nothing|nobody|nowhere|"
+                       r"without|cannot|hardly|scarcely|barely)\b|n['’]t\b", re.I)
 _OPENERS = "\"'“‘«([ \t\n"
 _CLOSING = re.compile(f"[{re.escape(_CLOSERS)}]*")
 # How long looking for one quotation in one passage may take, in places tried. One that
@@ -266,11 +274,11 @@ FIND_PARTS = 100
 
 
 def _abbreviated(text, stop):
-    """Whether the full stop at `stop` follows an initial or an abbreviated title."""
+    """Whether the full stop at `stop` follows an abbreviated title."""
     start = stop
     while start and text[start - 1].isalpha():
         start -= 1
-    return stop - start == 1 or text[start:stop] in _ABBREVIATIONS
+    return text[start:stop] in _ABBREVIATIONS
 
 
 class _Passage:
@@ -280,6 +288,7 @@ class _Passage:
         self.text = text or ""
         self.plain, self._starts, self._ends = _mapped(self.text)
         self._stops = self._begins = None   # where sentences end and begin, once asked
+        self._negations = None              # where the words that say no are, the same
 
     def find(self, quote):
         """Where `quote` is word for word in the passage: (start, end) of the passage's
@@ -327,7 +336,7 @@ class _Passage:
                 start = starts[following]
                 if start <= near:
                     last = end(index + 1, following, words, omitted)
-                elif self._joins(span[1], start):
+                elif self._joins(span[1], start) and not self._negated(span[1], start):
                     last = end(index + 1, following, 0, True)
                 else:
                     last = None
@@ -374,6 +383,14 @@ class _Passage:
         stops, begins = self._sentences()
         last = bisect.bisect_left(stops, start) - 1     # the last to end before `start`
         return start <= begins[last] and not self.text[start:begins[last]].strip(_OPENERS)
+
+    def _negated(self, start, stop):
+        """Whether a word that says no (_NEGATION) is in text[start:stop] - found in the
+        passage once, since the text between two places tried can be most of it."""
+        if self._negations is None:
+            self._negations = [m.start() for m in _NEGATION.finditer(self.text)]
+        at = bisect.bisect_left(self._negations, start)
+        return at < len(self._negations) and self._negations[at] < stop
 
     def _reach(self, end):
         """How far past `end`, where a part of a quotation ends, the next can begin with

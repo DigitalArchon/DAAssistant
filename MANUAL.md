@@ -720,12 +720,15 @@ Ireland" is not in "illegal in Ireland", nor "a population of 12" in "a populati
 125,000", nor "40 °C" in "−40 °C" - a sign is part of its number. An ellipsis can leave
 out words within a sentence, or whole sentences, but not the end of one sentence with
 the start of the next - "Smith was … found guilty" is not word for word in "Smith was
-not guilty. Jones was found guilty", though each part of it is there - and at least two
+not guilty. Jones was found guilty", though each part of it is there. Nor can it leave
+out a word that says no - not, never, nobody, without, didn't and the like: "The treaty
+was … ratified" is not word for word in "The treaty was never ratified", since what is
+left out may not change what is said. And at least two
 words, as written ("wasn't" and "1914–18" are one each), must stand between one ellipsis
 and the next, or either end of the quotation, since a word on its own is found almost
-anywhere. A full stop after an initial or a title ("U.S.", "Mr.") ends no sentence;
-after any other abbreviation it is taken for the end of one, which can only mark a true
-quotation ⚠. Chinese, Japanese and Thai leave no spaces between words, so there every
+anywhere. A full stop after a title ("Mr.", "St.") ends no sentence; after anything
+else, an initial and "U.S." among them, it ends one where a capital follows, as
+Unicode's rules for sentences have it - which can only mark a true quotation ⚠. Chinese, Japanese and Thai leave no spaces between words, so there every
 two characters count as a word, in Thai every three, and in a passage in one of them a
 stretch can begin and end only at a space or a punctuation mark: nothing else shows
 where a word begins.

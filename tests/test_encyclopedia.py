@@ -712,6 +712,39 @@ class Quotes(unittest.TestCase):
             check, = check_quotes(f'"{quote}" [1]', self.SMITH)
             self.assertTrue(check["ok"], quote)
 
+    def test_an_ellipsis_leaves_out_no_word_that_says_not(self):
+        # Each stretch is there word for word, but what was left out between them made
+        # it say the opposite. An omission may change nothing of what is said, as the
+        # style guides have it, and a negation left out is the change words can show.
+        passage = [{"text": "Smith was not found guilty of fraud. The treaty was never "
+                            "ratified by the Senate. The court didn't find Jones guilty."}]
+        for quote in ("Smith was … found guilty of fraud",
+                      "The treaty was … ratified by the Senate",
+                      "The court … find Jones guilty"):
+            check, = check_quotes(f'"{quote}" [1]', passage)
+            self.assertFalse(check["ok"], quote)
+        # Kept in the quotation, or with nothing of the kind left out, it is as before.
+        for quote in ("Smith was not found … of fraud",
+                      "The treaty was never … by the Senate"):
+            check, = check_quotes(f'"{quote}" [1]', passage)
+            self.assertTrue(check["ok"], quote)
+
+    def test_an_initial_before_a_capital_ends_a_sentence(self):
+        # Taken for an initial, the "I." of "World War I." and the "S." of "U.S." ended
+        # no sentence, and an ellipsis joined the next one to it. Where a capital
+        # follows they end one, as Unicode's sentence breaks (UAX #29) have it; a
+        # title does not ("Mr. Jones"), nor does an initial inside a stretch quoted.
+        for text, quote in (
+                ("Smith served as a soldier in World War I. Jones was a decorated "
+                 "general.", "Smith served … a decorated general"),
+                ("Smith lived in the U.S. Jones was elected later.",
+                 "Smith lived … was elected later")):
+            check, = check_quotes(f'"{quote}" [1]', [{"text": text}])
+            self.assertFalse(check["ok"], quote)
+        check, = check_quotes('"The novel by J. K. Rowling sold millions" [1]',
+                              [{"text": "The novel by J. K. Rowling sold millions."}])
+        self.assertTrue(check["ok"])
+
     def test_a_bracket_round_a_sentence_hides_neither_its_end_nor_its_start(self):
         # The text compared keeps brackets, and the sentence check left them to the
         # sentence either side: a part beginning at "(" began before the next sentence,

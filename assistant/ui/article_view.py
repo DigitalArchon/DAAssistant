@@ -7,9 +7,11 @@ page of its own, as it did on the DVD; an animation opens in a window of its own
 played by Ruffle. Search Encyclopedia is built around it.
 """
 
+import collections
 import html
 import os
 import pathlib
+import re
 
 from .. import gtkcompat
 from gi.repository import Gdk, Gtk
@@ -107,7 +109,8 @@ class ArticlePane(Gtk.Box):
 
     def open(self, target, highlight=None):
         """Show `target` - ("article" | "assembly" | "film", id) - dropping anything
-        Forward could have gone back to; with `highlight`, find that text on it."""
+        Forward could have gone back to; with `highlight`, text or a Highlight, find it
+        on the page (see place)."""
         if target[0] == "flash":
             FlashWindow(self.encyclopedia, target[1], parent=self.get_toplevel())
             return
@@ -156,7 +159,10 @@ class ArticlePane(Gtk.Box):
         if self.webview is None:
             self.textview.get_buffer().set_text(f"{title}\n\n{text}")
             return
-        self._highlight = highlight
+        # What to find once the page has loaded, and how many of the places it is to
+        # pass over to reach the one meant.
+        self._highlight = (place(page_text(title, label, body), highlight)
+                           if highlight else None)
         page = encyclopedia_html.document(title, label, body, self.dark)
         # file:// as the base: WebKit plays the DVD's films only from file addresses.
         # Spelled as a URI - a folder named "My DVD" is My%20DVD - for WebKit, and for
@@ -179,11 +185,14 @@ class ArticlePane(Gtk.Box):
 
     def _on_load_changed(self, view, event):
         if event == WebKit2.LoadEvent.FINISHED and self._highlight:
-            text, self._highlight = find_text(self._highlight), None
+            (text, passed), self._highlight = self._highlight, None
             if text:
-                view.get_find_controller().search(
-                    text, WebKit2.FindOptions.CASE_INSENSITIVE
-                    | WebKit2.FindOptions.WRAP_AROUND, 1)
+                finder = view.get_find_controller()
+                finder.search(text, WebKit2.FindOptions.CASE_INSENSITIVE
+                              | WebKit2.FindOptions.WRAP_AROUND, 1)
+                # Each from where the last one was: the web process takes them in turn.
+                for _ in range(passed):
+                    finder.search_next()
 
     def offer_lookups(self, config, look_up):
         """Right-click a selection in the article to look it up (ui/lookups.py):
@@ -209,13 +218,83 @@ class ArticlePane(Gtk.Box):
 
 def find_text(quote, limit=120):
     """What to search a page for to find `quote`: its longest part where an ellipsis
-    marks words left out, and no longer than WebKit finds comfortably."""
-    import re
-    parts = [p.strip(" .,;:") for p in re.split(r"\s*(?:\.\.\.|…|\[…\])\s*", quote or "")]
+    marks words left out, or a paragraph ends - WebKit finds nothing across one - and
+    no longer than WebKit finds comfortably."""
+    parts = [p.strip(" .,;:")
+             for p in re.split(r"\s*(?:\.\.\.|…|\[…\])\s*|\n", quote or "")]
     part = max(parts, key=len) if parts else ""
     if len(part) > limit:
         part = part[:limit].rsplit(" ", 1)[0]
     return part
+
+
+class Highlight(collections.namedtuple("Highlight", ("text", "before", "after"),
+                                       defaults=("", ""))):
+    """Text to find on an article's page, with what lies either side of it where it is
+    meant. WebKit's find goes to the first of the places the text is, and the words of
+    a quotation can be on the page more than once - in another section, in a caption -
+    so the words around it say which place is the one."""
+    __slots__ = ()
+
+    @classmethod
+    def at(cls, text, span, around=80):
+        """text[start:end] for a `span` of (start, end), and what is around it there."""
+        start, end = span
+        return cls(text[start:end], text[max(0, start - around):start],
+                   text[end:end + around])
+
+
+def page_text(title, label, body):
+    """The text of an article's page as find goes through it: its heading, then a line
+    for each paragraph, heading and caption of the article - pictures' captions, which
+    the passages do without, among them."""
+    body = re.sub(r"</?(?:figure|figcaption|section)\b[^>]*>", "<br>", body)
+    return "\n".join((title, label, text_of(body)))
+
+
+def place(page, highlight):
+    """(what to search `page` for, how many of the places it is to pass over) to reach
+    `highlight`: a Highlight - of the places, the one with its words before and after
+    it, or most of them - or text, to be found where it first is."""
+    if not isinstance(highlight, Highlight):
+        highlight = Highlight(highlight or "")
+    text = find_text(highlight.text)
+    at = highlight.text.find(text) if text else -1
+    if at == -1:
+        return text, 0
+    before = _fold(highlight.before + highlight.text[:at], flat=True)
+    after = _fold(highlight.text[at + len(text):] + highlight.after, flat=True)
+    folded, wanted = _fold(page), _fold(text)
+    places, found = [], folded.find(wanted)
+    while found != -1:
+        places.append(found)
+        found = folded.find(wanted, found + len(wanted))
+    if len(places) < 2:
+        return text, 0
+    flat = folded.replace("\n", " ")
+
+    def fit(start):
+        end = start + len(wanted)
+        return (_agree(flat[max(0, start - len(before)):start][::-1], before[::-1])
+                + _agree(flat[end:end + len(after)], after))
+    return text, max(range(len(places)), key=lambda n: fit(places[n]))
+
+
+def _fold(text, flat=False):
+    """`text` as find compares it, case aside and each run of spaces one - and with
+    `flat`, its lines run together - its ends as they are, for words around a place
+    to be compared up to it."""
+    return re.sub(r"\s+" if flat else r"[^\S\n]+", " ", text.casefold())
+
+
+def _agree(one, other):
+    """How many characters `one` and `other` begin with alike."""
+    count = 0
+    for a, b in zip(one, other):
+        if a != b:
+            break
+        count += 1
+    return count
 
 
 class FlashWindow(Gtk.Window):

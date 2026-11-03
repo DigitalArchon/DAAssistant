@@ -26,9 +26,9 @@ from .. import prompts
 from ..llm import LLMError
 from ..reference.encyclopedia import (ARTICLE_CONTEXT_CHARS, AUDIENCE_NAMES,
                                       RESEARCH_CHARS, byline, check_quotes, cited,
-                                      nearest, read_json, research_context)
+                                      read_json, research_context)
 from . import markdown_html
-from .article_view import ArticlePane, target_of
+from .article_view import ArticlePane, Highlight, target_of
 from .chat import ChatWindow
 
 # What all the tagged articles share of the context with a question: each whole up to
@@ -48,7 +48,8 @@ _CITATION = re.compile(r"\[(\d+(?:\s*[,–-]\s*\d+)*)\]")
 
 def open_reader(app, encyclopedia, target, highlight=None):
     """Show `target` in Search Encyclopedia: the app's window when there is one, else a
-    new one. `highlight`: text to find on the page - what an answer quoted."""
+    new one. `highlight`: what to find on the page - what an answer quoted - as text, or
+    a Highlight, which says which of the places it is (article_view.place)."""
     opener = getattr(app, "search_encyclopedia", None)
     if opener is not None:
         opener(target=target, highlight=highlight)
@@ -592,25 +593,37 @@ class AskEncyclopediaWindow(ChatWindow):
                 near = checks[number].get("near") if number < len(checks) else None
                 if not near or not 1 <= near["passage"] <= len(passages):
                     return
-                number, quoted = near["passage"], near["text"]
+                number, quoted = near["passage"], near
             elif 1 <= number <= len(passages):
-                # What was quoted from it - word for word, but in the passage's own
-                # words, which the page has, not the answer's ellipses and dashes - else
-                # what it comes closest to.
-                text = passages[number - 1]["text"]
-                quoted = next((nearest(text, c["quote"])[0] or c["quote"] for c in checks
+                # What was quoted from it: the words the check found word for word, in
+                # the passage's own words, which the page has - not the answer's
+                # ellipses and dashes, nor another sentence with the same words - else
+                # where a quotation came closest to it.
+                quoted = next(({"text": c["quote"], "span": c.get("span")} for c in checks
                                if c["ok"] and c["found"] == number), None) or \
-                    next((c["near"]["text"] for c in checks if not c["ok"]
+                    next((c["near"] for c in checks if not c["ok"]
                           and (c.get("near") or {}).get("passage") == number), None)
             else:
                 return
             passage = passages[number - 1]
             open_reader(self.app, self._encyclopedia, ("article", passage["article"]),
-                        highlight=quoted or passage["heading"])
+                        highlight=_highlight(passage, quoted))
             return
         target = target_of(uri)
         if target is not None:
             open_reader(self.app, self._encyclopedia, target)
+
+
+def _highlight(passage, quoted):
+    """What to show of `passage` in its article: `quoted` - {text, span: where in the
+    passage's text} - and the words around it there, which say which of the places on
+    the page it is; or failing a quotation, the passage's heading, which its text
+    follows."""
+    if quoted and quoted.get("span"):
+        return Highlight.at(passage["text"], quoted["span"])
+    if quoted and quoted.get("text"):
+        return Highlight(quoted["text"])
+    return Highlight(passage["heading"], after="\n" + passage["text"][:80])
 
 
 def _md(text):

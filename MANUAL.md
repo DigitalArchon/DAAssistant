@@ -708,9 +708,10 @@ rather than looking like one whose every quotation was found. Click the
 passage's own words highlighted - where it was found under another number, or where the
 passage comes closest to it, so you can see straight away what the source really says.
 A ⚠ that is not a link is a quotation nothing in the passages comes near. Each
-citation is a link: it opens the article in Search Encyclopedia at what was quoted,
-highlighted in the passage's own words, found
-and highlighted on the page. Under the answer are its sources - those cited first, the
+citation is a link: it opens the article in Search Encyclopedia at what was quoted from
+it, highlighted in the passage's own words where the check found them - not the same
+words elsewhere on the page, nor another sentence made of them - or, with nothing quoted
+from it, at the passage's heading. Under the answer are its sources - those cited first, the
 rest folded away, each with its article's contributors - and the pictures and films of
 the sections it cited, each with its credit. A copied question
 waits in the message box, selected.

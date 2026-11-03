@@ -349,8 +349,16 @@ def nearest(passage, quote):
     or two sentences run together, so the stretch of the passage the length of the
     quotation, with room for a few words more, that has the most of its words is where
     it was quoting from. Words like "the" and "they" count for little: every stretch has
-    some. Found word for word, it is the quotation itself, as the passage writes it.
+    some. Of stretches with as many of its words, the one with most of them in the
+    quotation's order: "the pope crowned the emperor" and "the emperor crowned himself
+    before the pope" have the same words, and only one is what was quoted.
     """
+    span, share = _nearest(passage, quote)
+    return (passage[span[0]:span[1]] if span else None), share
+
+
+def _nearest(passage, quote):
+    """nearest(), as ((start, end) of those words in `passage`, share)."""
     wanted = [w for part in _ELLIPSIS.split(quote or "") for w, _s, _e in _words(part)]
     if not wanted:
         return None, 0.0
@@ -364,7 +372,7 @@ def nearest(passage, quote):
     width = len(wanted) + 3 + len(wanted) // 3
     if _ELLIPSIS.search(quote):
         width += 3 * len(wanted)
-    have, score, best, best_score = Counter(), 0, None, 0
+    have, score, firsts, best_score = Counter(), 0, [], 0
     for i, (word, _s, _e) in enumerate(words):
         if have[word] < need[word]:
             score += weight(word)
@@ -375,27 +383,54 @@ def nearest(passage, quote):
             if have[gone] < need[gone]:
                 score -= weight(gone)
         if score > best_score:
-            best, best_score = max(0, i - width + 1), score
-    if best is None or best_score < NEAREST_SHARE * total:
+            firsts, best_score = [max(0, i - width + 1)], score
+        elif score == best_score and firsts:
+            firsts.append(max(0, i - width + 1))
+    if not firsts or best_score < NEAREST_SHARE * total:
         return None, 0.0
-    # That stretch, less the words at either end it would hold as many without.
-    stretch = words[best:best + width]
-    have = Counter(word for word, _s, _e in stretch)
-    for end in (-1, 0):
-        while stretch and have[stretch[end][0]] > need[stretch[end][0]]:
-            have[stretch[end][0]] -= 1
-            stretch.pop(end)
-    return passage[stretch[0][1]:stretch[-1][2]].strip(".,;:!?"), best_score / total
+    # Each such stretch, less the words at either end it would hold as many without;
+    # then the first with the most of the quotation in its order.
+    stretches = {}
+    for first in firsts:
+        stretch = words[first:first + width]
+        have = Counter(word for word, _s, _e in stretch)
+        for end in (-1, 0):
+            while stretch and have[stretch[end][0]] > need[stretch[end][0]]:
+                have[stretch[end][0]] -= 1
+                stretch.pop(end)
+        stretches.setdefault((stretch[0][1], stretch[-1][2]), stretch)
+    start, end = max(stretches, key=lambda key: _in_order(
+        [word for word, _s, _e in stretches[key]], wanted, weight))
+    while start < end and passage[start] in ".,;:!?":
+        start += 1
+    while end > start and passage[end - 1] in ".,;:!?":
+        end -= 1
+    return (start, end), best_score / total
+
+
+def _in_order(words, wanted, weight):
+    """How much of `wanted` `words` have in its order: the weight of the longest run of
+    its words, not necessarily together, that both have in that order."""
+    previous = [0] * (len(wanted) + 1)
+    for word in words:
+        current = [0]
+        for j, other in enumerate(wanted):
+            current.append(previous[j] + weight(word) if word == other
+                           else max(previous[j + 1], current[j]))
+        previous = current
+    return previous[-1]
 
 
 def check_quotes(answer, passages, question=None, strict=True):
     """Every quotation in `answer`, checked against the passages it was given.
 
-    [{quote, cited: [numbers after it], found: the passage it is in or None, ok,
-    start, end: where its citations end in `answer`, near}]. ok: word for word in a
-    passage it cites - or, citing none, in any. near, for one not ok: where to see it -
-    {passage, text: the passage's own words} where it was found, or else came closest
-    (see nearest), the passages it cites first; None if none came close.
+    [{quote, cited: [numbers after it], found: the passage it is in or None, span,
+    ok, start, end: where its citations end in `answer`, near}]. span: [start, end]
+    of the words it was found in, in passage `found`'s text, or None. ok: word for
+    word in a passage it cites - or, citing none, in any. near, for one not ok: where
+    to see it - {passage, text: the passage's own words, span: where they are in its
+    text} - where it was found, or else came closest (see nearest), the passages it
+    cites first; None if none came close.
 
     Word for word is the same words in the same order - case, spacing, quotation marks
     and dashes aside - where an ellipsis marks words left out, each stretch between
@@ -434,27 +469,35 @@ def check_quotes(answer, passages, question=None, strict=True):
                 or (question and not citations and _contains(question, quote))):
             continue
         numbers = [n for n in cited(citations) if 1 <= n <= len(passages)]
-        found = None
+        found = span = None
         for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
-            if texts[n - 1].find(quote):
+            span = texts[n - 1].find(quote)
+            if span:
                 found = n
                 break
         ok = found is not None and (not numbers or found in numbers)
-        out.append({"quote": quote, "cited": numbers, "found": found, "ok": ok,
+        out.append({"quote": quote, "cited": numbers, "found": found,
+                    "span": list(span) if span else None, "ok": ok,
                     "start": match.start(), "end": match.end(),
-                    "near": None if ok else _near(quote, numbers, found, passages)})
+                    "near": None if ok else _near(quote, numbers, found, span, passages)})
     return out
 
 
-def _near(quote, numbers, found, passages):
-    """check_quotes' `near` for a quotation that is not where it says."""
+def _near(quote, numbers, found, span, passages):
+    """check_quotes' `near` for a quotation that is not where it says: the words it was
+    found in, under another number - those, not the stretch nearest() would choose,
+    which can be another sentence with the same words - or else where the passages it
+    cites, then the rest, come closest to it."""
+    if found:
+        return {"passage": found, "text": passages[found - 1]["text"][span[0]:span[1]],
+                "span": list(span)}
     best, best_share = None, 0.0
-    order = [found] if found else (
-        numbers + [n for n in range(1, len(passages) + 1) if n not in numbers])
-    for n in order:
-        text, share = nearest(passages[n - 1]["text"], quote)
+    for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
+        text = passages[n - 1]["text"]
+        where, share = _nearest(text, quote)
         if share > best_share:
-            best, best_share = {"passage": n, "text": text}, share
+            best = {"passage": n, "text": text[where[0]:where[1]], "span": list(where)}
+            best_share = share
     return best
 
 

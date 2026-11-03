@@ -734,11 +734,41 @@ class Quotes(unittest.TestCase):
     def test_a_quotation_not_word_for_word_is_shown_where_it_comes_closest(self):
         self.assertEqual(self.near('"they cross the shining sea, humming as they went" [2]'),
                          [{"passage": 1,
-                           "text": "they cross the glimmer sea, humming as they"}])
+                           "text": "they cross the glimmer sea, humming as they",
+                           "span": [13, 56]}])
 
     def test_one_found_elsewhere_is_shown_there_as_the_passage_writes_it(self):
         self.assertEqual(self.near('“zorblaxes EAT moonberries” [1]'),
-                         [{"passage": 2, "text": "Zorblaxes eat moonberries"}])
+                         [{"passage": 2, "text": "Zorblaxes eat moonberries", "span": [0, 25]}])
+
+    CROWNED = [{"text": "In 1804 the zorblax king crowned himself before the moon priest. "
+                        "Later tellers wrote that the moon priest crowned the zorblax king "
+                        "himself, but he did not."}]
+
+    def test_where_a_quotation_was_found_is_kept(self):
+        # Only whether it was, and the reader was shown what nearest() chose: the first
+        # stretch with the same words, another sentence.
+        check, = check_quotes("“the moon priest crowned the zorblax king himself” [1]",
+                              self.CROWNED)
+        start, end = check["span"]
+        self.assertEqual(self.CROWNED[0]["text"][start:end],
+                         "the moon priest crowned the zorblax king himself")
+        self.assertTrue(self.CROWNED[0]["text"][:start].endswith("wrote that "))
+        # Found under another number, it is shown there, in the words it was found in.
+        passages = [{"text": "Zorblaxes hum."}] + self.CROWNED
+        check, = check_quotes("“the moon priest crowned the zorblax king himself” [1]",
+                              passages)
+        self.assertEqual((check["found"], check["near"]["passage"], check["near"]["span"]),
+                         (2, 2, [start, end]))
+        self.assertIsNone(check_quotes('"they fly to the moon" [1]', self.CROWNED)[0]["span"])
+
+    def test_of_stretches_alike_the_closest_is_the_one_in_the_quotations_order(self):
+        text, _share = nearest(self.CROWNED[0]["text"],
+                               "the moon priest crowned the zorblax king herself")
+        self.assertEqual(text, "the moon priest crowned the zorblax king")
+        text, _share = nearest(self.CROWNED[0]["text"],
+                               "the zorblax king crowned himself before the priest")
+        self.assertEqual(text, "the zorblax king crowned himself before the moon priest")
 
     def test_the_passages_it_cites_come_first(self):
         passages = [{"text": "The red zorblax hums at dawn."},
@@ -1006,6 +1036,11 @@ class EncyclopediaWindowCase(DvdCase):
             search_encyclopedia=lambda target=None, highlight=None:
                 self.opened.append((target, highlight)))
 
+    def _shown(self):
+        """What the reader was asked to open, and the text it was to highlight there."""
+        return [(target, getattr(highlight, "text", highlight))
+                for target, highlight in self.opened]
+
     def _run_until(self, predicate, timeout=20):
         """Run the main loop until `predicate()`, or `timeout` seconds. Both timers are
         removed however the loop ended: one left behind quits a later test's loop."""
@@ -1251,8 +1286,8 @@ class AskWindow(EncyclopediaWindowCase):
             window._follow_encyclopedia("enc://cite/1/99")         # no such passage
             window._follow_encyclopedia("enc://cite/0/1")          # not an answer
             window._follow_encyclopedia("enc://film/5")
-            self.assertEqual(self.opened, [(("article", 1), "cross the glimmer sea"),
-                                           (("film", 5), None)])
+            self.assertEqual(self._shown(), [(("article", 1), "cross the glimmer sea"),
+                                             (("film", 5), None)])
         finally:
             window.destroy()
 
@@ -1266,8 +1301,50 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertTrue(self._answered(window, 3))
             self.assertTrue(window.conversation[1]["checks"][0]["ok"])
             window._follow_encyclopedia("enc://cite/1/1")
-            self.assertEqual(self.opened, [(("article", 1),
-                                            "Every winter they cross the glimmer sea")])
+            self.assertEqual(self._shown(), [(("article", 1),
+                                              "Every winter they cross the glimmer sea")])
+        finally:
+            window.destroy()
+
+    def test_a_citation_highlights_the_sentence_quoted_not_one_with_its_words(self):
+        # Shown what nearest() made of a quotation found word for word - the first
+        # stretch with its words, ties going to the earliest - the reader highlighted
+        # the sentence before it, which says the opposite.
+        passages = [{"article": 7, "title": "Zorblax kings", "library": "EB",
+                     "heading": "Crowning", "section": 2, "pictures": [], "films": [],
+                     "text": "In 1804 the zorblax king crowned himself before the moon "
+                             "priest. Later tellers wrote that the moon priest crowned "
+                             "the zorblax king himself, but he did not."}]
+        answer = "Tellers wrote that “the moon priest crowned the zorblax king himself” [1]."
+        window = self._window()
+        try:
+            window.conversation = [
+                {"role": "user", "content": "Who crowned the zorblax king?"},
+                {"role": "assistant", "content": answer, "passages": passages,
+                 "checks": check_quotes(answer, passages)}]
+            window._follow_encyclopedia("enc://cite/1/1")
+            (target, highlight), = self.opened
+            self.assertEqual(target, ("article", 7))
+            self.assertEqual(highlight.text, "the moon priest crowned the zorblax king "
+                                             "himself")
+            self.assertTrue(highlight.before.endswith("Later tellers wrote that "))
+            self.assertTrue(highlight.after.startswith(", but he did not."))
+        finally:
+            window.destroy()
+
+    def test_a_passage_nothing_was_quoted_from_opens_at_its_heading(self):
+        # Its heading - found where it heads the passage's text, not where the same word
+        # is in the text before it.
+        self.client.answer = "They hum [1]."
+        window = self._window(question="What do zorblaxes eat?")
+        try:
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            passages = window.conversation[1]["passages"]
+            window._follow_encyclopedia("enc://cite/1/1")
+            (_target, highlight), = self.opened
+            self.assertEqual(highlight.text, passages[0]["heading"])
+            self.assertEqual(highlight.after, "\n" + passages[0]["text"][:80])
         finally:
             window.destroy()
 
@@ -1290,7 +1367,7 @@ class AskWindow(EncyclopediaWindowCase):
             window._follow_encyclopedia("enc://quote/1/9")          # no such quotation
             window._follow_encyclopedia("enc://cite/1/1")
             near = ("article", 1), "Every winter they cross the glimmer sea"
-            self.assertEqual(self.opened, [near, near])
+            self.assertEqual(self._shown(), [near, near])
         finally:
             window.destroy()
 
@@ -1405,8 +1482,8 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertTrue(window._on_text_link("enc://cite/1/1"))
             self.assertTrue(window._on_text_link("enc://film/5"))
             self.assertFalse(window._on_text_link("https://a.test"))
-            self.assertEqual(self.opened, [(("article", 1), "cross the glimmer sea"),
-                                           (("film", 5), None)])
+            self.assertEqual(self._shown(), [(("article", 1), "cross the glimmer sea"),
+                                             (("film", 5), None)])
             saved = window._markdown()
             self.assertNotIn("enc://", saved)
             self.assertIn("Quotations checked against the passages: 1 of 2", saved)
@@ -1454,6 +1531,66 @@ class Pane(DvdCase):
             self.assertEqual(shown[-1], "Zorblax: the crossing")
             pane.open(("article", 999))
             self.assertEqual(shown[-1], "Not found")
+        finally:
+            window.destroy()
+
+    PAGE = ("Zorblax kings\nEncyclopedia\nEarly life\nThe king crowned himself, they "
+            "said.\nCrowning\nLater, the king crowned himself again, before the priest.")
+
+    def test_of_the_places_the_words_are_on_the_page_the_one_meant(self):
+        from assistant.ui.article_view import Highlight, find_text, place
+        self.assertEqual(place(self.PAGE, Highlight("the king crowned himself", "Later, ",
+                                                    " again")),
+                         ("the king crowned himself", 1))
+        self.assertEqual(place(self.PAGE, Highlight("the king crowned himself", "",
+                                                    ", they said")),
+                         ("the king crowned himself", 0))
+        # Text alone, or text that is on the page once, is found where it first is.
+        self.assertEqual(place(self.PAGE, "the king crowned himself"),
+                         ("the king crowned himself", 0))
+        self.assertEqual(place(self.PAGE, Highlight("before the priest", "again, ")),
+                         ("before the priest", 0))
+        # A heading, by the text it heads - "Crowning" is in the article's text too.
+        page = self.PAGE.replace("Early life", "Before the crowning")
+        self.assertEqual(place(page, Highlight("crowning", after="\nLater, the king")),
+                         ("crowning", 1))
+        # Cut to a paragraph, what find takes, the words around the cut still count.
+        self.assertEqual(find_text("they said.\nCrowning\nLater, the king crowned"),
+                         "Later, the king crowned")
+        self.assertEqual(place(self.PAGE, Highlight("said.\nCrowning\nLater, the king "
+                                                    "crowned himself", after=" again")),
+                         ("Later, the king crowned himself", 0))
+
+    def test_the_page_is_searched_and_the_places_before_passed_over(self):
+        from assistant.ui.article_view import ArticlePane, Highlight, WebKit2
+        if WebKit2 is None:
+            self.skipTest("needs WebKit")
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        make_dvd(root, {"EB": {7: page("Zorblax kings", (
+            "<h2>Early life</h2><p>The king crowned himself, they said.</p>"
+            "<h2>Crowning</h2><p>Later, the king crowned himself again.</p>"))},
+            "EBI": {}, "EBK": {}})
+        encyclopedia = Encyclopedia(types.SimpleNamespace(encyclopedia_dir=root),
+                                    data_dir=os.path.join(root, "data"))
+        encyclopedia.import_from(root)
+        text = dict(encyclopedia.sections(encyclopedia.article(7)))["Crowning"]
+        pane = ArticlePane(encyclopedia)
+        window = Gtk.Window()
+        window.add(pane)
+        try:
+            pane.open(("article", 7), Highlight.at(text, (7, 31)))
+            self.assertEqual(pane._highlight, ("the king crowned himself", 1))
+            calls = []
+            finder = types.SimpleNamespace(
+                search=lambda text, *_a: calls.append(("search", text)),
+                search_next=lambda: calls.append(("next",)))
+            view = types.SimpleNamespace(get_find_controller=lambda: finder)
+            pane._on_load_changed(view, WebKit2.LoadEvent.FINISHED)
+            self.assertEqual(calls, [("search", "the king crowned himself"), ("next",)])
+            self.assertIsNone(pane._highlight)
+            pane.open(("article", 7), "the king crowned himself")
+            self.assertEqual(pane._highlight, ("the king crowned himself", 0))
         finally:
             window.destroy()
 

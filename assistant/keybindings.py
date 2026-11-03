@@ -436,9 +436,22 @@ class ConfigFileKeybindings:
                 pass
 
     def apply(self, bindings, labels, actions):
+        written = self._rewrite(bindings, labels, actions)
+        if self.lua:
+            written = self._leave_conf(actions) or written
+        if not written:
+            return
+        if self.desktop == "hyprland":
+            self.run(["hyprctl", "reload"])
+        else:
+            self.run(["swaymsg", "reload"])
+
+    def _rewrite(self, bindings, labels, actions):
+        """Put the block for `bindings` into the file, in place of the one there. True
+        if the file was written; nothing is written when nothing would change."""
         if not os.path.exists(self.path):
             if not any(bindings.values()):
-                return
+                return False
             raise OSError(f"{self.describe()} does not exist; add the lines from "
                           f"Settings > Shortcuts to your config yourself")
         before = self._read()
@@ -448,16 +461,29 @@ class ConfigFileKeybindings:
             body = after.rstrip("\n")
             after = (body + "\n\n" if body else "") + block + "\n"
         if after == before:
-            return
+            return False
         self._write(after)
-        if self.desktop == "hyprland":
-            self.run(["hyprctl", "reload"])
-        else:
-            self.run(["swaymsg", "reload"])
+        return True
+
+    def _leave_conf(self, actions):
+        """Take the block out of hyprland.conf, beside the hyprland.lua being written:
+        the one written there before the user moved to Lua, which would come back
+        into force, keys and launcher as they were then, with the hyprland.lua gone -
+        or at once, from a Lua config that loads the old file. True if it was there.
+        Not being able to is said and passed over: Hyprland does not read the file."""
+        conf = ConfigFileKeybindings(self.desktop, self.run,
+                                     os.path.join(os.path.dirname(self.path),
+                                                  "hyprland.conf"))
+        try:
+            return conf._rewrite({}, {}, actions)
+        except OSError as e:
+            print(f"[hotkeys] the shortcuts in {conf.describe()} were left there: {e}")
+            return False
 
     def remove(self, actions):
-        if os.path.exists(self.path) and self.begin in self._read():
-            self.apply({}, {}, actions)
+        """Take the block out, and from beside a hyprland.lua the hyprland.conf one;
+        nothing is written where there is none."""
+        self.apply({}, {}, actions)
 
 
 def writer(desktop, run=run_host):

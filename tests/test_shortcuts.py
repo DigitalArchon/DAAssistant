@@ -937,6 +937,19 @@ class Manager(TempDir):
             manager.start()
             self.assertEqual(len(host.calls), writes)       # same as recorded: no write
 
+    def test_an_action_renamed_is_written_again_under_its_new_name(self):
+        config = self.config()
+        config.custom_actions = [{"slot": 1, "name": "Summarise", "prompt": "Sum up {text}",
+                                  "source": "clipboard"}]
+        config.hotkeys = {"custom_1": "<Control><Shift>7"}
+        host = FakeHost()
+        with Patched(session_of(desktop="gnome")):
+            self.manager(config, host).start()
+            config.custom_actions[0]["name"] = "Summarize"
+            self.manager(config, host).start()
+        self.assertEqual([gvariant_string(c[4]) for c in host.calls if c[3:4] == ["name"]],
+                         ["DA Assistant: Summarise", "DA Assistant: Summarize"])
+
     def test_switching_off_takes_them_back_out(self):
         config = self.config()
         config.hotkeys = {"ocr_only": "<Control><Shift>5"}
@@ -1567,6 +1580,36 @@ class HyprlandLuaConfig(TempDir):
         writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
         writer.remove(NAMES)
         self.assertEqual(self.read(path), self.OMARCHY)
+
+    def test_after_a_move_to_lua_the_keys_go_there_and_out_of_the_conf(self):
+        # Hyprland reads hyprland.conf no more once there is a hyprland.lua, and the
+        # record did not say which file had the keys: nothing was written into the new
+        # one, while Settings said it had been.
+        conf = self.put("hyprland.conf", "bind = SUPER, Q, exec, kitty\n")
+        config = Config(os.path.join(self.dir, "c.json"))
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        host = FakeHost()
+        with Patched(session_of(desktop="hyprland")):
+            hotkeys.HotkeyManager(config, lambda action: None, run=host).start()
+            self.assertIn("--action=ocr_only", self.read(conf))
+            lua = self.put("hyprland.lua", self.OMARCHY)
+            host.calls.clear()
+            manager = hotkeys.HotkeyManager(config, lambda action: None, run=host)
+            manager.start()
+            self.assertIsNone(manager.error)
+            self.assertIn("hyprland.lua, each running DA Assistant", manager.describe())
+            self.assertIn('hl.bind("CTRL + SHIFT + 5", ', self.read(lua))
+            self.assertEqual(self.read(conf), "bind = SUPER, Q, exec, kitty\n")
+            self.assertEqual(host.calls, [["hyprctl", "reload"]])      # once, for both
+            self.assertTrue(Config(config.config_file).hotkeys_installed["into"]
+                            .endswith("hyprland.lua"))
+            host.calls.clear()
+            manager.start()                                     # written: not again
+            self.assertEqual(host.calls, [])
+            config.hotkey_mode = "off"                          # and taken out of both
+            hotkeys.HotkeyManager(config, lambda action: None, run=host).start()
+        self.assertEqual(self.read(lua), self.OMARCHY)
+        self.assertEqual(self.read(conf), "bind = SUPER, Q, exec, kitty\n")
 
     def test_a_lua_block_that_does_not_end_is_left_alone(self):
         broken = self.OMARCHY + keybindings.LUA_BEGIN + " ---\nhl.bind(\"F5\", x)\n"

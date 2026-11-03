@@ -691,15 +691,22 @@ class HotkeyManager:
         self._record({})
 
     def _install(self, target, desktop):
-        """Write the shortcuts into the desktop - only when they, or where the launcher
-        is, changed since they were last written."""
+        """Write the shortcuts into the desktop - only when they, where the launcher is,
+        what they are called or where they go changed since they were last written.
+
+        Where they go is the file, for Hyprland: once the user moves to hyprland.lua,
+        hyprland.conf is not read, and with a record that did not say which file it
+        was, the block was never written into the new one - while Settings said it
+        was, and the menu showed the keys."""
+        found = keybindings.writer(desktop, self.run)
+        named = labels(self.config)
         record = {"mechanism": target, "bindings": self.wanted,
-                  "launcher": keybindings.launcher()}
+                  "launcher": keybindings.launcher(), "into": found.describe(),
+                  "labels": {action: named[action] for action in self.wanted}}
         if (getattr(self.config, "hotkeys_installed", None) or {}) == record:
             return
         try:
-            keybindings.writer(desktop, self.run).apply(self.wanted, labels(self.config),
-                                                        action_names())
+            found.apply(self.wanted, named, action_names())
         except (OSError, ValueError) as e:
             self.error = str(e)
             return

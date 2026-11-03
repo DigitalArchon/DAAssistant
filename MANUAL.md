@@ -802,9 +802,10 @@ Assistant. The app says so when it finds one, and Settings > Shortcuts marks it.
 Only the app's own entries are ever touched - those named `da-assistant-…`, or the block
 between the markers - and the rest of your shortcuts stay as they are. A binding names
 the `.AppImage` file itself when you run the AppImage, so move the file and the next
-start rewrites them. When something else takes over - you switch shortcuts off, or log
-into an X11 session after a Wayland one - what was written into the desktop is taken back
-out.
+start rewrites them; so it does when you rename one of your own actions, or start using
+a `hyprland.lua`, which gets the block while the one in `hyprland.conf` is taken out.
+When something else takes over - you switch shortcuts off, or log into an X11 session
+after a Wayland one - what was written into the desktop is taken back out.
 
 A key the desktop binds runs `run-assistant --action=NAME`. With the app not running,
 that starts it, and does the action once it is up.

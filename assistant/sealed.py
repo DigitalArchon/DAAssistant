@@ -149,8 +149,18 @@ def _hardware(document):
     return kind
 
 
+def _around_the_proxy():
+    """Raise PrivacyError if a proxy set in Settings cannot be used: httpx and TUF do
+    not go through netguard's session, which refuses the rest (proxy.refusal())."""
+    refused = proxy.refusal()
+    if refused:
+        raise PrivacyError(f"the proxy set in Settings cannot be used, and nothing goes "
+                           f"around it: {refused}")
+
+
 def tinfoil_verify(relay, cache_secret):
     """Attest Tinfoil's router through nano-gpt's relay (network; worker thread)."""
+    _around_the_proxy()
     # Imported here: the SDK pulls in sigstore and the OpenAI client, which nothing else
     # needs, and the app should not pay for them at startup.
     from tinfoil import SecureClient
@@ -302,6 +312,8 @@ class PrivateModeClient:
         """nano-gpt's list of Private Mode models - public, no key is sent - read on the
         preflight's client. [] when it cannot be read."""
         import httpx
+        if proxy.refusal():
+            return []
         client = self._preflight_client or httpx.Client(follow_redirects=False)
         try:
             response = client.get(models.private_list_url(self.api_url),
@@ -391,6 +403,7 @@ class PrivateModeClient:
 
         if not model.startswith("private/"):
             raise PrivacyError(f"{model} is not a Private Mode model; nothing was sent")
+        _around_the_proxy()
         for attempt in (0, 1):
             verified = self.enclave.current()
             client = self._sealed_client(verified)

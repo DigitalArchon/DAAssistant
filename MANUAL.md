@@ -904,7 +904,13 @@ except to this machine and its own network, which are reached directly:
 `socks5h://host:port` for a SOCKS proxy, which then looks the names up itself, as an
 onion address needs. Left empty, the environment's own proxy settings (`HTTPS_PROXY` and
 the rest) stand. The programs the app starts - a browser for a link, the screenshot
-tools - get the environment they had, without the app's proxy.
+tools - get the environment they had, without the app's proxy. A server on this machine
+or its network is reached directly whatever the environment's proxy says, IPv6 addresses
+and names with a trailing dot included, which `NO_PROXY` cannot name. A proxy set here
+that cannot be used - a SOCKS proxy whose packages are missing, in a config copied from
+another machine, say - is not gone around: nothing but those local requests is sent
+until it can be used or is taken out, and the app says so when it starts. (Up to 3.4.0
+everything then went direct.)
 
 Through a proxy, [Privacy Mode](#privacy-mode) can attest only if the services it checks
 against answer the proxy's address. Sigstore's, which a `private/` model's attestation

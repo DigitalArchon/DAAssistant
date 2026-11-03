@@ -129,12 +129,30 @@ def let_tuf_use_socks():
     return True
 
 
+_refused = None         # why the proxy set in Settings cannot be used, while it cannot
+
+
+def refusal():
+    """Why nothing may be sent but to this machine and its network: a proxy is set in
+    Settings that this process cannot use - or None.
+
+    Up to 3.4.0 such a proxy was simply not applied, and every request went direct: a
+    SOCKS proxy saved while PySocks was installed, or in a config copied from another
+    machine, sent everything from this machine's own address, Tor or no Tor, and said
+    nothing. Now nothing goes until the proxy can be used, or is taken out of Settings
+    (netguard.session(), sealed.py)."""
+    return _refused
+
+
 def apply(config):
-    """Send this process's requests through config.proxy - or, with none set or one
-    that cannot be used, leave them to the environment's settings again."""
+    """Send this process's requests through config.proxy - or, with none set, leave
+    them to the environment's settings again. One set that cannot be used is not
+    applied, and refusal() says why: nothing is sent around it."""
+    global _refused
     url = (getattr(config, "proxy", "") or "").strip()
     names = VARIABLES + ("NO_PROXY", "no_proxy")
-    if not url or problem(url):
+    _refused = problem(url) if url else None
+    if not url or _refused:
         for name in names:
             hostenv.restore_own(name)
         return False

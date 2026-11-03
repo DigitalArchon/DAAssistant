@@ -56,6 +56,11 @@ class RedirectRefused(_InvalidURL):
     A requests exception, so that every caller already handles it, and a ValueError."""
 
 
+class ProxyRefused(_InvalidURL):
+    """A request not made, because the proxy set in Settings cannot be used and it would
+    have gone around it (proxy.refusal())."""
+
+
 def _unescaped(host):
     """`host` with an IPv6 literal's zone taken off - or None if it has a "%" that is
     not a zone's. Only an IPv6 address has a zone ("fe80::1%eth0", written %25 in a
@@ -173,8 +178,17 @@ def session():
     whole conversation, captures and all. It takes the Authorization header off when the
     host changes, but nothing else, so without this a provider - or anything answering
     at its address - could send the next copy of a conversation anywhere, in the clear.
-    A refused redirect raises RedirectRefused, before anything is sent to it."""
+    A refused redirect raises RedirectRefused, before anything is sent to it.
+
+    And a proxy is held to the same rule. A server on this machine or its own network
+    is reached directly, whatever the environment says: plain http to it through a
+    proxy elsewhere carried the key and the conversation across the network in the
+    clear, and NO_PROXY cannot name all of it - requests reads no IPv6 network there,
+    nor a name written with a trailing dot. Anything else is not sent at all while a
+    proxy set in Settings cannot be used (ProxyRefused), rather than sent around it."""
     import requests
+
+    from . import proxy
 
     class GuardedSession(requests.Session):
         def get_redirect_target(self, response):
@@ -184,5 +198,16 @@ def session():
                 if found:
                     raise RedirectRefused(found, response=response)
             return target
+
+        def send(self, request, **kwargs):
+            # Every request comes through here, redirects included, with the proxies
+            # requests chose for it.
+            if is_local(urlparse(request.url).hostname):
+                kwargs["proxies"] = {}
+                request.headers.pop("Proxy-Authorization", None)
+            elif proxy.refusal():
+                raise ProxyRefused(f"Nothing was sent: the proxy set in Settings cannot "
+                                   f"be used. {proxy.refusal()}", request=request)
+            return super().send(request, **kwargs)
 
     return GuardedSession()

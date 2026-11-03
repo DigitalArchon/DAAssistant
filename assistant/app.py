@@ -86,6 +86,9 @@ class Assistant:
         if self.config.load_error:
             problems.append(f"Config problem, using defaults: {self.config.load_error}")
         problems += self.config.load_warnings
+        if proxy.refusal():
+            problems.append(f"The proxy in Settings cannot be used, so nothing is sent "
+                            f"until it can, or is taken out: {proxy.refusal()}")
         if self.config.keychain_error:
             problems.append(f"{self.config.keychain_error} The API key cannot be kept "
                             "between runs.")

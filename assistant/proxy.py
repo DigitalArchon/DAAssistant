@@ -80,6 +80,24 @@ def in_use():
     return any(os.environ.get(name) for name in VARIABLES)
 
 
+def for_url(url):
+    """The proxy this process's requests to `url` go through, as requests and httpx
+    read it from the environment, where apply() puts the app's own - or None.
+
+    For a client that is given a transport of its own, which httpx then sends nowhere
+    but where that transport says, its environment unread: the sealed client's
+    (sealed.py), whose one request carried the conversation past the proxy."""
+    import urllib.request
+    parsed = urlparse(url)
+    if urllib.request.proxy_bypass_environment(parsed.hostname or ""):
+        return None
+    found = urllib.request.getproxies_environment()
+    chosen = found.get(parsed.scheme.lower()) or found.get("all")
+    if not chosen:
+        return None
+    return chosen if "://" in chosen else f"http://{chosen}"
+
+
 def let_tuf_use_socks():
     """Let TUF's fetcher through a SOCKS proxy too: it fetches Sigstore's trust root,
     which Private Mode's attestation checks the enclave's release against.

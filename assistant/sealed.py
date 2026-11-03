@@ -256,11 +256,18 @@ class Enclave:
                 self._verified = None
 
 
-def _sealing_transport(public_key):
+def _sealing_transport(public_key, route=None):
+    """EHBP over a transport that goes through `route`, the proxy, if there is one.
+
+    httpx takes no proxy from the environment for a client given a transport of its
+    own, so this one is told: without it the sealed request, alone of all the app's,
+    went direct - from this machine's own address, Tor or no Tor, beside a preflight
+    that had gone through the proxy."""
     import httpx
     from ehbp import EHBPTransport
 
-    inner = httpx.HTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
+    inner = httpx.HTTPTransport(proxy=route,
+                                limits=httpx.Limits(max_keepalive_connections=0))
     return EHBPTransport.from_public_key_hex(public_key, inner=inner)
 
 
@@ -323,17 +330,21 @@ class PrivateModeClient:
 
     def _sealed_client(self, verified):
         import httpx
-        if self._client is None or self._client_key != verified.hpke_public_key:
+        # The proxy is read at each request, as every other client of the app's reads
+        # it, so that one set in Settings meanwhile is the one this goes through too.
+        route = proxy.for_url(self.endpoint)
+        wanted = (verified.hpke_public_key, route)
+        if self._client is None or self._client_key != wanted:
             if self._client is not None:
                 self._client.close()
             self._client = httpx.Client(
-                transport=self._transport_factory(verified.hpke_public_key),
+                transport=self._transport_factory(verified.hpke_public_key, route),
                 timeout=httpx.Timeout(self.request_timeout, connect=CONNECT_TIMEOUT),
                 # A redirect would carry the sealed body somewhere else, so none is
                 # followed: it comes back as the 3xx it is, which request() refuses
                 # unread, as it refuses anything but a 2xx.
                 follow_redirects=False)
-            self._client_key = verified.hpke_public_key
+            self._client_key = wanted
         return self._client
 
     def _preflight(self, model, body_bytes):

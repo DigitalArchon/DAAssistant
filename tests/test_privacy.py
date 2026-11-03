@@ -2005,7 +2005,7 @@ class Sealed(unittest.TestCase):
 
         client = sealed.PrivateModeClient(
             API_URL, "k", enclave=enclave,
-            transport_factory=lambda key: httpx.MockTransport(handler),
+            transport_factory=lambda key, route: httpx.MockTransport(handler),
             preflight_client=httpx.Client(transport=httpx.MockTransport(preflight)))
         return client, calls
 
@@ -2013,6 +2013,59 @@ class Sealed(unittest.TestCase):
         return (b'data: {"id":"c1","choices":[{"delta":{"content":"Hi"}}]}\n\n'
                 b'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
                 b'data: [DONE]\n\n')
+
+    def test_the_sealed_request_goes_through_the_proxy_too(self):
+        """httpx takes no proxy from the environment for a client given a transport of
+        its own, so the sealed request - alone of the app's - went direct, from this
+        machine's address, while the preflight beside it went through the proxy."""
+        import socket
+        import socketserver
+
+        import httpx
+        from assistant import proxy
+        try:
+            import ehbp  # noqa: F401
+            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        except ImportError:
+            self.skipTest("Privacy Mode's client is not installed here")
+        seen = []
+
+        class Proxy(socketserver.StreamRequestHandler):
+            def handle(self):
+                seen.append(self.rfile.readline().decode("latin-1").strip())
+                self.wfile.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Proxy)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        address = f"http://127.0.0.1:{server.server_address[1]}"
+        key = X25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        enclave = sealed.Enclave(sealed.relay_url(API_URL),
+                                 verifier=lambda *_a: self.verified(key))
+        relay = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"cacheScope": "c" * 64, "upstreamModel": "glm-5.3"}))
+        client = sealed.PrivateModeClient(API_URL, "k", enclave=enclave,
+                                          preflight_client=httpx.Client(transport=relay))
+        environment = {name: "" for name in proxy.VARIABLES + ("NO_PROXY", "no_proxy")}
+        environment.update(HTTPS_PROXY=address, https_proxy=address)
+        payload = {"model": self.MODEL, "stream": True,
+                   "messages": [{"role": "user", "content": "hi"}]}
+        direct, resolve = [], socket.getaddrinfo
+
+        def looked_up(host, *args, **kwargs):     # a way round the proxy goes no further
+            if host == "nano-gpt.com":
+                direct.append(host)
+                raise OSError("this test connects to nothing but its own proxy")
+            return resolve(host, *args, **kwargs)
+
+        with mock.patch.dict(os.environ, environment), \
+                mock.patch("socket.getaddrinfo", looked_up), \
+                self.assertRaisesRegex(PrivacyError, "the sealed request failed"):
+            with client.request(self.MODEL, payload):
+                pass
+        self.assertEqual(direct, [])
+        self.assertEqual(seen, ["CONNECT nano-gpt.com:443 HTTP/1.1"])
 
     def test_a_sealed_request_is_attested_shaped_and_accepted(self):
         import httpx
@@ -2136,7 +2189,7 @@ class Sealed(unittest.TestCase):
 
         client = sealed.PrivateModeClient(
             API_URL, "k", enclave=sealed.Enclave(sealed.relay_url(API_URL), verifier=verify),
-            transport_factory=lambda key: httpx.MockTransport(
+            transport_factory=lambda key, route: httpx.MockTransport(
                 lambda r: self.fail("sent to a retired model")),
             preflight_client=httpx.Client(transport=httpx.MockTransport(relay)))
         return client, seen

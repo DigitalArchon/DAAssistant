@@ -447,12 +447,12 @@ def check_quotes(answer, passages, question=None, strict=True):
     left alone - not checked, not marked, not counted among the quotations checked: a
     word or two, which is a term; a passage's title or section heading, or part of
     one, which the model is shown in quotation marks (research_context) and names the
-    passage by; the user's own `question`, or words of it, quoted back with nothing
-    cited - cited, it is said to be the passage's, and is checked; and, unless
-    `strict`, what is under the heading "Not from the encyclopedia" (_own_sections),
-    where an answer that is not Strict says what it adds of its own. A Strict answer
-    is to have nothing of its own, so nothing in it is set apart: a heading of that
-    kind in it is not taken at its word.
+    passage by; and with nothing cited after it, the user's own `question`, or words
+    of it, quoted back, and unless `strict`, what is under the heading "Not from the
+    encyclopedia" (_own_sections), where an answer that is not Strict says what it
+    adds of its own. Either, cited, is said to be the passage's, and is checked. A
+    Strict answer is to have nothing of its own, so nothing in it is set apart: a
+    heading of that kind in it is not taken at its word.
     """
     answer = answer or ""
     names = [_Passage(name) for passage in passages
@@ -461,9 +461,9 @@ def check_quotes(answer, passages, question=None, strict=True):
     own = [] if strict else _own_sections(answer)
     out = []
     for match in _QUOTED.finditer(answer):
-        if any(start <= match.start() < end for start, end in own):
-            continue
         *quoted, citations = match.groups()
+        if not citations and any(start <= match.start() < end for start, end in own):
+            continue
         quote = next(part for part in quoted if part is not None).strip()
         if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
                 or (question and not citations and _contains(question, quote))):

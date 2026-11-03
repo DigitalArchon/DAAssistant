@@ -577,6 +577,22 @@ class Quotes(unittest.TestCase):
                   'heard, is that "a zorblax never hums alone".')
         self.assertEqual(len(check_quotes(answer, self.PASSAGES, strict=False)), 2)
 
+    def test_a_quotation_of_its_own_that_cites_a_passage_is_checked(self):
+        # A citation says it is the passage's, under that heading too: it went unchecked
+        # and unmarked, its [1] a link, and the sources counted only the others.
+        from assistant.ui import markdown_html
+        answer = ('They "cross the glimmer sea" [1].\n\n## Not from the encyclopedia\n\n'
+                  'The passage says "zorblaxes never cross the glimmer sea" [1], and '
+                  'folklore that "a zorblax never hums alone".')
+        checks = check_quotes(answer, self.PASSAGES, strict=False)
+        self.assertEqual([(c["quote"], c["ok"]) for c in checks],
+                         [("cross the glimmer sea", True),
+                          ("zorblaxes never cross the glimmer sea", False)])
+        passages = [{"article": 1, "title": "Zorblax", "library": "EB", "heading": "H",
+                     "pictures": [], "films": [], "text": self.PASSAGES[0]["text"]}]
+        self.assertIn("1 of 2 found word for word",
+                      markdown_html.sources_html(passages, [1], 0, checks))
+
     def test_a_strict_answer_has_nothing_of_its_own_set_apart(self):
         # Strict asks for no such section; one written anyway was taken at its word,
         # and everything after its heading went unchecked.

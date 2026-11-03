@@ -727,10 +727,11 @@ abbreviation it is taken for the end of one, which can only mark a true quotatio
 
 What is in quotation marks but not quoted from the passages is left alone, and not
 counted among the quotations checked: a word or two, a passage's title or section
-heading, your question quoted back with no citation after it (cited, it is checked like
-any other), and with Strict off, what is under the heading *Not from the encyclopedia*,
-up to the next heading as high as it. With Strict on nothing is set apart: a quotation
-under such a heading is checked like the rest. A quotation not found word for word is
+heading, and with no citation after it, your question quoted back and, with Strict off,
+what is under the heading *Not from the encyclopedia*, up to the next heading as high as
+it. A citation says a quotation is the passage's, so either of those with one is checked
+like any other. With Strict on nothing is set apart: a quotation under such a heading is
+checked like the rest. A quotation not found word for word is
 marked ⚠ where it stands, and listed under the answer; an answer with nothing quoted to
 check says so there ("none"), rather than looking like one whose every quotation was
 found. Click the ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the

@@ -534,7 +534,7 @@ class ConfigFileKeybindings:
         the one written there before the user moved to Lua, which would come back
         into force, keys and launcher as they were then, with the hyprland.lua gone -
         or at once, from a Lua config that loads the old file. True if it was there.
-        Not being able to is said and passed over: Hyprland does not read the file."""
+        Not being able to is said and passed over: the keys are in hyprland.lua."""
         conf = ConfigFileKeybindings(self.desktop, self.run,
                                      os.path.join(os.path.dirname(self.path),
                                                   "hyprland.conf"))

@@ -277,8 +277,8 @@ def unreadable_hint(selection=False):
     clipboard really is empty. Klipper answers for the clipboard and not for the
     highlighted text, so for the `selection` only wl-paste counts: on KDE without
     wl-clipboard, Translate selected text found "nothing highlighted" with text
-    highlighted, and never said why (seen on the CachyOS test VM). Or, anywhere, the
-    last read had more to take in than it does (see _run).
+    highlighted, and never said why (seen on the CachyOS test VM). Or, in any session,
+    the read just made found more than it takes in (see _run).
     """
     what = "the highlighted text" if selection else "the clipboard"
     if _too_large is not None and _too_large[0] == what:

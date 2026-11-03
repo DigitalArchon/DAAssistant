@@ -90,6 +90,77 @@ class NothingStaleOnWayland(unittest.TestCase):
         self.assertEqual(selection, "just now")
 
 
+ENDLESS = [sys.executable, "-c", "import sys\nwhile True: sys.stdout.buffer.write(b'x' * 65536)"]
+
+
+class ReadsHaveALimit(unittest.TestCase):
+    """A reader's output was taken in whole: 100 MB on the clipboard took the app from 85
+    to 372 MB, and 300 MB had it killed under a 900 MB limit. A read stops at its limit
+    now, and says so."""
+
+    def setUp(self):
+        for patch in (mock.patch.object(clipboard, "TEXT_LIMIT", 1 << 20),
+                      mock.patch.object(clipboard, "IMAGE_LIMIT", 2 << 20)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_reader_is_stopped_at_the_limit(self):
+        for binary, limit in ((False, 1 << 20), (True, 2 << 20)):
+            with self.subTest(binary=binary), \
+                    self.assertRaises(clipboard._TooLarge) as raised:
+                clipboard._run(ENDLESS, timeout=60, binary=binary)
+            self.assertEqual(raised.exception.args[0], limit)
+
+    def text_from(self, gtk_text=None, readers=(), session_type="x11"):
+        board = mock.Mock()
+        board.wait_for_text.return_value = gtk_text
+        board.wait_is_image_available.return_value = False
+        board.wait_is_uris_available.return_value = False
+        with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=board), \
+                mock.patch.object(clipboard.session, "session_type",
+                                  return_value=session_type), \
+                mock.patch.object(clipboard, "FALLBACKS", list(readers)), \
+                mock.patch.object(clipboard, "SELECTION_FALLBACKS", list(readers)), \
+                mock.patch.object(clipboard.shutil, "which",
+                                  lambda name: name if name == sys.executable else None):
+            return (clipboard.get_text(), clipboard.unreadable_hint(),
+                    clipboard.get_selection(), clipboard.unreadable_hint(selection=True))
+
+    def test_more_than_a_read_takes_in_is_said_to_be(self):
+        for case in ({"readers": [(ENDLESS, "endless")]},
+                     {"readers": [(ENDLESS, "endless")], "session_type": "wayland"},
+                     {"gtk_text": "x" * ((1 << 20) + 1)}):
+            with self.subTest(**{k: str(v)[:40] for k, v in case.items()}):
+                text, hint, selection, selection_hint = self.text_from(**case)
+                self.assertEqual(text, (None, "empty"))
+                self.assertEqual(hint, "It holds more than 1 MB, more than DA Assistant "
+                                       "reads at once.")
+                self.assertIsNone(selection)
+                self.assertEqual(selection_hint, "The highlighted text is more than 1 MB, "
+                                                 "more than DA Assistant reads at once.")
+
+    def test_a_picture_too_large_is_not_taken_for_klippers_text(self):
+        def run(argv, timeout=3, binary=False):
+            if binary:
+                raise clipboard._TooLarge(clipboard.IMAGE_LIMIT)
+            return None
+
+        with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=mock.Mock()), \
+                mock.patch.object(clipboard.session, "session_type",
+                                  return_value="wayland"), \
+                mock.patch.object(clipboard.shutil, "which", lambda name: "/usr/bin/" + name), \
+                mock.patch.object(clipboard, "_run", side_effect=run), \
+                mock.patch.object(clipboard, "_klipper_text", return_value="image/png 9x9"):
+            self.assertEqual(clipboard.get_text(), (None, "empty"))
+            self.assertIn("more than 2 MB", clipboard.unreadable_hint())
+            self.assertIsNone(clipboard.get_image())
+
+    def test_within_the_limit_all_of_it_is_read(self):
+        text, hint, _selection, _ = self.text_from(gtk_text="x" * (1 << 20))
+        self.assertEqual(text, ("x" * (1 << 20), "text"))
+        self.assertEqual(hint, "")
+
+
 class APictureIsNotKlippersDescriptionOfIt(unittest.TestCase):
     def test_a_copied_image_reads_as_one(self):
         board = mock.Mock()

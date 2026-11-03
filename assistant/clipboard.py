@@ -34,7 +34,7 @@ import subprocess
 import threading
 
 from . import gtkcompat  # noqa: F401  (pins GI versions)
-from . import hostenv, session
+from . import APP_NAME, hostenv, session
 from gi.repository import Gdk, GLib, Gtk
 
 FALLBACKS = [
@@ -55,48 +55,95 @@ KLIPPER = ["gdbus", "call", "--session", "--dest", "org.kde.klipper",
            "--object-path", "/klipper", "--method",
            "org.kde.klipper.klipper.getClipboardContents"]
 
+# The most a read takes in, of text and of a picture: twice the text of the longest
+# context any model takes, and more than a PNG of a whole 4K screen can come to.
+TEXT_LIMIT = 8 * 1024 * 1024
+IMAGE_LIMIT = 64 * 1024 * 1024
+
+
+class _TooLarge(Exception):
+    """A reader had more to give than its limit, the number of bytes in args[0]."""
+
+
+# What the last read found too large to take in, for unreadable_hint: ("the clipboard"
+# or "the highlighted text", the limit), or None.
+_too_large = None
+
 
 def _run(argv, timeout=3, binary=False):
-    """Run a reader and return its CompletedProcess, or None.
+    """Run a reader and return its CompletedProcess, or None; _TooLarge, the reader
+    stopped, once it has given more than a read takes in - IMAGE_LIMIT bytes of a
+    `binary` read, a picture's, and TEXT_LIMIT of any other.
 
     The main loop is kept turning while it runs: the clipboard may be the app's own - an
     answer's Copy button - and on Wayland the reader then has to be served it by this
     very process, which, waiting with its loop stopped, would serve nothing until the
-    time limit ran out."""
+    time limit ran out.
+
+    Its output is taken a piece at a time, up to the limit. Taken whole, as it once was,
+    100 MB on the clipboard took the app from 85 MB to 372 MB, and 300 MB had it killed
+    under a 900 MB limit. What it says on stderr is not wanted, and not kept."""
+    limit = IMAGE_LIMIT if binary else TEXT_LIMIT
     try:
         proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, env=hostenv.host_env())
+                                stderr=subprocess.DEVNULL, env=hostenv.host_env())
     except (OSError, ValueError):
         return None
-    done = {}
+    out, ended = bytearray(), {}
 
     def collect():
         try:
-            done["out"] = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            while len(out) <= limit:
+                chunk = proc.stdout.read1(1 << 16)
+                if not chunk:
+                    return
+                out.extend(chunk)
         except (OSError, ValueError):
-            proc.kill()
+            ended["failed"] = True
+
+    def too_slow():
+        ended["late"] = True
+        proc.kill()
 
     reader = threading.Thread(target=collect, daemon=True)
+    timer = threading.Timer(timeout, too_slow)
+    timer.daemon = True
     reader.start()
+    timer.start()
     context = GLib.MainContext.default()
     serve = threading.current_thread() is threading.main_thread()
     while reader.is_alive():
         if not (serve and context.iteration(False)):
             reader.join(0.01)
-    if "out" not in done:
+    timer.cancel()
+    if len(out) > limit:
+        proc.kill()
+    proc.stdout.close()
+    try:
+        proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    if len(out) > limit:
+        raise _TooLarge(limit)
+    if ended:
         return None
-    out, err = done["out"]
+    out = bytes(out)
     if not binary:
         try:
             # Not text: neither of the readers' own failures, and it used to escape
             # from here and take the "clipboard holds an image" notice with it.
-            out, err = out.decode("utf-8"), err.decode("utf-8", errors="replace")
+            out = out.decode("utf-8")
         except ValueError:
             return None
-    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+    return subprocess.CompletedProcess(argv, proc.returncode, out, b"" if binary else "")
+
+
+def _bounded(text):
+    """`text`, which GTK has read in whole, unless it is more than a read takes in."""
+    if text and len(text) > TEXT_LIMIT:
+        raise _TooLarge(TEXT_LIMIT)
+    return text
 
 
 def _klipper_text():
@@ -131,12 +178,29 @@ def _focused():
 
 
 def _gtk_text(board):
-    text = board.wait_for_text()
+    text = _bounded(board.wait_for_text())
     return text if text and text.strip() else None
 
 
+def _limited(what, read, nothing):
+    """`read()`, or `nothing` once it found more than it takes in - which is kept, for
+    unreadable_hint to say, until the next read."""
+    global _too_large
+    _too_large = None
+    try:
+        return read()
+    except _TooLarge as e:
+        _too_large = (what, e.args[0])
+        return nothing
+
+
 def get_text():
-    """Return (text, kind) where kind is text/image/file/empty."""
+    """Return (text, kind) where kind is text/image/file/empty - "empty" too for a
+    clipboard holding more than a read takes in, as unreadable_hint then says."""
+    return _limited("the clipboard", _get_text, (None, "empty"))
+
+
+def _get_text():
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
     wayland = _wayland()
 
@@ -158,6 +222,8 @@ def get_text():
     # describing it, which read as the text to translate.
     if (not wayland and clipboard.wait_is_image_available()) or get_image() is not None:
         return None, "image"
+    if _too_large is not None:              # a picture, larger than is taken in
+        raise _TooLarge(_too_large[1])
 
     text = _klipper_text()
     if text:
@@ -182,7 +248,12 @@ def get_selection():
     """The highlighted text, or None: GTK's primary selection, then the command-line
     tools, which on Wayland can read it without focus as they read the clipboard - and
     on Wayland the tools first, and GTK only while one of the app's windows has focus,
-    its selection being stale at any other time."""
+    its selection being stale at any other time. None too for more than a read takes
+    in, as unreadable_hint then says."""
+    return _limited("the highlighted text", _get_selection, None)
+
+
+def _get_selection():
     primary = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
     wayland = _wayland()
     if not wayland:
@@ -206,20 +277,37 @@ def unreadable_hint(selection=False):
     clipboard really is empty. Klipper answers for the clipboard and not for the
     highlighted text, so for the `selection` only wl-paste counts: on KDE without
     wl-clipboard, Translate selected text found "nothing highlighted" with text
-    highlighted, and never said why (seen on the CachyOS test VM).
+    highlighted, and never said why (seen on the CachyOS test VM). Or, anywhere, the
+    last read had more to take in than it does (see _run).
     """
+    what = "the highlighted text" if selection else "the clipboard"
+    if _too_large is not None and _too_large[0] == what:
+        size = f"more than {_too_large[1] // (1024 * 1024)} MB"
+        return (f"{'The highlighted text is' if selection else 'It holds'} {size}, more "
+                f"than {APP_NAME} reads at once.")
     if session.session_type() != "wayland":
         return ""
-    if shutil.which("wl-paste") or (not selection and _klipper_text() is not None):
+    if shutil.which("wl-paste") or (not selection and _klipper_answers()):
         return ""
-    what = "the highlighted text" if selection else "the clipboard"
     return (f"On Wayland an app can only read {what} while it has focus, which a "
             "tray app never does. Install wl-clipboard (wl-paste) to read it anyway.")
 
 
+def _klipper_answers():
+    try:
+        return _klipper_text() is not None
+    except _TooLarge:
+        return True
+
+
 def get_image():
     """PIL image from the clipboard, or None. On Wayland wl-paste first, and GTK only
-    while one of the app's windows has focus, as for text."""
+    while one of the app's windows has focus, as for text. None too for a picture of
+    more than IMAGE_LIMIT bytes, as unreadable_hint then says."""
+    return _limited("the clipboard", _get_image, None)
+
+
+def _get_image():
     from PIL import Image
 
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)

@@ -909,6 +909,9 @@ elsewhere on Wayland, install `wl-clipboard`. The highlighted text, for Translat
 selected text, is read the same way: GTK on X11, else `wl-paste --primary`, `xclip` or
 `xsel`; Klipper does not offer it, so on KDE Wayland that one needs `wl-clipboard` too.
 
+A read takes in at most 8 MB of text, twice what the longest context of any model holds,
+or a 64 MB picture; the app says so of a clipboard holding more, and reads none of it.
+
 ### Requests
 
 Requests to NanoGPT are gzipped above 16 KB — every turn resends the conversation and any

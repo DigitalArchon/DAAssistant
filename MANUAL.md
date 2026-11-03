@@ -889,9 +889,18 @@ field code, and the script says so and writes nothing. Run it again after moving
 checkout. The icon path is spelled out because nothing has installed the icon into a
 system theme; the app finds its own copy at runtime, but a desktop entry cannot.
 
-With the AppImage, make the same file from `tools/da-assistant.desktop` yourself: set
-`Exec` to the `.AppImage` file - in double quotes if its path has a space or a character
-such as `&` in it - and drop the `Icon` line, since it carries its own.
+With the AppImage, make the same file from `tools/da-assistant.desktop` yourself, and
+drop the `Icon` line, since it carries its own. Set `Exec` to the `.AppImage` where it
+stays - where an AppImage manager such as Gear Lever keeps it, say - not to a download
+with its version in its name: the next version's file is named differently, and the
+entry would go on starting the old one, or nothing. Put the path in double quotes if it
+has a space or a character such as `&` in it, with a `"`, `` ` `` or `$` inside the quotes
+written with `\\` before it, a `\` as `\\\\`, and a `%` as `%%`.
+
+A session reads `~/.config/autostart` on GNOME, KDE Plasma, Cinnamon, Xfce, MATE, LXQt
+and Budgie, and on Hyprland or Sway started through uwsm, as Omarchy starts Hyprland.
+Started without it, they read nothing there: start DA Assistant from their own config
+instead (`exec-once` in Hyprland's, `exec` in Sway's).
 
 ## What it uses from the system
 

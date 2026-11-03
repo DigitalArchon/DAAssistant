@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import types
 import unittest
 from html.parser import HTMLParser
@@ -100,7 +101,6 @@ class DeepNestingCostsLittle(unittest.TestCase):
     DEPTH = 20000
 
     def test_thousands_deep_is_still_quick(self):
-        import time
         # A run of text inside every element, and an end tag for none of them: each
         # used to search the whole stack.
         raw = "<b>w " * self.DEPTH + "</i>" * self.DEPTH
@@ -120,30 +120,29 @@ class DeepNestingCostsLittle(unittest.TestCase):
 
 
 def run_until(predicate, timeout=15):
-    state = {"done": False}
+    """Turn the main loop until `predicate()`, for up to `timeout` seconds - entering it
+    again if something else quits it first, as a timer another test left can - and
+    leave no timer of its own behind."""
+    deadline = time.monotonic() + timeout
 
     def poll():
-        if predicate():
-            state["done"] = True
+        if predicate() or time.monotonic() >= deadline:
             Gtk.main_quit()
-            return False
         return True
 
-    def expire():
-        Gtk.main_quit()
-        return False
-
-    GLib.timeout_add(40, poll)
-    source = GLib.timeout_add_seconds(timeout, expire)
-    Gtk.main()
-    if state["done"]:
+    source = GLib.timeout_add(30, poll)
+    try:
+        while not predicate() and time.monotonic() < deadline:
+            Gtk.main()
+    finally:
         GLib.source_remove(source)
-    return state["done"]
+    return predicate()
 
 
 def settle(ms=200):
-    GLib.timeout_add(ms, Gtk.main_quit)
-    Gtk.main()
+    """Let the page catch up for `ms`."""
+    until = time.monotonic() + ms / 1000
+    run_until(lambda: time.monotonic() >= until, timeout=ms / 1000 + 1)
 
 
 class StubApp:
@@ -191,14 +190,10 @@ class WindowCase(unittest.TestCase):
                                           .to_string())
             except Exception as e:          # the test fails on it, below
                 got["value"] = f"ERROR {e}"
-            Gtk.main_quit()
 
         window.webview.evaluate_javascript(f"JSON.stringify({expression})", -1, None,
                                            None, None, finish)
-        source = GLib.timeout_add_seconds(10, Gtk.main_quit)
-        Gtk.main()
-        if "value" in got:
-            GLib.source_remove(source)
+        run_until(lambda: "value" in got, timeout=10)
         return got.get("value")
 
 

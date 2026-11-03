@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -61,25 +62,22 @@ class StubApp:
 
 
 def run_until(predicate, timeout=15):
-    state = {"done": False}
+    """Turn the main loop until `predicate()`, for up to `timeout` seconds - entering it
+    again if something else quits it first, as a timer another test left can."""
+    deadline = time.monotonic() + timeout
 
     def poll():
-        if predicate():
-            state["done"] = True
+        if predicate() or time.monotonic() >= deadline:
             Gtk.main_quit()
-            return False
         return True
 
-    def expire():
-        Gtk.main_quit()
-        return False
-
-    GLib.timeout_add(30, poll)
-    source = GLib.timeout_add_seconds(timeout, expire)
-    Gtk.main()
-    if state["done"]:
+    source = GLib.timeout_add(30, poll)
+    try:
+        while not predicate() and time.monotonic() < deadline:
+            Gtk.main()
+    finally:
         GLib.source_remove(source)
-    return state["done"]
+    return predicate()
 
 
 class WindowCase(unittest.TestCase):

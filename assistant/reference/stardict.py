@@ -92,22 +92,29 @@ class StarDict:
     # ---- index ------------------------------------------------------------
 
     def _index(self):
-        """The .idx, read or unpacked as far as its .ifo's idxfilesize says it goes, as
-        StarDict reads it, and no further than MAX_INDEX. An .idx.gz of 85 KB that
-        unpacked to 44 MB was unpacked, and then its headwords listed, to half a
-        gigabyte; unpacked now, it is bounded as any gzip file is here (see
-        dictzip.limit)."""
-        claimed = self.info.get("idxfilesize", "")
-        most = min(int(claimed), MAX_INDEX) if claimed.isdigit() else MAX_INDEX
+        """The .idx, read or unpacked to its end, as GoldenDict reads it, and no
+        further than MAX_INDEX - which `problems` says, should it come to that.
+
+        Read only as far as the .ifo's idxfilesize said it went, as StarDict reads it,
+        an .idx longer than a stale .ifo said lost every headword past that, and
+        nothing said so. An .idx.gz of 85 KB that unpacked to 44 MB was unpacked, and
+        then its headwords listed, to half a gigabyte; unpacked now, it is bounded as
+        any gzip file is here (see dictzip.limit)."""
         if self.idx_path.lower().endswith(".gz"):
             packed = DictzipFile(self.idx_path)
-            data = packed.read_all(most)
+            data = packed.read_all(MAX_INDEX + 1)
             if packed.cut_short:
                 self.problems.append(f"its .idx.gz is read as far as it goes: "
                                      f"{packed.cut_short}")
-            return data
-        with open(self.idx_path, "rb") as f:
-            return f.read(most)
+            more = len(data) > MAX_INDEX
+            del data[MAX_INDEX:]
+        else:
+            with open(self.idx_path, "rb") as f:
+                data, more = f.read(MAX_INDEX), bool(f.read(1))
+        if more:
+            self.problems.append(f"its .idx goes on past {MAX_INDEX >> 20} MB, further "
+                                 f"than any real one does, and is read no further")
+        return data
 
     def headwords(self):
         """Every (headword, offset, size): the .idx, then the .syn's alternatives -

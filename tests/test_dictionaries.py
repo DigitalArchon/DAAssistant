@@ -680,7 +680,52 @@ class StarDictFiles(unittest.TestCase):
         html, text = d.render(word, d.read(offset, size))
         self.assertEqual(html, "line one<br>line &lt;two&gt;")
 
-    def test_the_index_is_read_as_far_as_its_ifo_says_and_no_further(self):
+    def test_the_index_is_read_to_its_end_whatever_its_ifo_says_of_it(self):
+        # As GoldenDict reads it. Read only as far as the .ifo's idxfilesize, an .idx
+        # longer than a stale .ifo said lost every headword past that, unsaid; one
+        # shorter than its .ifo says is read to its end, as it was.
+        ifo = write_stardict(self.dir, "s", [("glorp", b"a glorp"), ("zib", b"a zib"),
+                                             ("flimble", b"to flimble")], types_="m",
+                             synonyms=[("zibs", 1), ("flimbles", 2)])
+        stem = ifo[:-len(".ifo")]
+        with open(stem + ".idx", "rb") as f:
+            idx = f.read()
+        for packed in (False, True):
+            if packed:
+                os.unlink(stem + ".idx")
+                with open(stem + ".idx.gz", "wb") as f:
+                    f.write(gzip.compress(idx))
+            # The first headword's worth, and far more than there is.
+            for claimed in (len(b"glorp\x00") + 8, 100 * len(idx)):
+                with open(ifo, "w") as f:
+                    f.write("StarDict's dict ifo file\nversion=2.4.2\nbookname=Stale\n"
+                            f"idxfilesize={claimed}\nsametypesequence=m\n")
+                d = StarDict(ifo)
+                self.assertEqual([word for word, _offset, _size in d.headwords()],
+                                 ["glorp", "zib", "flimble", "zibs", "flimbles"],
+                                 (packed, claimed))
+                self.assertEqual(d.problems, [])
+
+    def test_an_index_longer_than_any_is_read_so_far_and_said_to_be(self):
+        base = os.path.join(self.dir, "long")
+        idx = b"".join(b"w%d\x00" % i + struct.pack(">II", 0, 1) for i in range(80_000))
+        self.assertGreater(len(idx), 1 << 20)
+        with open(base + ".dict", "wb") as f:
+            f.write(b"x")
+        with open(base + ".idx", "wb") as f:
+            f.write(idx)
+        with open(base + ".ifo", "w") as f:
+            f.write("StarDict's dict ifo file\nversion=2.4.2\nbookname=Long\n"
+                    f"idxfilesize={len(idx)}\nsametypesequence=m\n")
+        with mock.patch.object(stardict, "MAX_INDEX", 1 << 20):
+            d = StarDict(base + ".ifo")
+            words = [word for word, _offset, _size in d.headwords()]
+        self.assertTrue(70_000 < len(words) < 80_000, len(words))
+        self.assertEqual(words[-1], f"w{len(words) - 1}")
+        self.assertEqual(d.problems, ["its .idx goes on past 1 MB, further than any "
+                                      "real one does, and is read no further"])
+
+    def test_a_wide_index_leaves_out_what_no_file_has_and_unpacks_within_bounds(self):
         # 64-bit offsets, one of them past any file - which the index could not hold.
         base = os.path.join(self.dir, "wide")
         idx = (b"first\x00" + struct.pack(">QI", 0, 5)
@@ -690,7 +735,7 @@ class StarDictFiles(unittest.TestCase):
         with open(base + ".dict", "wb") as f:
             f.write(b"firstsecond")
         with open(base + ".idx", "wb") as f:
-            f.write(idx + b"beyond\x00" + struct.pack(">QI", 0, 5))
+            f.write(idx)
         with open(base + ".syn", "wb") as f:
             f.write(b"premier\x00" + struct.pack(">I", 0) + b"faux\x00" + struct.pack(">I", 1)
                     + b"deuxieme\x00" + struct.pack(">I", 3))
@@ -708,12 +753,14 @@ class StarDictFiles(unittest.TestCase):
         bomb = (b"w\x00" + struct.pack(">QI", 0, 1)) * 600_000
         with open(base + ".idx.gz", "wb") as f:
             f.write(gzip.compress(bomb, 9))
-        with open(base + ".ifo", "a") as f:
-            f.write(f"idxfilesize={len(bomb)}\n")
         started = time.monotonic()
         with self.assertRaises(dzmodule.TooLarge):
             list(StarDict(base + ".ifo").headwords())
         self.assertLess(time.monotonic() - started, 2)
+        # So is one in dictzip's layout, which was cut short at that bound, unsaid.
+        write_dictzip(base + ".idx.gz", bomb, chunk=60000)
+        with self.assertRaises(dzmodule.TooLarge):
+            list(StarDict(base + ".ifo").headwords())
 
     def test_xdxf_pairs_never_closed_are_read_in_one_pass(self):
         # Twenty thousand <k> took four seconds: each searched the rest for its </k>.

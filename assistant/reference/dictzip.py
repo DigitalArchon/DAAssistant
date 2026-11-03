@@ -298,8 +298,12 @@ class DictzipFile:
                 del data[wanted:]
                 return data
             count = len(self._offsets) - 1
+            # More than limit is refused, as it is without the RA field, unless no more
+            # is wanted than that: an .idx.gz, read to its end, that went on past its
+            # limit was cut off there, and indexed that far with nothing said.
+            whole = most is None or most > self.limit
             # Every chunk but the last is chunk_length bytes, whatever they compress to.
-            if most is None and (count - 1) * self.chunk_length >= self.limit:
+            if whole and (count - 1) * self.chunk_length >= self.limit:
                 raise self._too_large()
             with open(self.path, "rb") as f:
                 for index in range(count):
@@ -314,7 +318,7 @@ class DictzipFile:
                     if index == count - 1 and not complete \
                             and not self._trailer_records(len(data)):
                         self.cut_short = f"its last chunk, {index}, is cut short"
-            if most is None and len(data) > self.limit:
+            if whole and len(data) > self.limit:
                 raise self._too_large()
             del data[wanted:]
             return data

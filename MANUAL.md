@@ -679,7 +679,10 @@ each falling back on the others - and in words for that reader. The defaults for
 under **Settings > Reference**.
 
 Every quotation in an answer is then checked against the passage it cites, in whatever
-quotation marks the answer's language uses: “…”, "…", „…“, «…» or »…«. Word for word
+quotation marks the answer's language uses: “…”, "…", ‘…’, „…“, «…», »…«, ”…”, »…», 「…」
+or 『…』. A ’ that a letter follows is an apostrophe, not the end of a ‘…’ quotation; one
+with a plural's apostrophe in it (‘the soldiers’ pay’) is read only to there, unless
+citations follow its closing mark. Word for word
 means the same words in the same order, case, spacing, quotation marks and dashes aside
 ("Europe — and" is "Europe—and"), with an ellipsis ("…", "...", ". . .", "[…]") where
 words are left out, and each stretch between ellipses beginning and ending where a word

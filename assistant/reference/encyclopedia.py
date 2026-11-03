@@ -77,13 +77,21 @@ def read_json(text):
 
 # A quotation and the citations after it. Answers are written in the user's language,
 # so in its quotation marks: “English”, "straight", „German“ (or „Polish”), «French»,
-# with spaces inside or without, and »German«. Each opening mark is closed only by its
-# own closing mark, so a quotation that quotes inside itself in marks of another kind
-# is read whole - cut at the inner closing mark, only its first half was checked, and
-# its citations were lost. Pairs too short to be quotations are read too, so that
-# their closing marks are not taken for the opening of another.
+# with spaces inside or without, »German«, ”Swedish” and »Swedish», ‘British’, and
+# 「Japanese」 and 『Japanese』, which Traditional Chinese uses too. Each opening mark is
+# closed only by its own closing mark, so a quotation that quotes inside itself in marks
+# of another kind is read whole - cut at the inner closing mark, only its first half
+# was checked, and its citations were lost. Pairs too short to be quotations are read
+# too, so that their closing marks are not taken for the opening of another: the ” that
+# closes “English” opens no Swedish quotation. A ’ is an apostrophe as often as it is a
+# closing mark, so ‘British’ is closed by the first ’ that has citations after it, or
+# failing that, the first that no letter follows: "the emperor’s" is one word. (One
+# with a plural's apostrophe in it and no citation - ‘the soldiers’ pay’ - is cut short
+# there, and checked if what is left is long enough.)
 _QUOTED = re.compile(
-    r'(?:“([^”\n]*)”|"([^"\n]*)"|„([^“”\n]*)[“”]|«([^»\n]*)»|»([^«\n]*)«)'
+    r'(?:“([^”\n]*)”|"([^"\n]*)"|„([^“”\n]*)[“”]|«([^»\n]*)»|»([^«»\n]*)«|»([^«»\n]*)»'
+    r'|”([^”\n]*)”|‘((?:[^‘’\n]|’(?!\s*\[\d))*)’(?=\s*\[\d)|‘((?:[^‘’\n]|’(?=\w))*)’(?!\w)'
+    r'|「([^」\n]*)」|『([^』\n]*)』)'
     r'((?:\s*\[\d+(?:\s*[,–-]\s*\d+)*\])*)')
 # Words left out of a quotation: "…" or "...", spaced (". . .") or not, bare or in
 # square or round brackets.
@@ -398,11 +406,12 @@ def check_quotes(answer, passages, question=None):
     for match in _QUOTED.finditer(answer):
         if own and match.start() >= own.start():
             break
-        quote = next(part for part in match.groups()[:5] if part is not None).strip()
+        *quoted, citations = match.groups()
+        quote = next(part for part in quoted if part is not None).strip()
         if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
                 or (question and _contains(question, quote))):
             continue
-        numbers = [n for n in cited(match.group(6)) if 1 <= n <= len(passages)]
+        numbers = [n for n in cited(citations) if 1 <= n <= len(passages)]
         found = None
         for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
             if texts[n - 1].find(quote):

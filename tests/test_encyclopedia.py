@@ -625,6 +625,44 @@ class Quotes(unittest.TestCase):
             self.assertEqual(self.check(answer),
                              [("cross the glimmer sea", [1], 1, True)], answer)
 
+    def test_british_swedish_japanese_and_chinese_quotation_marks_too(self):
+        # Settings offers these languages, and their quotations went unchecked.
+        for answer in ("They ‘cross the glimmer sea’ [1].",
+                       "They ‘cross the glimmer sea’.",
+                       "De ”cross the glimmer sea” [1].",
+                       "De »cross the glimmer sea» [1].",
+                       "彼らは「cross the glimmer sea」[1]と書いてある。",
+                       "『cross the glimmer sea』[1]"):
+            self.assertEqual([c[0] for c in self.check(answer)], ["cross the glimmer sea"],
+                             answer)
+            self.assertTrue(self.check(answer)[0][3], answer)
+        # Made up, in each, and marked.
+        for answer in ("‘they fly to the moon’ [1]", "”they fly to the moon” [1]",
+                       "「they fly to the moon」[1]"):
+            self.assertEqual(self.check(answer), [("they fly to the moon", [1], None,
+                                                   False)], answer)
+
+    def test_an_apostrophe_does_not_close_a_british_quotation(self):
+        passages = [{"text": "The zorblax’s hum is low; the zorblaxes’ songs don’t carry."}]
+        for answer, quotes in (
+                ("It says ‘the zorblax’s hum is low’ [1].", ["the zorblax’s hum is low"]),
+                ("‘the zorblaxes’ songs don’t carry’ [1]",
+                 ["the zorblaxes’ songs don’t carry"]),
+                ("‘The zorblax’s hum’ and ‘songs don’t carry’ [1]",
+                 ["The zorblax’s hum", "songs don’t carry"])):
+            self.assertEqual([(c["quote"], c["ok"]) for c in check_quotes(answer, passages)],
+                             [(quote, True) for quote in quotes], answer)
+
+    def test_the_mark_that_closes_english_opens_no_swedish_quotation(self):
+        self.assertEqual(self.check('They “cross the glimmer sea” [1], and eat ”moonberries'
+                                    ' and nothing else” [2].'),
+                         [("cross the glimmer sea", [1], 1, True),
+                          ("moonberries and nothing else", [2], 2, True)])
+        # Nor does a German quotation run across a Swedish one to a later «.
+        self.assertEqual([c[0] for c in self.check(
+            "»cross the glimmer sea» [1] och «eat moonberries and nothing» [2]")],
+            ["cross the glimmer sea", "eat moonberries and nothing"])
+
     def test_a_quotation_that_quotes_inside_itself_is_read_whole(self):
         # Cut at the inner closing mark, only its first half was checked, and its
         # citation was lost.

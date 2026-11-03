@@ -802,6 +802,25 @@ class Folding(unittest.TestCase):
         # Symbols stay, as in GoldenDict.
         self.assertEqual(fold("C++"), "c++")
 
+    def test_marks_that_make_another_letter_count(self):
+        # NFKD takes them off as it takes off an accent, and words that differ only by
+        # them shared a key: glass and crow, my and my in the plural.
+        for one, other in (("ガラス", "カラス"), ("ばか", "はか"), ("パン", "ハン"),
+                           ("ぶどう", "ふとう"), ("мой", "мои"), ("ўсё", "усё")):
+            self.assertNotEqual(fold(one), fold(other), one)
+        self.assertEqual(fold("ГЛАВНЫЙ"), fold("главный"))
+        self.assertEqual(fold("ｶﾞﾗｽ"), fold("ガラス"))            # half-width kana
+        self.assertEqual(fold("ёж"), fold("еж"))                   # ё is often written е
+        self.assertEqual(fold("Română"), fold("romana"))           # a Latin breve is an accent
+        self.assertEqual(fold("й̣"), fold("й"))               # and so is a dot below
+        # The iota subscript is a mark too, which case folding made a letter of.
+        self.assertEqual(fold("ᾳ"), "α")
+        self.assertEqual(fold("ᾼ"), "α")
+        self.assertEqual(dictionaries.plain("Мой  ГЛАЗ"), "мой глаз")
+        for word in ("ガラス", "Мой", "ᾼ", "ｶﾞﾗｽ", "Română"):
+            self.assertEqual(fold(fold(word)), fold(word), word)
+            self.assertEqual(fold(dictionaries.plain(word)), fold(word), word)
+
     def test_a_headword_of_punctuation_alone_keeps_a_key(self):
         self.assertEqual(fold("!"), "!")
         self.assertEqual(fold("?!"), "?!")
@@ -897,6 +916,17 @@ class TypographyLookups(unittest.TestCase):
 
     def test_a_headword_of_punctuation_alone_is_found(self):
         self.assertEqual(self.headwords("?!"), ["?!"])
+
+    def test_a_word_is_not_found_under_one_that_differs_by_a_letters_mark(self):
+        with open(os.path.join(self.folder, "marks.dsl"), "w", encoding="utf-8") as f:
+            f.write('#NAME "Marks"\n\nмой\n\t[m1]made-up sense of my\n'
+                    "мои\n\t[m1]made-up sense of my, in the plural\n"
+                    "ガラス\n\t[m1]made-up sense of glass\n"
+                    "カラス\n\t[m1]made-up sense of crow\n")
+        self.assertEqual(self.headwords("МОЙ"), ["мой"])
+        self.assertEqual(self.headwords("мои"), ["мои"])
+        self.assertEqual(self.headwords("ｶﾞﾗｽ"), ["ガラス"])
+        self.assertEqual(self.headwords("カラス"), ["カラス"])
 
     def test_a_words_own_entries_come_before_those_it_only_folds_to(self):
         self.assertEqual(self.headwords("well"), ["well", "we'll"])

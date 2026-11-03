@@ -8,10 +8,13 @@ that is an indexed query.
 
 Keys are folded the way GoldenDict folds them: case and diacritics do not matter, and
 neither do punctuation and spacing, so "Cafe" finds "café", "email" finds "e-mail", and
-"don’t", copied from a web page with its typographic apostrophe, finds "don't".
+"don’t", copied from a web page with its typographic apostrophe, finds "don't". The
+marks that make another letter of the one they are on do matter: ガラス is not カラス,
+nor мой мои.
 """
 
 import os
+import re
 import sqlite3
 import struct
 import threading
@@ -32,10 +35,11 @@ INDEX_FILE = "dictionaries.sqlite"
 THE_FILES_FAULT = (ValueError, LookupError, EOFError, OverflowError, struct.error,
                    zlib.error, DictzipError)
 # Part of every dictionary's signature, so raised whenever the index is made
-# differently - 3: keys without punctuation or spacing (fold) - and each dictionary is
-# then indexed again, once, at its next lookup. Raised too when a reader learns to read
-# what it could not, so that the dictionaries filed as failed are tried again.
-SCHEMA = 3
+# differently - 3: keys without punctuation or spacing (fold); 4: with the marks that
+# make another letter - and each dictionary is then indexed again, once, at its next
+# lookup. Raised too when a reader learns to read what it could not, so that the
+# dictionaries filed as failed are tried again.
+SCHEMA = 4
 
 # Entries shown per dictionary for one word. A homograph-rich word ("set", "run") has a
 # dozen in some dictionaries; past this many they are rarely the one wanted.
@@ -58,6 +62,30 @@ _IGNORED = {"Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "Zs", "Zl", "Zp", "Cc", "C
 # Typography that Unicode does not count as punctuation: the modifier letter
 # apostrophe, the grave accent typed for one, the minus sign typed for a hyphen.
 _IGNORED_TOO = set("ʼ`−")
+# Marks that make another letter of the one they are on, so that a word is another
+# word without them, though NFKD takes them off as it takes off an accent: the kana
+# voicing marks - ガラス, glass, is not カラス, crow, nor ばか はか - and the breve on
+# a Cyrillic letter - мой, my, is not мои, my in the plural; nor is Belarusian ў у.
+# They stay in a key; every other mark goes, the breve on a Latin letter with them.
+_VOICING = "゙゚"
+_BREVE = "̆"
+_KEPT_MARKS = set(_VOICING + _BREVE)
+_LATIN_BREVE = re.compile(f"(?<![Ѐ-ԯ]){_BREVE}")
+# The iota subscript. A mark, but one that casefold() makes a letter of: ᾳ was "αι".
+_YPOGEGRAMMENI = "ͅ"
+
+
+class _MarkTable(dict):
+    """str.translate's table taking every mark off but _KEPT_MARKS."""
+
+    def __missing__(self, code):
+        char = chr(code)
+        value = None if unicodedata.combining(char) and char not in _KEPT_MARKS else code
+        self[code] = value
+        return value
+
+
+_MARKS = _MarkTable()
 
 
 class _KeyTable(dict):
@@ -65,12 +93,15 @@ class _KeyTable(dict):
     has a million of them, and a key is made of every headword in every dictionary.
     One of _LETTERS becomes its plain letters; an accent, a punctuation mark, a space
     or a formatting character goes; anything else - the letters and digits of every
-    script, and symbols, which GoldenDict keeps too ("C++") - stays as it is."""
+    script, the marks _bare() leaves on, and symbols, which GoldenDict keeps too ("C++")
+    - stays as it is."""
 
     def __missing__(self, code):
         char = chr(code)
         if char in _LETTERS:
             value = _LETTERS[char]
+        elif char in _KEPT_MARKS:
+            value = code
         elif (char in _IGNORED_TOO or unicodedata.combining(char)
               or unicodedata.category(char) in _IGNORED):
             value = None
@@ -83,14 +114,27 @@ class _KeyTable(dict):
 _KEY = _KeyTable()
 
 
+def _bare(text):
+    """`text` decomposed (NFKD), without the iota subscript, and with a breve only on a
+    Cyrillic letter: where it has one at all, every other mark is taken off first, so
+    that each breve follows the letter it is on. What is left of the marks to go goes
+    later, with the punctuation (see _KEY). All in str methods and one regular
+    expression: a key is made of every headword in every dictionary."""
+    text = unicodedata.normalize("NFKD", text).replace(_YPOGEGRAMMENI, "")
+    if _BREVE in text:
+        text = _LATIN_BREVE.sub("", text.translate(_MARKS))
+    return text
+
+
 def plain(word):
     """`word` with case, accents, typography and spacing evened out, and nothing else:
     "Don’t  Stop" is "don't stop". What a lookup says it found, what tells a word's own
     entries from those it only folds to, and the key of a headword that is nothing but
     punctuation."""
-    text = unicodedata.normalize("NFKD", (word or "").translate(_TYPOGRAPHY)).casefold()
-    text = "".join(_LETTERS.get(c, c) for c in text if not unicodedata.combining(c))
-    return " ".join(text.split())
+    text = _bare((word or "").translate(_TYPOGRAPHY)).casefold()
+    text = "".join(_LETTERS.get(c, c) for c in text
+                   if c in _KEPT_MARKS or not unicodedata.combining(c))
+    return unicodedata.normalize("NFC", " ".join(text.split()))
 
 
 def fold(word):
@@ -101,10 +145,11 @@ def fold(word):
     dictionary spells plainly - "don’t" and "o’clock", with their typographic
     apostrophes, find "don't" and "o'clock". The letters NFKD leaves whole are spelt
     out ("encyclopædia" is "encyclopaedia", "Łódź" is "lodz"); letters and digits are
-    kept in every script. A headword of punctuation alone ("!", "…") would have no key
-    at all that way, and keeps its plain() one.
+    kept in every script, and so are the marks that make another letter (_KEPT_MARKS),
+    composed again with theirs: "ガ", not "カ" and a mark. A headword of punctuation
+    alone ("!", "…") would have no key at all that way, and keeps its plain() one.
     """
-    text = unicodedata.normalize("NFKD", word or "").casefold().translate(_KEY)
+    text = unicodedata.normalize("NFC", _bare(word or "").casefold().translate(_KEY))
     return text or plain(word)
 
 

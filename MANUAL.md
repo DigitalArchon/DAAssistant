@@ -631,11 +631,13 @@ worth, to answer from and quote.
   "e-mail" finds "email", "Łódź" finds "Lodz" and "encyclopædia" finds "encyclopaedia",
   and a word copied from a web page or a PDF with its curly apostrophe or long dash
   ("don’t", "o’clock") finds the plain one. Letters and digits count in every script, and
-  a headword that is nothing but punctuation ("?!") is found as written. A word's own
-  entries come before those it only matches loosely ("well" before "we'll"). DSL
-  headwords are found with or without their optional parts, and a common inflection
-  falls back to its stem ("studies" -> "study"). With no match, headwords starting with
-  what you typed are offered instead.
+  so do the marks that make another letter of theirs, which are not accents: the kana
+  voicing marks (ガラス is not カラス) and the breve of the Cyrillic й and ў (мой is not
+  мои), while ё is found as е, as Russian is often written. A headword that is nothing
+  but punctuation ("?!") is found as written. A word's own entries come before those it
+  only matches loosely ("well" before "we'll"). DSL headwords are found with or without
+  their optional parts, and a common inflection falls back to its stem ("studies" ->
+  "study"). With no match, headwords starting with what you typed are offered instead.
 - **Questions wait for a lookup**: one sent while a lookup is still running waits for it,
   so that its answer lands on the page it was asked about.
 - The word comes from the clipboard when it holds a word or a short phrase, and is

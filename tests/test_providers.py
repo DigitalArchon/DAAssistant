@@ -575,6 +575,21 @@ class ASettingsFileFromBeforeProvidersHadNames(unittest.TestCase):
         self.assertEqual(config.ollama_url, "http://192.168.1.20:11434")
         self.assertIsNone(providers.unready(config))            # no key wanted
 
+    def test_ollama_on_ones_own_network_with_the_key_3_0_wanted_is_still_ollama(self):
+        # 3.0 to 3.2 would not start without a key, whatever the address.
+        for url, root in (("http://192.168.1.20:11434/v1/chat/completions",
+                           "http://192.168.1.20:11434"),
+                          ("http://localhost:11434/v1/chat/completions",
+                           "http://localhost:11434")):
+            with self.subTest(url):
+                config, keychain = self.load({"api_url": url}, key="sk-old")
+                for key in ("text_provider", "premium_text_provider", "vision_provider"):
+                    self.assertEqual(getattr(config, key), "ollama", key)
+                self.assertEqual(config.ollama_url, root)
+                self.assertEqual(config.api_key, "sk-old")       # NanoGPT's, as before
+                self.assertEqual(config.custom_api_key, "")
+                self.assertIsNone(providers.unready(config))
+
     def test_a_server_on_ollamas_port_with_a_key_of_its_own_keeps_it(self):
         url = "https://llm.myhome.example:11434/v1/chat/completions"
         config, keychain = self.load({"api_url": url, "web_search_enabled": True},

@@ -15,8 +15,9 @@ import math
 import os
 import stat
 import tempfile
+from urllib.parse import urlparse
 
-from . import providers
+from . import netguard, providers
 from .keychain import KeychainError, MemoryKeychain, SystemKeychain
 
 DEFAULTS = {
@@ -251,6 +252,12 @@ def _coerce(default, value):
     return value
 
 
+def _plain_local(api_url):
+    """Whether `api_url` is plain http to this machine or its own network."""
+    parsed = urlparse((api_url or "").strip())
+    return parsed.scheme == "http" and netguard.is_local(parsed.hostname)
+
+
 class Config:
     """Settings, persisted to JSON.
 
@@ -406,11 +413,13 @@ class Config:
         provider, address = providers.legacy(api_url)
         if provider == providers.NANOGPT:
             return False
-        if provider == providers.OLLAMA and self.api_key:
+        if provider == providers.OLLAMA and self.api_key and not _plain_local(api_url):
             # Ollama takes no key, and a server that wanted one - on Ollama's port, but
             # behind https with a key of its own - is an endpoint of another kind. Named
             # Ollama, its key stayed NanoGPT's, and went to nano-gpt.com with the next
-            # web search or model list.
+            # web search or model list. Not so plain http on one's own network: 3.0 to
+            # 3.2 wanted a key whatever the address, so Ollama's was given one - NanoGPT's
+            # own, or one made up - and is still Ollama, with the key left as NanoGPT's.
             provider, address = providers.CUSTOM, (api_url or "").strip()
         kind = providers.KINDS[provider]
         for _model_key, provider_key in providers.ROLES.values():

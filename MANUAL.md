@@ -107,7 +107,9 @@ cannot be used, Send is held and the dialog says why.
   answering model.
 - **Translate image selection**: the vision model transcribes the region, then the
   answering model translates the result. Those are different jobs — the cheap, accurate
-  OCR models are usually poor translators — so they get different models.
+  OCR models are usually poor translators — so they get different models. If the
+  transcription fails or is stopped, Ask again, or your next message, transcribes the
+  region again first.
 - **Query image selection**: answered by the answering model directly, as below.
 
 **The model menu** in the chat window's header names the model your next message goes

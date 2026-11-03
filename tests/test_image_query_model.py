@@ -580,6 +580,40 @@ class AConversationFollowsItsModelMenu(unittest.TestCase):
         finally:
             window.destroy()
 
+    def test_a_reading_for_a_model_that_cannot_see_is_made_again_after_it_failed(self):
+        from assistant.llm import LLMError
+
+        class FailsFirstReading(RecordingClient):
+            failed = False
+
+            def complete(self, model, messages, **kwargs):
+                if not self.failed:
+                    self.failed = True
+                    raise LLMError("HTTP 503: overloaded", model=model)
+                return super().complete(model, messages, **kwargs)
+
+        self.client = self.app.client = FailsFirstReading(
+            transcription="## Text\nOK\n\n## Description\nA dialog")
+        question = "what is this?"
+        window = ChatWindow(self.app, "Query image", [
+            {"role": "user", "content": question,
+             "display": f"{question}\n\n_Reading the image with {OCR_MODEL}…_"}],
+            image_base64="IMAGEDATA", image_first=False, autostart=True,
+            preflight=self.app._describe_preflight("IMAGEDATA", question))
+        try:
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and window.conversation[-1].get("error")))
+            window._ask_again("text")
+            self.assertTrue(self._answered(window, 2))
+            [read] = [c for c in self.client.calls if c["kind"] == "complete"]
+            self.assertEqual(read["prompt"], prompts.IMAGE_BRIEF)
+            [answer] = self.streams()
+            self.assertFalse(answer["image"])
+            self.assertIn("A dialog", answer["messages"][-1]["content"])
+            self.assertIn("Read from the image by", window.conversation[0]["display"])
+        finally:
+            window.destroy()
+
     def test_asking_again_replaces_the_answer_in_the_history_but_not_on_screen(self):
         window = self._window(image_base64=None, autostart=True)
         try:

@@ -75,21 +75,24 @@ class TwoStageTranslate(unittest.TestCase):
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _run_until(self, predicate, timeout=20):
-        expired = []
-        source = GLib.timeout_add_seconds(
-            timeout, lambda: (expired.append(True), Gtk.main_quit(), False)[-1])
+        """Turn the main loop until `predicate()`, for up to `timeout` seconds -
+        entering it again if something else quits it first, as a timer another test
+        left can, which used to read here as done."""
+        import time
+        deadline = time.monotonic() + timeout
 
         def poll():
-            if predicate():
+            if predicate() or time.monotonic() >= deadline:
                 Gtk.main_quit()
-                return False
             return True
 
-        GLib.timeout_add(80, poll)
-        Gtk.main()
-        if not expired:
+        source = GLib.timeout_add(40, poll)
+        try:
+            while not predicate() and time.monotonic() < deadline:
+                Gtk.main()
+        finally:
             GLib.source_remove(source)
-        return not expired
+        return predicate()
 
     def _preflight(self, image_b64="IMAGEDATA"):
         """Mirrors Assistant._transcribe_preflight without building a full tray app."""
@@ -177,6 +180,118 @@ class TwoStageTranslate(unittest.TestCase):
                                  if c["kind"] == "complete"), 1)
         finally:
             window.destroy()
+
+
+class ReadsSecondTime(RecordingClient):
+    """A vision model that fails its first transcription - or, `stall`, takes it until
+    Stop - and makes the second. `readings` counts the transcriptions: a follow-up to a
+    model that cannot see has the image described for it once as well."""
+
+    def __init__(self, stall=False):
+        super().__init__()
+        self.stall = stall
+        self.readings = 0
+        self.reading = threading.Event()
+
+    def complete(self, model, messages, image_base64=None, cancel=None, **kwargs):
+        from assistant import prompts
+        if messages[-1]["content"] != prompts.OCR:
+            return super().complete(model, messages, image_base64, cancel, **kwargs)
+        self.readings += 1
+        if self.readings == 1:
+            self.reading.set()
+            if self.stall:
+                cancel.wait(10)
+                return None
+            from assistant.llm import LLMError
+            raise LLMError("HTTP 503: overloaded", model=model)
+        return super().complete(model, messages, image_base64, cancel, **kwargs)
+
+
+class ATranscriptionThatNeverCameIsMadeAgain(unittest.TestCase):
+    """OCR + Translate's first request is two: the vision model reads the selection,
+    then the answering model translates what it read. When the reading fails or is
+    stopped there is nothing yet to translate, and the turn waiting for it is empty: Ask
+    again sent that, and a message typed went out on its own under the translation
+    instructions - "try again", translated."""
+
+    setUp = TwoStageTranslate.setUp
+    tearDown = TwoStageTranslate.tearDown
+    _run_until = TwoStageTranslate._run_until
+    _preflight = TwoStageTranslate._preflight
+
+    def _window(self, client):
+        from assistant import prompts
+        self.client = client
+        window = ChatWindow(StubApp(self.config, client), "OCR + Translate",
+                            [{"role": "user", "content": "",
+                              "display": "_Reading the selection…_"}],
+                            image_base64="IMAGEDATA", image_first=False, autostart=True,
+                            web_search=False, preflight=self._preflight(),
+                            system=prompts.translate_system("German"))
+        self.addCleanup(window.destroy)
+        return window
+
+    def _failed(self, window):
+        self.assertTrue(self._run_until(lambda: window._cancel is None
+                                        and window.conversation[-1].get("error")))
+
+    def _translations(self):
+        return [c for c in self.client.calls if c["kind"] == "stream"]
+
+    def _settled(self, window):
+        self.assertTrue(self._run_until(lambda: window._cancel is None
+                                        and len(self._translations()) >= 1))
+
+    def test_ask_again_reads_the_selection_again_then_translates_it(self):
+        window = self._window(ReadsSecondTime())
+        self._failed(window)
+        self.assertEqual(self._translations(), [])
+        window._ask_again("text")
+        self._settled(window)
+        [translation] = self._translations()
+        users = [m for m in translation["messages"] if m["role"] == "user"]
+        self.assertEqual([m["content"] for m in users], ["TRANSCRIBED TEXT FROM IMAGE"])
+        self.assertFalse(translation["image"], "the translation is given the text alone")
+        self.assertEqual(window.conversation[0]["display"], "translating")
+
+    def test_a_message_typed_instead_goes_with_the_text_read_again(self):
+        window = self._window(ReadsSecondTime())
+        self._failed(window)
+        window.entry.get_buffer().set_text("try again")
+        window._send()
+        self._settled(window)
+        [translation] = self._translations()
+        [user] = [m for m in translation["messages"] if m["role"] == "user"]
+        self.assertTrue(user["content"].startswith("TRANSCRIBED TEXT FROM IMAGE"))
+        self.assertIn("try again", user["content"])
+        # The reading goes on the turn it was made for, not the one typed.
+        self.assertEqual(window.conversation[0]["display"], "translating")
+        self.assertEqual(window.conversation[-2]["content"], "try again")
+
+    def test_so_is_one_stopped_part_way(self):
+        client = ReadsSecondTime(stall=True)
+        window = self._window(client)
+        self.assertTrue(self._run_until(client.reading.is_set))
+        window._stop()
+        window._ask_again("text")
+        self._settled(window)
+        self.assertEqual(client.readings, 2)
+        [translation] = self._translations()
+        self.assertEqual(translation["messages"][-1]["content"],
+                         "TRANSCRIBED TEXT FROM IMAGE")
+
+    def test_once_made_it_is_not_made_again(self):
+        client = ReadsSecondTime()
+        window = self._window(client)
+        self._failed(window)
+        window._ask_again("text")
+        self._settled(window)
+        window.entry.get_buffer().set_text("why that wording?")
+        window._send()
+        self.assertTrue(self._run_until(lambda: window._cancel is None
+                                        and len(self._translations()) >= 2))
+        self.assertEqual(client.readings, 2)
 
 
 class StallingClient(RecordingClient):

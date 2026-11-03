@@ -339,8 +339,11 @@ class ChatWindow(Gtk.Window):
         self.system = system
         # Optional first-request step run before the model is called, e.g. transcribing
         # an image with the vision model so the text model can translate the result.
-        # Signature: preflight(cancel, status) -> {"content": ..., "display": ...}
+        # Signature: preflight(cancel, status) -> {"content": ..., "display": ...}, for
+        # the turn it is made for: the question the window opened with.
         self._preflight = preflight
+        self._preflight_turn = next((turn for turn in reversed(self.conversation)
+                                     if turn.get("role") == "user"), None)
         # Privacy Mode (assistant/privacy.py): the PrivacySession this conversation
         # started with, or None. It is never replaced or cleared - nothing in this window
         # reads config.privacy_mode - so a private conversation stays on its attested
@@ -1667,22 +1670,25 @@ class ChatWindow(Gtk.Window):
             self.status.set_text(message)
         return False
 
-    def _apply_preflight(self, update):
-        """Fold the preflight result into the visible transcript.
+    def _apply_preflight(self, update, turn):
+        """Fold the preflight result into the visible transcript, on `turn`, the one it
+        was made for - not the latest, which after a failed first attempt is what was
+        typed since. The preflight has done its work, and is not made again.
 
         `content` becomes what follow-up turns carry as context; `display` is what the
         user sees, so the window shows the transcribed text rather than the machinery.
         """
         if self._destroyed:
             return False
-        for turn in reversed(self.conversation):
-            if turn["role"] == "user":
-                turn["content"] = update.get("content", turn["content"])
-                if update.get("display"):
-                    turn["display"] = update["display"]
-                if update.get("search_query"):
-                    turn["search_query"] = update["search_query"]
-                break
+        self._preflight = None
+        if not update:
+            return False
+        if any(t is turn for t in self.conversation):
+            turn["content"] = update.get("content", turn["content"])
+            if update.get("display"):
+                turn["display"] = update["display"]
+            if update.get("search_query"):
+                turn["search_query"] = update["search_query"]
         if update.get("reading"):
             self.reading = update["reading"]
             self._reading_in_history = True
@@ -1737,10 +1743,19 @@ class ChatWindow(Gtk.Window):
 
         self._replacing = list(replacing)
         self._resume_following()
-        preflight = self._preflight
-        self._preflight = None      # first request only; follow-ups are plain text turns
+        # The first request's preflight, kept until it has done its work
+        # (_apply_preflight); follow-ups are plain text turns. One that failed, or was
+        # stopped, is made again for the next request - Ask again or a message typed -
+        # which otherwise went out with the turn still waiting for it: empty, or holding
+        # only what was typed, so that a translation translated "try again".
+        preflight, target = self._preflight, self._preflight_turn
+        if preflight is not None and not any(turn is target for turn in self.conversation):
+            preflight = self._preflight = None      # cleared away with its turn
         first = self._first_request
         self._first_request = False
+        # Made again, the first request goes as the first did: with the capture only if
+        # the operation said so, and no second reading of it beside the preflight's.
+        redo = preflight is not None and not first
 
         privacy = self.privacy
         model = self._first_model if first and self._first_model else self.current_model
@@ -1755,7 +1770,7 @@ class ChatWindow(Gtk.Window):
         # ones if their model can see, and otherwise the vision model's reading of it.
         image, need_reading, reading_in_system = None, False, False
         if self.image_base64:
-            if first:
+            if first or redo:
                 image = self.image_base64 if self._image_first else None
             elif catalogue.accepts_images(self.config, model):
                 image = self.image_base64
@@ -1790,11 +1805,17 @@ class ChatWindow(Gtk.Window):
                              else "Searching the web…" if web_search else "Thinking…")
         self._render(full=True)
 
-        # Snapshot the history here; the worker mutates its own copy so a preflight
-        # rewrite cannot race the main thread.
+        # Snapshot the history here; the worker works on its own copy so a preflight
+        # rewrite cannot race the main thread. With a preflight, the turns themselves
+        # too, for the worker to put what it made into the turn it was made for - the
+        # first, whatever has been typed since - and the history built again from them.
         # search_query rides along when a preflight built one; strip_internal_keys drops
         # it before the request, but the search reads it first.
         history = history_for(self.conversation)
+        turns = at = None
+        if preflight is not None:
+            turns = [dict(turn) for turn in self.conversation]
+            at = next(i for i, turn in enumerate(self.conversation) if turn is target)
         system = self._request_system()
         known_reading = self.reading
         prepared = self._prepare_answer()
@@ -1820,6 +1841,7 @@ class ChatWindow(Gtk.Window):
             GLib.idle_add(self._on_stream_progress, full_text, cancel)
 
         def worker():
+            nonlocal history
             stage = "answer"
             reading = known_reading
             try:
@@ -1838,13 +1860,12 @@ class ChatWindow(Gtk.Window):
                                 "⚠ Transcription · signature mismatch", "bad",
                                 read.detail))
                     if update and update.get("content"):
-                        for turn in reversed(history):
-                            if turn["role"] == "user":
-                                turn["content"] = update["content"]
-                                if update.get("search_query"):
-                                    turn["search_query"] = update["search_query"]
-                                break
-                        GLib.idle_add(self._apply_preflight, update)
+                        turns[at]["content"] = update["content"]
+                        if update.get("search_query"):
+                            turns[at]["search_query"] = update["search_query"]
+                        history = history_for(turns)
+                    # Done, whatever it found: not made again.
+                    GLib.idle_add(self._apply_preflight, update or {}, target)
                     GLib.idle_add(self._set_status,
                                   "Searching the web…" if web_search else "Thinking…")
                 if need_reading:

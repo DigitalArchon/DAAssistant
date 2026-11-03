@@ -870,7 +870,10 @@ class ChatWindow(Gtk.Window):
             detail = (f"Only {' and '.join(session.models())}, each attested before "
                       f"anything is sent to it. Web search is off.")
         else:
-            partial = any(a.level != "full" or a.latest_release for a in attested)
+            # Amber for whatever Strict would have refused (Attestation.fell_short): an
+            # end-to-end encrypted enclave whose release could not be checked against
+            # the latest is "full" and names no newer release, and went green.
+            partial = any(a.fell_short for a in attested)
             tone = "warn" if partial else "ok"
             icon = "channel-secure-symbolic"
             title = " · ".join(dict.fromkeys(
@@ -879,11 +882,10 @@ class ChatWindow(Gtk.Window):
             lines = []
             for a in attested:
                 if a.kind == privacy_module.E2EE:
-                    older = (f"; an older release than {a.latest_release}"
-                             if a.latest_release else "")
+                    short = "".join(f"; {what}" for what in a.fell_short)
                     lines.append(f"{a.model}: sealed on this machine to {a.enclave} "
                                  f"({a.hardware or 'attested hardware'}, {a.release}"
-                                 f"{older}). nano-gpt relays ciphertext only.")
+                                 f"{short}). nano-gpt relays ciphertext only.")
                 else:
                     lines.append(f"{a.model}: {a.summary or a.detail}.")
             waiting = [m for m in session.models() if m not in session.attestations]

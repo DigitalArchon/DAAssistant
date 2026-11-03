@@ -1699,6 +1699,43 @@ class ChatStaysPrivate(TempConfig):
         finally:
             window.destroy()
 
+    def test_an_enclave_that_fell_short_turns_the_banner_amber_and_says_how(self):
+        """A private/ enclave whose release could not be checked against Tinfoil's
+        latest proved less than it could - Strict refuses it - and its banner was green
+        all the same, naming nothing: it went by the attestation's level and a newer
+        release named, not by what fell short."""
+        from unittest import mock
+        from assistant.ui.chat import ChatWindow
+        model = "private/glm-5-3"
+
+        class Unchecked:
+            def check_offered(self, model):
+                pass
+
+            def attest(self, model):
+                return privacy.Attestation(model=model, kind=privacy.E2EE,
+                                           enclave="router-0.tinfoil.sh",
+                                           hardware="AMD SEV-SNP", release="v0.0.155",
+                                           release_checked=False)
+
+        patch = mock.patch.object(sealed, "available", return_value=(True, ""))
+        patch.start()
+        self.addCleanup(patch.stop)
+        session = PrivacySession(API_URL, "k", model, model, uses=("text",),
+                                 sealed_factory=lambda *a: Unchecked())
+        session.ensure(model)
+        window = ChatWindow(StubApp(self.config, RecordingClient()), "Query text",
+                            [{"role": "user", "content": "p", "display": "Q"}],
+                            privacy=session)
+        try:
+            context = window.privacy_banner.get_style_context()
+            self.assertTrue(context.has_class("warn"))
+            self.assertFalse(context.has_class("ok"))
+            self.assertIn("its release not checked against the latest",
+                          window._privacy_detail.get_text())
+        finally:
+            window.destroy()
+
     def test_a_failure_names_the_model_and_its_part(self):
         from assistant.ui.chat import ChatWindow
 

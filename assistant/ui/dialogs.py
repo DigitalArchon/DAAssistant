@@ -1301,7 +1301,8 @@ class SettingsDialog(Gtk.Dialog):
         from ..reference.encyclopedia import AUDIENCE_NAMES
         asking = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.encyclopedia_strict = Gtk.CheckButton.new_with_label(
-            "Ask Encyclopedia answers strictly from the encyclopedia")
+            "Ask Encyclopedia: Strict - the model is told to answer from the encyclopedia "
+            "alone")
         self.encyclopedia_strict.set_active(bool(self.config.encyclopedia_strict))
         self.encyclopedia_strict.set_tooltip_text(
             "The default for new Ask Encyclopedia windows; each can switch it. Strict: "

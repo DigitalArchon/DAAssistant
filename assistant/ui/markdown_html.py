@@ -11,6 +11,7 @@ there is no reason to hand-roll it.
 import base64
 import html
 import re
+from collections import Counter
 from html.parser import HTMLParser
 
 import markdown
@@ -122,6 +123,12 @@ class _Sanitiser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts = []
         self._open = []
+        # How many of each element are open, and of NO_LINKS's, kept beside the stack:
+        # asked of the stack itself, every end tag and every run of text went through
+        # it, which for an answer nested thousands deep was seconds per redraw - and a
+        # streaming answer is redrawn on the main loop several times a second.
+        self._counts = Counter()
+        self._no_links = 0
         self._suppress = 0
         # The link schemes allowed in href: the web, unless the caller adds its own -
         # a dictionary's cross-references are lookup: links the chat window follows.
@@ -156,7 +163,17 @@ class _Sanitiser(HTMLParser):
             self.parts.append(f"<{tag}{self._attrs(attrs)}>")
             return
         self._open.append(tag)
+        self._counts[tag] += 1
+        self._no_links += tag in self.NO_LINKS
         self.parts.append(f"<{tag}{self._attrs(attrs)}>")
+
+    def _close_last(self):
+        """Close the innermost open element; its tag."""
+        tag = self._open.pop()
+        self._counts[tag] -= 1
+        self._no_links -= tag in self.NO_LINKS
+        self.parts.append(f"</{tag}>")
+        return tag
 
     def handle_endtag(self, tag):
         tag = tag.lower()
@@ -165,13 +182,10 @@ class _Sanitiser(HTMLParser):
             return
         if tag not in self.ALLOWED or tag in self.VOID:
             return
-        if tag in self._open:
+        if self._counts[tag]:
             # Close anything left dangling so malformed output cannot break the layout.
-            while self._open:
-                current = self._open.pop()
-                self.parts.append(f"</{current}>")
-                if current == tag:
-                    break
+            while self._close_last() != tag:
+                pass
 
     def handle_startendtag(self, tag, attrs):
         # <br/> is a <br>. Any other element written self-closing - <a href=…/>, <div/>,
@@ -188,14 +202,14 @@ class _Sanitiser(HTMLParser):
     def handle_data(self, data):
         if self._suppress:
             return
-        if self.NO_LINKS.intersection(self._open):
+        if self._no_links:
             self.parts.append(html.escape(data, quote=False))
         else:
             self.parts.append(linkify(data))
 
     def result(self):
         while self._open:
-            self.parts.append(f"</{self._open.pop()}>")
+            self._close_last()
         return "".join(self.parts)
 
 

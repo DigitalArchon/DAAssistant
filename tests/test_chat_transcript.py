@@ -91,6 +91,34 @@ class SelfClosingTagsAreClosed(unittest.TestCase):
         self.assertEqual(unbalanced(html), [])
 
 
+class DeepNestingCostsLittle(unittest.TestCase):
+    """A streaming answer is rendered whole on the main loop several times a second, so
+    the sanitiser's cost is the window's responsiveness. Asking the stack of open
+    elements what was open made it quadratic in their depth: 8,000 nested tags took a
+    second a redraw."""
+
+    DEPTH = 20000
+
+    def test_thousands_deep_is_still_quick(self):
+        import time
+        # A run of text inside every element, and an end tag for none of them: each
+        # used to search the whole stack.
+        raw = "<b>w " * self.DEPTH + "</i>" * self.DEPTH
+        started = time.perf_counter()
+        html = markdown_html.sanitise(raw)
+        self.assertLess(time.perf_counter() - started, 1.5)
+        self.assertEqual(html.count("</b>"), self.DEPTH)
+        self.assertEqual(unbalanced(html), [])
+
+    def test_text_in_a_link_or_code_is_still_not_linked(self):
+        html = markdown_html.sanitise('<a href="https://a.test/"><b>see https://b.test/'
+                                      '</b></a> and https://c.test/ <code>https://d.test/'
+                                      '</code>')
+        self.assertNotIn('href="https://b.test/"', html)
+        self.assertIn('href="https://c.test/"', html)
+        self.assertNotIn('href="https://d.test/"', html)
+
+
 def run_until(predicate, timeout=15):
     state = {"done": False}
 

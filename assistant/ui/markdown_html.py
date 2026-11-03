@@ -174,8 +174,16 @@ class _Sanitiser(HTMLParser):
                     break
 
     def handle_startendtag(self, tag, attrs):
-        if tag.lower() in self.ALLOWED:
-            self.parts.append(f"<{tag.lower()}{self._attrs(attrs)}>")
+        # <br/> is a <br>. Any other element written self-closing - <a href=…/>, <div/>,
+        # <b/> - is empty, as it would be in XHTML, and is closed here: HTML ignores the
+        # slash, and as a bare start tag it stayed open to the end of the answer, and
+        # past it - the rest of the conversation one link, or nested in the answer.
+        tag = tag.lower()
+        if tag not in self.ALLOWED:
+            return
+        self.parts.append(f"<{tag}{self._attrs(attrs)}>")
+        if tag not in self.VOID:
+            self.parts.append(f"</{tag}>")
 
     def handle_data(self, data):
         if self._suppress:

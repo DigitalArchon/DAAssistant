@@ -1340,11 +1340,18 @@ class ChatWindow(Gtk.Window):
 
         if full:
             html = "".join(self._turn_html(t) for t in turns)
+            # #end is put back at the foot of the page if it is not there: a turn whose
+            # markup had wrapped it went with the turns, and the redraw that then found
+            # no #end threw, leaving the page blank.
             self._js(
+                "(function(){"
                 "document.querySelectorAll('body > .turn').forEach(function(t){t.remove();});"
-                "document.getElementById('end').insertAdjacentHTML('beforebegin',"
-                f"{json.dumps(html)});"
-                + ("window.followEnd();" if self._streaming_text is not None else ""))
+                "var e=document.getElementById('end');"
+                "if(!e||e.parentNode!==document.body){if(e){e.remove();}"
+                "e=document.createElement('div');e.id='end';document.body.appendChild(e);}"
+                f"e.insertAdjacentHTML('beforebegin',{json.dumps(html)});"
+                + ("window.followEnd();" if self._streaming_text is not None else "")
+                + "})();")
             return
 
         # Incremental: replace only the final turn, so streaming does not reflow the

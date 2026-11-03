@@ -210,6 +210,29 @@ def _inside(text, i):
 # between one and either end.
 PART_WORDS = 2
 _COUNTED = re.compile(r"[^\W_]+")
+# Chinese and Japanese leave no spaces between words, nor do Thai, Lao, Khmer and
+# Myanmar, so there words are counted by their letters: two to a word in Chinese and
+# Japanese, three in the others - about as many as a word of theirs has.
+_UNSPACED = ((re.compile(r"[\u3005-\u3007\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf"
+                         r"\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003ffff]"),
+              2),
+             (re.compile(r"[\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff]"), 3))
+
+
+def _word_count(text):
+    """How many words `text` has, as a reader would count them: what stands between
+    spaces - and in a script with none between its words, so many of its letters
+    (_UNSPACED) - never less than one between two spaces."""
+    count = 0
+    for chunk in text.split():
+        words = 0
+        for script, letters in _UNSPACED:
+            words += sum(char.isalnum() for char in script.findall(chunk)) / letters
+            chunk = script.sub(" ", chunk)
+        count += max(1, words + len(chunk.split()))
+    return count
+
+
 # Where one sentence ends and the next begins: a full stop, a question or exclamation
 # mark, then a space and a capital - or a line's end; and the Chinese and Japanese
 # marks, which need neither. A full stop after an initial or an abbreviated title ends
@@ -445,14 +468,14 @@ def check_quotes(answer, passages, question=None, strict=True):
 
     Not everything in quotation marks is quoted from the passages, and what is not is
     left alone - not checked, not marked, not counted among the quotations checked: a
-    word or two, which is a term; a passage's title or section heading, or part of
-    one, which the model is shown in quotation marks (research_context) and names the
-    passage by; and with nothing cited after it, the user's own `question`, or words
-    of it, quoted back, and unless `strict`, what is under the heading "Not from the
-    encyclopedia" (_own_sections), where an answer that is not Strict says what it
-    adds of its own. Either, cited, is said to be the passage's, and is checked. A
-    Strict answer is to have nothing of its own, so nothing in it is set apart: a
-    heading of that kind in it is not taken at its word.
+    word or two (_word_count), which is a term; a passage's title or section heading,
+    or part of one, which the model is shown in quotation marks (research_context)
+    and names the passage by; and with nothing cited after it, the user's own
+    `question`, or words of it, quoted back, and unless `strict`, what is under the
+    heading "Not from the encyclopedia" (_own_sections), where an answer that is not
+    Strict says what it adds of its own. Either, cited, is said to be the passage's,
+    and is checked. A Strict answer is to have nothing of its own, so nothing in it is
+    set apart: a heading of that kind in it is not taken at its word.
     """
     answer = answer or ""
     names = [_Passage(name) for passage in passages
@@ -465,7 +488,7 @@ def check_quotes(answer, passages, question=None, strict=True):
         if not citations and any(start <= match.start() < end for start, end in own):
             continue
         quote = next(part for part in quoted if part is not None).strip()
-        if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
+        if (_word_count(quote) < 3 or any(name.find(quote) for name in names)
                 or (question and not citations and _contains(question, quote))):
             continue
         numbers = cited(citations, len(passages))

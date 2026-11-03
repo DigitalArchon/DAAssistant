@@ -730,6 +730,28 @@ class Quotes(unittest.TestCase):
             self.assertEqual(self.check(answer), [("they fly to the moon", [1], None,
                                                    False)], answer)
 
+    def test_chinese_japanese_and_thai_are_measured_by_their_characters(self):
+        # They leave no spaces between words, so every quotation in them was "a word or
+        # two": never checked, never marked, however wrong.
+        passages = [{"text": "ゾルブラックスは冬ごとにきらめく海を渡る。佐布拉克斯每年冬天穿越闪光之海。"
+                             "ซอร์บแลกซ์ข้ามทะเลระยิบระยับทุกฤดูหนาว"}]
+        for answer, quote, ok in (
+                ("彼らは「ゾルブラックスは冬ごとにきらめく海を渡る」[1]と書いてある。",
+                 "ゾルブラックスは冬ごとにきらめく海を渡る", True),
+                ("彼らは「ゾルブラックスは夏ごとにきらめく海を渡る」[1]と書いてある。",
+                 "ゾルブラックスは夏ごとにきらめく海を渡る", False),
+                ("“佐布拉克斯每年冬天穿越闪光之海”[1]", "佐布拉克斯每年冬天穿越闪光之海", True),
+                ("“佐布拉克斯每年夏天穿越闪光之海”[1]", "佐布拉克斯每年夏天穿越闪光之海", False),
+                ("“ซอร์บแลกซ์ข้ามทะเลระยิบระยับทุกฤดูหนาว” [1]",
+                 "ซอร์บแลกซ์ข้ามทะเลระยิบระยับทุกฤดูหนาว", True),
+                ("“ซอร์บแลกซ์ข้ามทะเลระยิบระยับทุกฤดูร้อน” [1]",
+                 "ซอร์บแลกซ์ข้ามทะเลระยิบระยับทุกฤดูร้อน", False)):
+            checks = check_quotes(answer, passages)
+            self.assertEqual([(c["quote"], c["ok"]) for c in checks], [(quote, ok)], answer)
+        # A word or two in them is still a term.
+        for answer in ("「光の海」[1]", "“闪光之海”[1]", "“ทะเลแสง” [1]"):
+            self.assertEqual(check_quotes(answer, passages), [], answer)
+
     def test_an_apostrophe_does_not_close_a_british_quotation(self):
         passages = [{"text": "The zorblax’s hum is low; the zorblaxes’ songs don’t carry."}]
         for answer, quotes in (

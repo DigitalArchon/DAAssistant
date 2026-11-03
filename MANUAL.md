@@ -115,7 +115,9 @@ to, and switches it at any point: Text, Premium, Vision, or **Other model…** f
 model in the provider's list. Every answer is labelled with the model that wrote it.
 **Ask again with…**, beside Send, asks your last question again with another model, for
 when an answer is not good enough. The earlier answer stays on screen, dimmed, but only
-the new one is carried into the conversation.
+the new one is carried into the conversation. If no new answer comes - an error, an
+empty reply, or Stop before any of it arrived - the earlier one is the conversation's
+again.
 
 The capture stays with every image conversation, whatever model it moves to. A model
 that accepts images is given the image with each message. For one that cannot, the

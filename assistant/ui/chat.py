@@ -382,6 +382,8 @@ class ChatWindow(Gtk.Window):
         self._undo_timer = None
         # Files attached to the next message (attachments.py), until it is sent.
         self._attachments = []
+        # The answers an Ask again is to replace, until its answer has come.
+        self._replacing = []
 
         self.set_default_size(880, 720)
         self.set_position(Gtk.WindowPosition.CENTER)
@@ -1702,11 +1704,23 @@ class ChatWindow(Gtk.Window):
                    default=None)
         if last is None or not self._choose(key):
             return
-        for turn in self.conversation[last + 1:]:
-            if turn["role"] == "assistant" and not turn.get("error"):
-                turn["superseded"] = True
+        replacing = [turn for turn in self.conversation[last + 1:]
+                     if turn["role"] == "assistant" and not turn.get("error")
+                     and not turn.get("superseded")]
+        for turn in replacing:
+            turn["superseded"] = True
         self._render(full=True)
-        self._start_stream()
+        self._start_stream(replacing)
+
+    def _restore_replaced(self):
+        """The answer asked again for never came - an error, nothing at all, or a Stop
+        before a word of it - so the answers it was to replace are the conversation's
+        again, as before. Marked earlier ones for good, the next question went out as
+        though the model had never answered: one turn of both questions, without it."""
+        replacing, self._replacing = self._replacing, []
+        for turn in replacing:
+            turn.pop("superseded", None)
+        return bool(replacing)
 
     def _resume_following(self):
         """A new request: back to the end, wherever the reader had gone, and down with
@@ -1716,9 +1730,12 @@ class ChatWindow(Gtk.Window):
         else:
             self._js("window.resumeFollowing();")
 
-    def _start_stream(self):
+    def _start_stream(self, replacing=()):
+        """Send the conversation for its next answer. `replacing`: the answers this one
+        is asked again for, marked earlier ones until it has come (_restore_replaced)."""
         import threading
 
+        self._replacing = list(replacing)
         self._resume_following()
         preflight = self._preflight
         self._preflight = None      # first request only; follow-ups are plain text turns
@@ -2279,6 +2296,8 @@ class ChatWindow(Gtk.Window):
         # takes up a session that Privacy Mode brought while it was on its way: it came
         # from where it was asked, and was badged as having come from attested models.
         private = self.privacy is not None
+        if partial or result:
+            self._replacing = []        # an answer came, if only part of one: it replaces
         self._finish_stream()
         if cancelled:
             self.status.set_text("Stopped")
@@ -2296,6 +2315,7 @@ class ChatWindow(Gtk.Window):
                         "models."))
                 self._append_turn(turn, replace_placeholder=placeholder)
                 return
+            self._restore_replaced()
             self._render(full=True)      # full redraw drops the placeholder
             return
         if not result:
@@ -2336,10 +2356,13 @@ class ChatWindow(Gtk.Window):
     def _show_error(self, message, placeholder=False):
         self.status.set_text("")
         self._settle_question()
+        restored = self._restore_replaced()
         # Marked so history_for() keeps it out of what is sent upstream.
         self._append_turn({"role": "assistant", "content": f"**Error:** {message}",
                            "error": True},
                           replace_placeholder=placeholder)
+        if restored:
+            self._render(full=True)     # the answers back, no longer marked earlier ones
 
     def _finish_stream(self):
         self._cancel = None

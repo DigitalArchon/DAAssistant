@@ -108,6 +108,22 @@ class OpenConversationsGoPrivate(TempConfig):
                                        and len(window.conversation) >= 2))
         self.assertIs(window.privacy, session)
 
+    def test_an_answer_stopped_on_its_way_is_not_badged_as_private(self):
+        """Privacy Mode came while an ordinary answer streamed; Stop kept what had come,
+        badged "It came only from this conversation's attested models"."""
+        client = GatedClient()
+        window = self.window(client)
+        self.addCleanup(client.release.set)
+        self.assertTrue(self.run_until(lambda: client.calls or window._cancel is not None))
+        session = session_for(FakeNanoGpt())
+        window.go_private(session)
+        window._streaming_text = "The first words of an ordinary answer"
+        window._stop()
+        self.assertIs(window.privacy, session)
+        stopped = window.conversation[-1]
+        self.assertTrue(stopped.get("stopped"))
+        self.assertIsNone(stopped.get("privacy"))
+
     def test_a_window_privacy_mode_cannot_serve_sends_nothing(self):
         client = RecordingClient()
         window = self.window(client)

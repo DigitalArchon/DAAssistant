@@ -2245,6 +2245,10 @@ class ChatWindow(Gtk.Window):
         # clears the flag - it decides replace-vs-append below.
         placeholder = self._streaming_text is not None
         partial = (self._streaming_text or "").strip() if cancelled else ""
+        # Whether this answer came privately is decided before _finish_stream, which
+        # takes up a session that Privacy Mode brought while it was on its way: it came
+        # from where it was asked, and was badged as having come from attested models.
+        private = self.privacy is not None
         self._finish_stream()
         if cancelled:
             self.status.set_text("Stopped")
@@ -2254,7 +2258,7 @@ class ChatWindow(Gtk.Window):
                 # conversation like any answer - not thrown away with the Stop.
                 turn = {"role": "assistant", "content": partial + STOPPED_NOTE,
                         "model": self._streaming_model, "stopped": True}
-                if self.privacy is not None:
+                if private:
                     turn["privacy"] = self._badge((
                         "🔒 Stopped · unchecked", "warn",
                         "Stopped before the reply was complete, so its signature was "
@@ -2269,7 +2273,7 @@ class ChatWindow(Gtk.Window):
             return
         turn = {"role": "assistant", "content": result,
                 "model": model or self._streaming_model}
-        if self.privacy is not None:
+        if private:
             turn["privacy"] = self._badge(privacy_module.receipt_badge(receipt))
         self._finish_answer(turn, payload)
         self._append_turn(turn, replace_placeholder=placeholder)

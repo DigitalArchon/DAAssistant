@@ -178,6 +178,21 @@ def migrate(config):
     return True
 
 
+def readable_trigger(text):
+    """A portal's description of a key, for people. GNOME describes a shortcut it already
+    holds in its own syntax - "Press <Shift><Control>1" - which here reads as the rest of
+    the app writes keys, "Ctrl+Shift+1"; anything else is left as the desktop put it."""
+    text = (text or "").strip()
+    if text.startswith("Press "):
+        text = text[len("Press "):].strip()
+    if text.startswith("<"):
+        try:
+            return shortcuts.label(text)
+        except (KeyError, ValueError):
+            pass
+    return text
+
+
 def shift_lost(accel, trigger):
     """Whether GNOME holds `accel`, a key with Shift that makes a symbol of its own, as
     that symbol without Shift: what 3.4.0 sent every desktop's portal (Ctrl+! for
@@ -462,7 +477,7 @@ class PortalHotkeys:
         gnome = session.desktop() == "gnome"
         for name, props in listed:
             if name in self.wanted:
-                trigger = (props or {}).get("trigger_description") or ""
+                trigger = readable_trigger((props or {}).get("trigger_description"))
                 self.triggers[name] = trigger
                 if not trigger:
                     self.failed[name] = "not assigned by the desktop"

@@ -140,15 +140,23 @@ class Spelling(unittest.TestCase):
         self.assertFalse(hotkeys.shift_lost("<Control><Shift>k", "Ctrl+K"))   # a letter
         self.assertFalse(hotkeys.shift_lost("<Control>1", "Ctrl+1"))
 
+    def test_gnomes_own_syntax_reads_as_ours(self):
+        self.assertEqual(hotkeys.readable_trigger("Press <Control>parenleft"), "Ctrl+(")
+        self.assertEqual(hotkeys.readable_trigger("Press <Shift><Control>1"), "Ctrl+Shift+1")
+        self.assertEqual(hotkeys.readable_trigger("Shift+Ctrl+1"), "Shift+Ctrl+1")
+        self.assertEqual(hotkeys.readable_trigger("Press <Hyper>x"), "<Hyper>x")
+        self.assertEqual(hotkeys.readable_trigger(None), "")
+
     def test_what_gnome_reports_back_is_checked_for_it(self):
         portal = hotkeys.PortalHotkeys(lambda name: None,
                                        {"translate_text": "<Control><Shift>1",
                                         "ask_anything": "<Control><Shift>9"})
-        listed = [("translate_text", {"trigger_description": "Ctrl+!"}),
+        listed = [("translate_text", {"trigger_description": "Press <Control>exclam"}),
                   ("ask_anything", {"trigger_description": "Shift+Ctrl+9"})]
         with mock.patch.object(session, "desktop", return_value="gnome"):
             portal._take(listed)
-        self.assertIn("GNOME holds it as Ctrl+!", portal.failed["translate_text"])
+        self.assertIn("GNOME holds it as Ctrl+!,", portal.failed["translate_text"])
+        self.assertEqual(portal.triggers["translate_text"], "Ctrl+!")
         self.assertNotIn("ask_anything", portal.failed)
         with mock.patch.object(session, "desktop", return_value="kde"):
             portal._take(listed)                # KDE's own way of naming it

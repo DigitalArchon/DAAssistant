@@ -27,12 +27,15 @@ Berkeley DB, Tcl/Tk and the X11 libraries Tk links); in `runtime/`, the AppImage
 those of what is linked into it (libfuse, squashfuse, zstd, zlib, mimalloc, musl); pycairo's
 and tinfoil-ehbp's, whose wheels carry none; and in `fallbacks/`, the Ubuntu copyright file of
 every package a fallback came from. The Ayatana tray indicator is GPL-3; its ido and
-appindicator libraries and libdbusmenu are part GPL-3, part LGPL; libnotify and the typelibs
-are LGPL: all of it within what GPL-3.0-or-later allows. Beside them, `fallbacks/SOURCES`
-names the apt snapshot their source is in, and `SOURCES` the archive every other text was
-taken from; those texts are kept in `packaging/licenses`. Every other Python package carries
-its licence in its `dist-info` (the build stops if one has none), and Ruffle its own
-`LICENSE` files.
+appindicator libraries and libdbusmenu are part GPL-3, part LGPL; libnotify and most of the
+typelibs are LGPL, HarfBuzz's is MIT, and those of `gir1.2-freedesktop` take the licences of
+the many libraries they describe, which its copyright file lists. Beside them,
+`fallbacks/SOURCES` names the apt snapshot their source is in, and `SOURCES` the archive
+every other text was taken from; those texts are kept in `packaging/licenses`. Every other
+Python package carries its licence in its `dist-info` (the build stops if one has none);
+those with Rust compiled in name the crates in it, with each one's licence, in an SBOM there
+(`dist-info/sboms`), not with the crates' own licence texts. Ruffle carries its own
+`LICENSE` files, and nothing for the crates compiled into it.
 
 The bundled PyGObject needs GLib 2.80 or newer, which sets the oldest supported systems:
 Ubuntu 24.04 / Mint 22, Debian 13, and current Fedora and Arch. The AppImage uses the static
@@ -62,9 +65,11 @@ Only committed files are built, each read from git's objects exactly as HEAD has
 through `git archive`, which would apply your git's line-ending settings, filters and
 attributes first), and every timestamp is HEAD's commit time (`SOURCE_DATE_EPOCH`). Builds run in `packaging/appimage/Containerfile`: Ubuntu 24.04 pinned
 by digest, with packages from the Ubuntu archive as it was at a fixed moment
-([snapshot.ubuntu.com](https://snapshot.ubuntu.com)). Everything is downloaded over https,
-never plain http, not even through a redirect; downloads are cached in
-`~/.cache/da-assistant-appimage` and verified on every build.
+([snapshot.ubuntu.com](https://snapshot.ubuntu.com)). Everything is downloaded from https
+addresses: curl and the build's own downloader refuse a redirect away from https, and apt
+one to plain http; pip follows a redirect where it leads, but what it downloads must match
+the hashes in the locks. Downloads are cached in `~/.cache/da-assistant-appimage` and
+verified on every build.
 
 ## What is pinned, and where
 

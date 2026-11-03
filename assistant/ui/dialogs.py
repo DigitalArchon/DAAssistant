@@ -1538,6 +1538,23 @@ class SettingsDialog(Gtk.Dialog):
                 for listed in self.dictionary_list.get_children()
                 if getattr(listed.get_child(), "dictionary_path", None)]
 
+    def _dictionary_values(self):
+        """(dictionaries_order, dictionaries_disabled) to save: the dictionaries listed,
+        as ordered and ticked here, and what was saved for any that are not listed now.
+
+        Built from the rows alone, a Settings saved while the folder could not be read -
+        a drive not mounted yet, a folder renamed - wiped the order and every dictionary
+        switched off, and they did not come back with the folder. A dictionary not
+        listed stays in the order, after the listed ones, and stays off if it was."""
+        listed = self._dictionary_order()
+        order = listed + [path for path in (self.config.dictionaries_order or [])
+                          if path not in listed]
+        disabled = {path for path, check in self._dictionary_checks.items()
+                    if not check.get_active()}
+        disabled |= {path for path in (self.config.dictionaries_disabled or [])
+                     if path not in self._dictionary_checks}
+        return order, sorted(disabled)
+
     # ---- advanced ---------------------------------------------------------
 
     def _build_advanced(self):
@@ -1714,7 +1731,7 @@ class SettingsDialog(Gtk.Dialog):
         out["encyclopedia_dir"] = self.encyclopedia_dir.get_text().strip()
         out["encyclopedia_strict"] = self.encyclopedia_strict.get_active()
         out["encyclopedia_audience"] = self.encyclopedia_audience.get_active_id() or "adult"
-        out["dictionaries_order"] = self._dictionary_order()
+        out["dictionaries_order"], out["dictionaries_disabled"] = self._dictionary_values()
         out["custom_actions"] = self._actions_value()
         # A key given to an action since taken out goes with it, so that the next
         # action in its slot does not inherit it.
@@ -1722,9 +1739,6 @@ class SettingsDialog(Gtk.Dialog):
         defined = {f"custom_{action['slot']}" for action in out["custom_actions"]}
         out["hotkeys"] = {name: key for name, key in (out.get("hotkeys") or {}).items()
                           if name not in CUSTOM_ACTIONS or name in defined}
-        out["dictionaries_disabled"] = sorted(
-            path for path, check in self._dictionary_checks.items()
-            if not check.get_active())
         for key, (combo, _label) in self.search_combos.items():
             value = combo.get_active_id()
             if value:

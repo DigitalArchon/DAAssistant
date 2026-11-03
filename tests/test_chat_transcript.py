@@ -27,7 +27,12 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 from assistant import gtkcompat  # noqa: F401,E402
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
-from assistant import webkitguard  # noqa: E402
+from assistant import collector, webkitguard  # noqa: E402
+
+# Windows are made and closed here while worker threads run; a cycle collected on one
+# of those would finalize a WebKit object there, and WebKit aborts. On the main loop
+# instead, as the app does.
+collector.install()
 from assistant.config import Config  # noqa: E402
 from assistant.ui import chat, markdown_html  # noqa: E402
 from assistant.ui.markdown_html import render_markdown  # noqa: E402

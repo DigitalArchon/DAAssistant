@@ -23,7 +23,11 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 from assistant import gtkcompat  # noqa: F401,E402
 from gi.repository import GLib, Gtk  # noqa: E402
 
-from assistant import __version__, webkitguard  # noqa: E402
+from assistant import __version__, collector, webkitguard  # noqa: E402
+
+# WebViews are made and closed here; a cycle collected on another thread would finalize
+# one there, and WebKit aborts. On the main loop instead, as the app does.
+collector.install()
 from assistant.config import Config  # noqa: E402
 from assistant.ui import article_view, chat, encscheme  # noqa: E402
 

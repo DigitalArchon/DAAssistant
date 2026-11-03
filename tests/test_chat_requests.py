@@ -17,7 +17,12 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 from assistant import gtkcompat  # noqa: F401,E402
 from gi.repository import GLib, Gtk  # noqa: E402
 
-from assistant import webkitguard  # noqa: E402
+from assistant import collector, webkitguard  # noqa: E402
+
+# Windows are made and closed here while requests run on worker threads; a cycle
+# collected on one of those would finalize a GTK object there. On the main loop
+# instead, as the app does.
+collector.install()
 from assistant.config import Config  # noqa: E402
 from assistant.llm import LLMError  # noqa: E402
 from assistant.ui import chat  # noqa: E402

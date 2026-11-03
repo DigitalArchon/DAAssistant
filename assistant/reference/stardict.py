@@ -74,7 +74,10 @@ class StarDict:
         self._pictures = OrderedDict()      # name -> data: URI or None, the latest last
         self._pictures_size = 0
         if not self.idx_path or not self.dict_path:
-            raise ValueError(f"{self.name}: its .idx or .dict file is missing")
+            # Or there, but a link out of the dictionary's folder: companion() passes
+            # over those.
+            raise ValueError(f"{self.name}: its .idx or .dict file is missing, or is a "
+                             f"link to a file outside its folder")
 
     def files(self):
         return [p for p in (self.path, self.idx_path, self.dict_path, self.syn_path) if p]

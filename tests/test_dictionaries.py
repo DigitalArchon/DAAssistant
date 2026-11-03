@@ -1459,6 +1459,20 @@ class LinksOutOfTheFolder(unittest.TestCase):
         found = self.library.look_up("alpha")
         self.assertEqual(found["results"][0]["entries"][0]["html"], "<b>within</b>")
 
+    def test_but_a_file_beside_one_only_within_that_dictionarys_own_folder(self):
+        # Within the folder chosen in Settings is not enough: a dictionary is one of
+        # several there, each from somewhere else. Refused, its .dict was "missing".
+        for sub in ("a", "b"):
+            os.makedirs(os.path.join(self.folder, sub))
+        ifo = write_stardict(os.path.join(self.folder, "a"), "sd", [("alpha", b"x")])
+        stem = ifo[:-len(".ifo")]
+        os.rename(stem + ".dict", os.path.join(self.folder, "b", "sd.dict"))
+        os.symlink(os.path.join("..", "b", "sd.dict"), stem + ".dict")
+        with self.assertRaisesRegex(ValueError, "its .idx or .dict file is missing, or is "
+                                                "a link to a file outside its folder"):
+            StarDict(ifo)
+        self.assertEqual(self.library.available(), [])
+
 
 class Ordering(unittest.TestCase):
     def setUp(self):

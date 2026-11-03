@@ -617,10 +617,14 @@ worth, to answer from and quote.
   its `.ifo` says of itself and whose it is). Release one to hide that dictionary's
   entries in every lookup in this window, and leave them out of what questions are sent
   with; press it again to bring them back. Only that window is affected.
-- **The files are read in place**; nothing is copied. A file in the folder that is a
-  link to one outside it is not read - as a dictionary, as a file beside one, or as a
-  picture - since an archive of a dictionary can carry links to your own files; links
-  within the folder are followed. A compressed file is unpacked only as far as a lookup
+- **The files are read in place**; nothing is copied. Since an archive of a dictionary
+  can carry links to your own files, a link is followed only so far: a dictionary that
+  is one, to a file within the folder; a file beside a dictionary - its `.idx`, `.dict`
+  and `.syn`, its `.ann`, its icon, its `res` folder of pictures - to one within the
+  folder that dictionary is in, or a folder in that; a picture, to one within that `res`
+  folder. A link to anywhere else is not read, and a StarDict dictionary whose `.idx` or
+  `.dict` is one is not listed, as if the file were missing. Folders in the folder that
+  are links are not looked in. A compressed file is unpacked only as far as a lookup
   needs, and never to more than 64 times its own size, nor past 2 GB: no dictionary
   comes near that, but a file made to fill the memory does. The first lookup indexes
   the headwords into `~/.cache/da-assistant/dictionaries.sqlite` - about 15 seconds and

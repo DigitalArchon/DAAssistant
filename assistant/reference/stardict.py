@@ -111,9 +111,9 @@ class StarDict:
 
     def headwords(self):
         """Every (headword, offset, size): the .idx, then the .syn's alternatives -
-        one at a time, from the .idx as read, and not a list of them all. Not one that
-        no headword is that long (dsl.MAX_HEADWORD), nor one at an offset no file has:
-        how many of those there were is in `problems` once they are all given."""
+        one at a time, from the .idx as read, and not a list of them all. None longer
+        than any headword is (dsl.MAX_HEADWORD), nor one at an offset no file has: how
+        many of those there were is in `problems` once they are all given."""
         self.problems = []
         data = self._index()
         wide = self.info.get("idxoffsetbits") == "64"

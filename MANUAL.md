@@ -599,7 +599,8 @@ worth, to answer from and quote.
   that much is kept - how its text is set, its links to the web and to other words, its
   pictures - and no more: nothing in an entry can place or size a box over the window,
   borrow the window's own badges, or fetch anything. It is closed off too, so one entry
-  cannot run into the next. In the dark theme each colour is lifted to a shade of
+  cannot run into the next, and shown to 4 MB at most, which no real one comes near,
+  "[…]" standing for the rest. In the dark theme each colour is lifted to a shade of
   itself that reads on the dark background.
 - **Each word gets a page of its own**: looking up another - typed, or a
   cross-reference clicked - shows its entries in place of the last word's, and the

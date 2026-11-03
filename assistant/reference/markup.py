@@ -202,15 +202,13 @@ KEPT_ATTRIBUTES = {
 KEPT_ANYWHERE = {"style", "class", "title", "lang", "dir", "align"}
 # What those may say, where it is not text: a picture no bigger than a page, a font
 # size HTML has, a font's names.
-_ATTRIBUTE_VALUES = {
+_ATTRIBUTE_VALUES = {name: re.compile(pattern, re.I) for name, pattern in {
     "width": r"\d{1,3}%?", "height": r"\d{1,3}%?", "size": r"[+-]?[1-7]",
     "face": r"[\w ,'\"-]{1,200}", "colspan": r"\d{1,3}", "rowspan": r"\d{1,3}",
     "start": r"-?\d{1,6}", "value": r"-?\d{1,6}", "type": r"[1aAiI]|disc|circle|square",
     "lang": r"[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*", "dir": r"ltr|rtl|auto",
     "align": r"left|right|center|justify",
-}
-_ATTRIBUTE_VALUES = {name: re.compile(pattern, re.I)
-                     for name, pattern in _ATTRIBUTE_VALUES.items()}
+}.items()}
 # The classes an entry may have: those the page styles entries by, which the readers
 # give them - XDXF's <abr> is a dsl-p. Any other is the dictionary's own, which nothing
 # styles, or the window's: "privacy ok" drew a Privacy badge, "turn user" a question

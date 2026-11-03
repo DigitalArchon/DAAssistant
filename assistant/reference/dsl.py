@@ -370,8 +370,8 @@ def _parts(text, opener):
 
     In one pass, from one markup character to the next. The lazy regular expression
     this was done with searched the rest of the line for a closer from every opener,
-    found or not: a headword of twenty thousand "(" took two seconds to index, and
-    "{" as long in one being shown as long again."""
+    found or not: a headword of twenty thousand "(" took two seconds to index, and as
+    many "{" as long again each time its entry was shown."""
     closer = "}" if opener == "{" else ")"
     markup_char = _MARKUP[opener]
     pieces, parts = [], []
@@ -448,7 +448,7 @@ TAGS = {
 }
 TRANSPARENT = {"trn", "trn1", "!trs", "trs", "lang", "preview", "!preview", "'", "url",
                "ref", "video"}
-# How many of those tags may be open at once; one opened past that is let go. Each line
+# How many of the TAGS may be open at once; one opened past that is let go. Each line
 # closes what is open at its end and opens it again at the next, so tags left open -
 # eight thousand lines of "[b]x", 47 KB - had the HTML grow with the square of the
 # lines: 224 MB of it. A real entry nests three or four deep.

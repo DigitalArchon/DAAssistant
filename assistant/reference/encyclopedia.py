@@ -411,8 +411,12 @@ def _contains(text, quote):
 
 
 # A quotation not word for word in its passage is shown where the passage comes closest
-# to it - when some stretch of the passage has at least this share of its words.
+# to it - when some stretch of the passage has at least this share of its words. Not one
+# of more than NEAREST_WORDS words: comparing the order of its words with a stretch's
+# takes as long as the two lengths multiplied, on the main loop - ten seconds for one of
+# 4,000, as an answer stuck repeating a phrase can write.
 NEAREST_SHARE = 0.5
+NEAREST_WORDS = 200
 
 
 # A word, as nearest() counts them: what lies between spaces and dashes, so that
@@ -432,7 +436,8 @@ def _words(text):
 
 def nearest(passage, quote):
     """The words of `passage`, as it has them, that come closest to `quote`, and the
-    share of the quotation's words they hold - (None, 0.0) for none with NEAREST_SHARE.
+    share of the quotation's words they hold - (None, 0.0) for none with NEAREST_SHARE,
+    or for a quotation of more than NEAREST_WORDS words.
 
     What a model gets wrong in a quotation is mostly a word changed, added or left out,
     or two sentences run together, so the stretch of the passage the length of the
@@ -449,7 +454,7 @@ def nearest(passage, quote):
 def _nearest(passage, quote):
     """nearest(), as ((start, end) of those words in `passage`, share)."""
     wanted = [w for part in _ELLIPSIS.split(quote or "") for w, _s, _e in _words(part)]
-    if not wanted:
+    if not wanted or len(wanted) > NEAREST_WORDS:
         return None, 0.0
     need = Counter(wanted)
 
@@ -478,18 +483,26 @@ def _nearest(passage, quote):
     if not firsts or best_score < NEAREST_SHARE * total:
         return None, 0.0
     # Each such stretch, less the words at either end it would hold as many without;
-    # then the first with the most of the quotation in its order.
-    stretches = {}
-    for first in firsts:
-        stretch = words[first:first + width]
-        have = Counter(word for word, _s, _e in stretch)
-        for end in (-1, 0):
-            while stretch and have[stretch[end][0]] > need[stretch[end][0]]:
-                have[stretch[end][0]] -= 1
-                stretch.pop(end)
-        stretches.setdefault((stretch[0][1], stretch[-1][2]), stretch)
-    start, end = max(stretches, key=lambda key: _in_order(
-        [word for word, _s, _e in stretches[key]], wanted, weight))
+    # then the first with the most of the quotation in its order, worked out once for
+    # each run of words: where a passage says one thing over and over, thousands of
+    # stretches are the same words, and each was compared anew.
+    stretches, orders = {}, {}
+    for first in dict.fromkeys(firsts):
+        low, high = first, min(first + width, len(words))
+        have = Counter(word for word, _s, _e in words[low:high])
+        while high > low and have[words[high - 1][0]] > need[words[high - 1][0]]:
+            have[words[high - 1][0]] -= 1
+            high -= 1
+        while high > low and have[words[low][0]] > need[words[low][0]]:
+            have[words[low][0]] -= 1
+            low += 1
+        key = (words[low][1], words[high - 1][2])
+        if key not in stretches:
+            run = tuple(word for word, _s, _e in words[low:high])
+            if run not in orders:
+                orders[run] = _in_order(run, wanted, weight)
+            stretches[key] = orders[run]
+    start, end = max(stretches, key=stretches.get)
     while start < end and passage[start] in ".,;:!?":
         start += 1
     while end > start and passage[end - 1] in ".,;:!?":

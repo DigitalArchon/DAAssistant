@@ -742,7 +742,8 @@ check says so there ("none"), rather than looking like one whose every quotation
 found. Click the ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
 passage's own words highlighted - where it was found under another number, or where the
 passage comes closest to it, so you can see straight away what the source really says.
-A ⚠ that is not a link is a quotation nothing in the passages comes near. Each
+A ⚠ that is not a link is a quotation nothing in the passages comes near, or one of
+over 200 words, which is not looked for there. Each
 citation is a link: it opens the article in Search Encyclopedia at what was quoted from
 it, highlighted in the passage's own words where the check found them - not the same
 words elsewhere on the page, nor another sentence made of them - or, with nothing quoted

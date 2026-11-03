@@ -789,6 +789,23 @@ class Quotes(unittest.TestCase):
         self.assertFalse(_contains("zorb flim gax wib, " * 3000,
                                    " … ".join(["zorb flim"] * 2000)))
 
+    def test_where_a_quotation_comes_closest_is_found_quickly_too(self):
+        # In a passage that says one thing over and over, thousands of stretches have as
+        # many of a quotation's words, and each had their order compared with it anew:
+        # fifty parts took seven seconds, on the main loop. And that comparison takes
+        # as long as the quotation's length times the stretch's: an answer repeating a
+        # phrase 75 times in quotation marks took thirteen.
+        started = time.monotonic()
+        check, = check_quotes("“" + " … ".join(["zorb flim"] * 50) + " … quux quam” [1]",
+                              [{"text": "zorb flim gax wib, " * 1500}])
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(check["near"]["passage"], 1)
+        started = time.monotonic()
+        check, = check_quotes("“" + " ".join(["zorb flim gax wib"] * 75) + "” [1]",
+                              [{"text": "zorb flim gax wib, " * 400}])
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual((check["ok"], check["near"]), (False, None))
+
     def test_german_and_french_quotation_marks_are_quotations_too(self):
         for answer in ("Sie „cross the glimmer sea“ [1].",
                        "Sie „cross the glimmer sea” [1].",

@@ -8,7 +8,10 @@ that silently falls back to a stock icon - or to nothing at all.
 
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -191,3 +194,50 @@ class GnomeKeysThatLostTheirShift(unittest.TestCase):
         message = assistant.notify.call_args[0][0]
         self.assertIn("Ctrl+Shift+1", message)
         self.assertIn("Settings > Apps > DA Assistant", message)
+
+
+class TheWindowsBelongToTheLauncher(unittest.TestCase):
+    """A shell ties a window to its launcher by the program's name - WM_CLASS on X11,
+    the app id on Wayland - against the entry's name or its StartupWMClass. GTK took
+    the name from argv[0], "run-assistant", which no entry is called: a generic icon,
+    and on Wayland a dock entry of its own."""
+
+    def test_the_name_is_set_before_gtk_starts_whatever_the_program_was_run_as(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        launcher = os.path.join(folder, "run-assistant")       # as the AppImage runs it
+        with open(launcher, "w") as f:
+            f.write(f"import sys\nsys.path.insert(0, {str(ROOT)!r})\n"
+                    "from assistant import gtkcompat\n"
+                    "from gi.repository import Gdk, GLib\n"
+                    "print(GLib.get_prgname(), Gdk.get_program_class())\n")
+        env = dict(os.environ, HOME=folder, XDG_CONFIG_HOME=folder, XDG_DATA_HOME=folder)
+        out = subprocess.run([sys.executable, launcher], capture_output=True, text=True,
+                             env=env, timeout=120)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.split(), [gtkcompat.PROGRAM, "Da-assistant"])
+
+    def _entry(self, path):
+        from gi.repository import GLib
+        entry = GLib.KeyFile()
+        entry.load_from_file(str(path), GLib.KeyFileFlags.NONE)
+        return entry
+
+    def test_the_launchers_say_the_same_name(self):
+        for path in (ROOT / "packaging" / "appimage" / "da-assistant.desktop",
+                     ROOT / "tools" / "da-assistant.desktop"):
+            self.assertEqual(path.stem, gtkcompat.PROGRAM)
+            self.assertEqual(self._entry(path).get_string("Desktop Entry",
+                                                          "StartupWMClass"),
+                             gtkcompat.PROGRAM, path)
+
+    def test_the_portals_hidden_entry_claims_no_window(self):
+        # It is named after APP_ID, which the portal and the D-Bus name keep; claimed
+        # by it, the windows would be a hidden app's.
+        import assistant
+        from assistant import keybindings
+        self.assertNotEqual(assistant.APP_ID, gtkcompat.PROGRAM)
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        with open(keybindings.app_entry(data_home=folder), encoding="utf-8") as f:
+            self.assertNotIn("StartupWMClass", f.read())

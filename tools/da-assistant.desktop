@@ -6,4 +6,5 @@ Exec=@LAUNCHER@
 Icon=@ICON@
 Terminal=false
 Categories=Utility;
+StartupWMClass=da-assistant
 X-GNOME-Autostart-enabled=true

@@ -6,10 +6,22 @@ GTK imports this first.
 
 This module also resolves the tray indicator namespace. Hardcoding
 `gi.require_version('AppIndicator3','0.1')` would stop the app starting at all on Mint
-22.3, which ships only AyatanaAppIndicator3-0.1.typelib.
+22.3, which ships only AyatanaAppIndicator3-0.1.typelib. And, being first, it names the
+program before GTK starts (PROGRAM).
 """
 
 import gi
+from gi.repository import GLib
+
+# The program's name, which GTK gives the app's windows - WM_CLASS on X11, the app id on
+# Wayland - and by which the desktop ties them to a launcher: da-assistant.desktop, its
+# StartupWMClass the same. GTK takes argv[0]'s when it initialises, and importing WebKit2
+# below initialises it, so it is set first: argv[0]'s was "run-assistant", which no
+# entry is called, and the windows had a generic icon and, on Wayland, a dock entry of
+# their own. Not APP_ID: that is the D-Bus name and the portal's app id, and the entry
+# named after it is the hidden one the portal needs (keybindings.app_entry).
+PROGRAM = "da-assistant"
+GLib.set_prgname(PROGRAM)
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")

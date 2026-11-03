@@ -8,3 +8,4 @@ Terminal=false
 Categories=Utility;
 Keywords=translate;ocr;llm;clipboard;screenshot;
 StartupNotify=false
+StartupWMClass=da-assistant

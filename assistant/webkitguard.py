@@ -109,6 +109,13 @@ def note_success(view=None):
 def note_clean_exit():
     """A clean shutdown while a view was still loading is not a crash, so the app clears
     the breadcrumb on its way out too. That is what keeps quitting mid-load from costing
-    the user their WebKit view."""
+    the user their WebKit view.
+
+    Only this run's own breadcrumb, though. A run with no view loading has left none:
+    what the file holds is earlier runs' verdict, and clearing it at every quit undid
+    a block after one run - two crashes, a run in plain text, then WebKit again at the
+    next start, and the crash it was blocked for."""
+    if not _loading:
+        return
     _loading.clear()
     note_success()

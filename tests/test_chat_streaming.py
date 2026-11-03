@@ -748,6 +748,21 @@ class WebKitStrikesFollowTheProcess(unittest.TestCase):
         self.assertFalse(os.path.exists(self.state))
         self.assertFalse(webkitguard.blocked()[0])
 
+    def test_a_clean_quit_keeps_a_verdict_this_run_did_not_make(self):
+        """Every clean quit cleared the file: two crashes, one run in plain text, and the
+        next start built the WebView that had ended the app twice."""
+        for _crash in range(webkitguard.STRIKES):
+            webkitguard.note_attempt("a view that took the app down with it")
+            webkitguard._loading.clear()                # the process that died
+        self.assertTrue(webkitguard.blocked()[0])
+        webkitguard.note_clean_exit()                   # a run in plain text, quit
+        self.assertTrue(webkitguard.blocked()[0])
+        # A view of this run's own that was loading at the quit is forgiven, as before.
+        os.unlink(self.state)
+        webkitguard.note_attempt("loading at the quit")
+        webkitguard.note_clean_exit()
+        self.assertFalse(os.path.exists(self.state))
+
 
 class AChatWindowAlwaysHasAView(unittest.TestCase):
     """A window with no view is worse than an ugly one: the screenshot goes nowhere.

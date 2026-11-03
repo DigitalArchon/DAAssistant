@@ -28,9 +28,9 @@ the wrong text. wl-paste and Klipper ask the compositor afresh each time.
 import shutil
 import subprocess
 import threading
-import time
 
-from . import gtkcompat, hostenv, session
+from . import gtkcompat  # noqa: F401  (pins GI versions)
+from . import hostenv, session
 from gi.repository import Gdk, GLib, Gtk
 
 FALLBACKS = [
@@ -135,7 +135,7 @@ def get_text():
         if text:
             return text, "text"
 
-    for argv, name in FALLBACKS:
+    for argv, _name in FALLBACKS:
         if not shutil.which(argv[0]):
             continue
         result = _run(argv)

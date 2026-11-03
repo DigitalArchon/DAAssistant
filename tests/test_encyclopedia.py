@@ -366,8 +366,25 @@ class Search(DvdCase):
         found = self.imported().search("Where do zorblaxes migrate in winter?")
         self.assertEqual(found[0]["id"], 1)
 
-    def test_nothing_to_search_for_finds_nothing(self):
-        self.assertEqual(self.imported().search("why is it?"), [])
+    def test_common_words_alone_are_searched_for_all_together(self):
+        # Every word of "The Who" is a stopword, so nothing was searched for, and the
+        # article on the band was not found.
+        root = tempfile.mkdtemp()
+        try:
+            make_dvd(root, {"EB": {7: page("Who, The", "<p>A made-up band of zorblaxes "
+                                                       "who hum.</p>"),
+                                   8: ZORBLAX},
+                            "EBI": {}, "EBK": {}})
+            encyclopedia = Encyclopedia(types.SimpleNamespace(encyclopedia_dir=root),
+                                        data_dir=os.path.join(root, "data"))
+            encyclopedia.import_from(root)
+            for query in ("The Who", "who", "WHO?"):
+                self.assertEqual([r["id"] for r in encyclopedia.search(query)][:1], [7],
+                                 query)
+            # All of them, not any: "the" alone is in every article.
+            self.assertEqual(encyclopedia.search("why is it?"), [])
+        finally:
+            shutil.rmtree(root)
 
 
 class Context(DvdCase):

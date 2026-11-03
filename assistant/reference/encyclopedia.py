@@ -1019,8 +1019,13 @@ class Encyclopedia:
     def search(self, query, limit=10):
         """The articles that best answer `query`: [{id, library, title, summary,
         image}], an article titled exactly that first, then by how well its best
-        section matches - every word, and failing that, any."""
-        terms = query_terms(query)
+        section matches - every word worth searching for, and failing that, any."""
+        terms, ways = query_terms(query), (False, True)
+        if not terms:
+            # Made only of words too common or too short to search for by themselves -
+            # "The Who", "It" - it is searched for as it is: all of its words, since any
+            # one of them alone is in nearly every section.
+            terms, ways = list(dict.fromkeys(re.findall(r"\w+", query.lower()))), (False,)
         wanted = " ".join(query.split())
         ranked = []
         # Several articles can share a title - Rome is a city in Italy, Georgia and New
@@ -1028,7 +1033,7 @@ class Encyclopedia:
         for row in self._query("SELECT id FROM articles WHERE title = ? COLLATE NOCASE "
                                "ORDER BY length(page) DESC", (wanted,)):
             ranked.append(row[0])
-        for any_of in (False, True):
+        for any_of in ways:
             if not terms or len(ranked) >= limit:
                 break
             # bm25() cannot be used in an aggregate: rank sections first, then

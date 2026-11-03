@@ -646,8 +646,10 @@ films and sounds playable in place, the page's own "To cite this page" box at th
 and **Forward** (Alt+Left,
 Alt+Right). Search from the box in the header: the best match opens at once - an article
 titled exactly what you typed, the longest of several - and the others wait under
-**Results**. What is on the clipboard waits in the box, selected: Enter searches for it,
-typing replaces it. Flash animations open in a window of their own.
+**Results**. Words too common or too short to search for ("the", "who", "a") are left
+out, unless they are all there is: then all of them are searched for together, so *The
+Who* finds "Who, The". What is on the clipboard waits in the box, selected: Enter
+searches for it, typing replaces it. Flash animations open in a window of their own.
 
 Questions are optional, and only about what you choose. **☆ Ask about this** tags the
 article you are reading; tagged articles are listed above the question box, where ×

@@ -225,10 +225,6 @@ Only the providers your models use have to be set up. With all three on Ollama n
 wanted at all - but then there is no web search, which runs on NanoGPT with its key
 whichever provider answers, and no Privacy Mode.
 
-A **Tor onion service** may be plain `http://`, since Tor encrypts it end to end; it is
-reached through Tor's SOCKS port, set as the [proxy](#requests) (`socks5h://127.0.0.1:9050`
-as a rule).
-
 **Test connection** asks the text model a one-word question. If the premium or vision
 model is on another provider, that provider is asked for its model list instead, which
 finds a wrong address, a refused key and a model it does not have.
@@ -891,8 +887,8 @@ accepted only for this machine and its local network - `localhost`, `127.x`, `10
 model server of your own is reached. For any other address, Settings will not save it,
 and a `config.json` edited by hand to hold one sends nothing: the chat says why instead.
 The address is never rewritten to https for you, and certificates are always checked.
-(Up to 3.2.0 such a URL was only warned about, and then used.) A Tor onion service
-(`.onion`) may be plain http, since Tor encrypts it end to end. An address with a
+(Up to 3.2.0 such a URL was only warned about, and then used.) An onion service
+(`.onion`) may be plain http, since it is encrypted end to end. An address with a
 backslash, a space or a control character in it is refused outright: Python's parser and
 the one requests uses do not agree on where its host ends. A redirect is followed only to
 an address that could have been used in the first place, and never from https to plain
@@ -901,20 +897,18 @@ http; a refused one sends nothing further, and says where it pointed.
 **A proxy** (Settings > Advanced > Proxy) takes every request the app makes - the
 models, the web search, the model lists, the attestation services, Tinfoil's client -
 except to this machine and its own network, which are reached directly:
-`socks5h://127.0.0.1:9050` for Tor, which is also what reaches an onion address, since
-the proxy looks the name up; `http://host:port` for a web proxy, through which https is
-tunnelled end to end. Left empty, the environment's own proxy settings (`HTTPS_PROXY` and
+`http://host:port` for a web proxy, through which https is tunnelled end to end, or
+`socks5h://host:port` for a SOCKS proxy, which then looks the names up itself, as an
+onion address needs. Left empty, the environment's own proxy settings (`HTTPS_PROXY` and
 the rest) stand. The programs the app starts - a browser for a link, the screenshot
 tools - get the environment they had, without the app's proxy.
 
-Through Tor, [Privacy Mode](#privacy-mode) attests poorly: two of the services an
-attestation needs sit behind Google's front end, which refuses most Tor exits. Measured
-over ten circuits (Nov 2026), Sigstore's servers - which a `private/` model's attestation
-reads its trust root from - and NVIDIA's attestation service each answered nine of them
-with Google's "403 Forbidden: Your client does not have permission"; Intel's, nano-gpt's
-and Tinfoil's answered every time. A `private/` model is then not attested, and nothing
-is sent to it; a `TEE/` model's banner turns amber for the GPU evidence that could not
-be checked, and Strict refuses it. Trying again later may go through another exit.
+Through a proxy, [Privacy Mode](#privacy-mode) can attest only if the services it checks
+against answer the proxy's address. Sigstore's, which a `private/` model's attestation
+reads its trust root from, and NVIDIA's sit behind Google's front end, which refuses
+addresses it distrusts: in Nov 2026 it refused nine Tor exits in ten. A `private/` model
+is then not attested, and nothing is sent to it; a `TEE/` model's banner turns amber for
+the GPU evidence that could not be checked, and Strict refuses it.
 
 ## Where things are kept
 

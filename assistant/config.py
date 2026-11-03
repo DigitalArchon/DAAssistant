@@ -114,7 +114,7 @@ DEFAULTS = {
     "prompt_caching": "off",
     "request_timeout": 180,
     # Every request of the app's own through this proxy (proxy.py): socks5h://host:port
-    # for Tor, or http://host:port. Empty: the environment's proxy settings, if any.
+    # or http://host:port. Empty: the environment's proxy settings, if any.
     "proxy": "",
     # Debugging: write every image sent to the model into ~/.cache/da-assistant/captures.
     "debug_save_captures": False,

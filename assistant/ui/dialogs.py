@@ -1612,12 +1612,12 @@ class SettingsDialog(Gtk.Dialog):
         self.proxy_entry = Gtk.Entry(hexpand=True)
         self.proxy_entry.set_text(str(getattr(self.config, "proxy", "") or ""))
         self.proxy_entry.set_placeholder_text(
-            "socks5h://127.0.0.1:9050 for Tor, or http://proxy:3128 - empty: the system's")
+            "http://proxy:3128 or socks5h://proxy:1080 - empty: the system's")
         self.proxy_entry.set_tooltip_text(
             "Every request the app makes goes through this proxy - the models, the web "
             "search, attestation - except to this machine and its own network. "
-            "socks5h:// lets the proxy look names up, which is what reaches a Tor .onion "
-            "address. Empty, the environment's proxy settings are used, if any.")
+            "socks5h:// has the proxy look names up itself, as an .onion address needs. "
+            "Empty, the environment's proxy settings are used, if any.")
         self.proxy_entry.connect("changed", lambda _w: self._sync_proxy())
         grid.attach(self._label("Proxy"), 0, 3, 1, 1)
         grid.attach(self.proxy_entry, 1, 3, 1, 1)

@@ -98,6 +98,23 @@ class WhichAddressesMayBeUsed(unittest.TestCase):
             self.assertIsNotNone(found, repr(url))
             self.assertIn("Not a web address", found)
 
+    def test_an_escape_in_the_host_is_not_a_way_round(self):
+        """urllib3 decodes %2e in a host, so these were judged a local address and sent,
+        over plain http, to a name anyone can register: 192.168.1.10.attacker.example."""
+        from urllib3.util import parse_url
+        self.assertEqual(parse_url("http://127.0.0.1%2eevil.com/v1").host,
+                         "127.0.0.1.evil.com")
+        # Refused outright, even where the name decoded would have been local.
+        for url in ("http://127.0.0.1%2eevil.com/v1",
+                    "http://192.168.1.10%2Eattacker.example:11434/v1",
+                    "http://10.0.0.1%2Fx.evil.com/v1", "http://127.0.0.1%25.evil.com/",
+                    "http://localhost%2eevil.com/", "http://evil%2ecom.local/",
+                    "http://evil.com%2fx.onion/"):
+            self.assertIsNotNone(netguard.problem(url), url)
+        # A zone is the one "%" an address may have, and https is judged by its scheme.
+        self.assertIsNone(netguard.problem("http://[fe80::1%25eth0]:11434/v1"))
+        self.assertIsNone(netguard.problem("https://127.0.0.1%2eexample.com/v1"))
+
     def test_requests_connects_to_the_host_that_was_judged(self):
         from urllib3.util import parse_url
         for url in ("http://localhost:11434/v1", "http://[::1]:8080/v1",

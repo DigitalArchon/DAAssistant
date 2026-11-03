@@ -31,7 +31,7 @@ have been used in the first place, and never from https to plain http.
 
 import ipaddress
 import re
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 
 try:
     from requests.exceptions import InvalidURL as _InvalidURL
@@ -56,15 +56,27 @@ class RedirectRefused(_InvalidURL):
     A requests exception, so that every caller already handles it, and a ValueError."""
 
 
+def _unescaped(host):
+    """`host` with an IPv6 literal's zone taken off - or None if it has a "%" that is
+    not a zone's. Only an IPv6 address has a zone ("fe80::1%eth0", written %25 in a
+    URL); anywhere else a "%" is an escape, which urllib3 decodes into another name:
+    "127.0.0.1%2eevil.com" was judged 127.0.0.1, and requests went to 127.0.0.1.evil.com."""
+    host = host.strip("[]")
+    if "%" not in host:
+        return host
+    address, _zone = host.split("%", 1)
+    return address if ":" in address else None
+
+
 def is_local(host):
     """Whether `host`, as written, is on this machine or its own network."""
-    host = (host or "").strip().lower().rstrip(".")
+    host = _unescaped((host or "").strip().lower().rstrip("."))
     if not host:
         return False
     if host in LOCAL_NAMES or host.endswith(LOCAL_SUFFIXES):
         return True
     try:
-        address = ipaddress.ip_address(host.strip("[]").split("%", 1)[0])
+        address = ipaddress.ip_address(host)
     except ValueError:
         return False
     mapped = getattr(address, "ipv4_mapped", None)
@@ -76,14 +88,17 @@ def is_local(host):
 
 def is_onion(host):
     """Whether `host` is a Tor onion service."""
-    return (host or "").strip().lower().rstrip(".").endswith(ONION_SUFFIX)
+    host = (host or "").strip().lower().rstrip(".")
+    return "%" not in host and host.endswith(ONION_SUFFIX)
 
 
 def _same_host(ours, theirs):
     """Whether urllib3's reading of a host is the one netguard judged. Brackets, case,
-    a trailing dot and a percent-encoded zone are only spelling."""
+    a trailing dot and a percent-encoded zone are only spelling; any other escape is
+    not, and decoding it on both sides would have hidden the very difference this is
+    here to find."""
     def plain(host):
-        return unquote((host or "").strip("[]").lower().rstrip("."))
+        return (host or "").strip("[]").lower().rstrip(".").replace("%25", "%")
     return plain(ours) == plain(theirs)
 
 

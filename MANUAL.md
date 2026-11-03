@@ -890,7 +890,10 @@ The address is never rewritten to https for you, and certificates are always che
 (Up to 3.2.0 such a URL was only warned about, and then used.) An onion service
 (`.onion`) may be plain http, since it is encrypted end to end. An address with a
 backslash, a space or a control character in it is refused outright: Python's parser and
-the one requests uses do not agree on where its host ends. A redirect is followed only to
+the one requests uses do not agree on where its host ends. So is a plain `http://` name
+with a `%` escape in it, other than an IPv6 address's zone: requests decodes it, and up
+to 3.4.0 `http://127.0.0.1%2eexample.com` passed as this machine and went, unencrypted,
+to `127.0.0.1.example.com`. A redirect is followed only to
 an address that could have been used in the first place, and never from https to plain
 http; a refused one sends nothing further, and says where it pointed.
 

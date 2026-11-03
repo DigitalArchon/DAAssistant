@@ -812,7 +812,7 @@ class Folding(unittest.TestCase):
         self.assertEqual(fold("ｶﾞﾗｽ"), fold("ガラス"))            # half-width kana
         self.assertEqual(fold("ёж"), fold("еж"))                   # ё is often written е
         self.assertEqual(fold("Română"), fold("romana"))           # a Latin breve is an accent
-        self.assertEqual(fold("й̣"), fold("й"))               # and so is a dot below
+        self.assertEqual(fold("й\u0323"), fold("й"))               # and so is a dot below
         # The iota subscript is a mark too, which case folding made a letter of.
         self.assertEqual(fold("ᾳ"), "α")
         self.assertEqual(fold("ᾼ"), "α")

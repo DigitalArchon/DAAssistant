@@ -71,12 +71,12 @@ _IGNORED_TOO = set("ʼ`−")
 # voicing marks - ガラス, glass, is not カラス, crow, nor ばか はか - and the breve on
 # a Cyrillic letter - мой, my, is not мои, my in the plural; nor is Belarusian ў у.
 # They stay in a key; every other mark goes, the breve on a Latin letter with them.
-_VOICING = "゙゚"
-_BREVE = "̆"
+_VOICING = "\u3099\u309a"
+_BREVE = "\u0306"
 _KEPT_MARKS = set(_VOICING + _BREVE)
-_LATIN_BREVE = re.compile(f"(?<![Ѐ-ԯ]){_BREVE}")
+_LATIN_BREVE = re.compile(f"(?<![\u0400-\u052f]){_BREVE}")
 # The iota subscript. A mark, but one that casefold() makes a letter of: ᾳ was "αι".
-_YPOGEGRAMMENI = "ͅ"
+_YPOGEGRAMMENI = "\u0345"
 
 
 class _MarkTable(dict):

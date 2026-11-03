@@ -279,6 +279,35 @@ class AnAnswersCopyCopiesThatAnswer(WindowCase):
         self.assertEqual(clipboard_text(), "second answer")
 
 
+class ThePlainTextViewCopiesWhatTheWebKitViewDoes(WindowCase):
+    webkit = False
+
+    CITED = {"role": "assistant", "model": "m",
+             "content": "Ottawa is the capital [1].",
+             "display": "Ottawa is the capital [\\[1\\]](enc://cite/1/1).",
+             "export": "Ottawa is the capital [1].",
+             "links": ("enc://cite/",)}
+
+    def _copy(self, window, index):
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("untouched", -1)
+        [button] = [child for child in window.bubbles._rows[index]["heading"]
+                    .get_children() if isinstance(child, Gtk.Button)]
+        button.clicked()
+        return clipboard_text()
+
+    def test_an_answer_with_links_into_the_window_copies_without_them(self):
+        window = self.window([{"role": "user", "content": "q"}, self.CITED])
+        self.assertEqual(self._copy(window, 1), "Ottawa is the capital [1].")
+        window._on_copy_answer(None, js_result("1"))
+        self.assertEqual(clipboard_text(), "Ottawa is the capital [1].")
+
+    def test_an_answer_still_coming_copies_without_the_cursor(self):
+        window = self.window([{"role": "user", "content": "q"}])
+        window._streaming_text = "Half an ans"
+        window._render()
+        self.assertEqual(self._copy(window, 1), "Half an ans")
+
+
 @unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
 class TheButtonNamesItsOwnAnswer(WindowCase):
     def test_stray_turns_on_the_page_do_not_send_it_to_another_answer(self):

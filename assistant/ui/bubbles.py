@@ -140,15 +140,17 @@ class BubbleView(Gtk.ScrolledWindow):
         self.box.pack_start(heading, False, False, 0)
         self.box.pack_start(bubble, False, False, 0)
         row = {"role": role, "premium": premium, "privacy": privacy, "label": label,
-               "heading": heading, "bubble": bubble, "view": view, "text": None}
+               "heading": heading, "bubble": bubble, "view": view, "text": None,
+               "copy": ""}
         if role == "assistant":
-            # This answer alone, as the WebKit view's Copy on each answer does.
+            # This answer alone, as the WebKit view's Copy on each answer does: what it
+            # says as Markdown (set_turns), not the text drawn here.
             copy = Gtk.Button.new_with_label("Copy")
             copy.set_relief(Gtk.ReliefStyle.NONE)
             copy.set_tooltip_text("Copy this answer")
             copy.get_style_context().add_class("copy-answer")
             copy.connect("clicked", lambda _b: Gtk.Clipboard.get(
-                Gdk.SELECTION_CLIPBOARD).set_text(row["text"] or "", -1))
+                Gdk.SELECTION_CLIPBOARD).set_text(row["copy"] or "", -1))
             heading.pack_end(copy, False, False, 0)
         return row
 
@@ -179,6 +181,10 @@ class BubbleView(Gtk.ScrolledWindow):
                 text = "\n\n".join(part for part in (text, "  \n".join(attached)) if part)
             if turn.get("_streaming"):
                 text += " ▍"
+            # What Copy copies, as the WebKit view's does: "export" where an answer has
+            # one - an Ask Encyclopedia answer, without the enc:// links into this
+            # window that `display` draws as links here.
+            copied = turn.get("export", turn.get("display", turn.get("content", ""))) or ""
 
             if index < len(self._rows):
                 row = self._rows[index]
@@ -186,15 +192,16 @@ class BubbleView(Gtk.ScrolledWindow):
                         or row["privacy"] != privacy:
                     self._drop_from(index)          # the shape changed; rebuild the tail
                 elif row["text"] == text:
-                    continue                        # nothing to do for this one
+                    row["copy"] = copied
+                    continue                        # nothing to draw for this one
                 else:
                     markdown_text.render_body(row["view"].get_buffer(), text,
                                               widget=row["view"])
-                    row["text"] = text
+                    row["text"], row["copy"] = text, copied
                     continue
             row = self._new_row(role, premium, privacy)
             markdown_text.render_body(row["view"].get_buffer(), text, widget=row["view"])
-            row["text"] = text
+            row["text"], row["copy"] = text, copied
             self._rows.append(row)
 
         self._drop_from(len(turns))

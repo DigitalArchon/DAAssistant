@@ -11,6 +11,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import zlib
@@ -153,6 +154,26 @@ class DslHeadwords(unittest.TestCase):
                          "(to) flimble about")
         self.assertEqual(dsl.unsorted_free("(to) flimble {about}"), "(to) flimble")
 
+    def test_parts_that_make_no_new_spelling_cost_nothing(self):
+        # Thirty-two empty parts were tried all 2^32 ways, and indexing never ended.
+        started = time.monotonic()
+        self.assertEqual(dsl.spellings("word" + "()" * 32), ["word"])
+        self.assertEqual(dsl.spellings("a()b(c)"), ["abc", "ab"])
+        self.assertEqual(dsl.spellings("word" + "( )" * 32 + "(s)"), ["word s", "word"])
+        many = dsl.spellings("w" + "(a)" * 32)
+        self.assertLessEqual(len(many), dsl.MAX_VARIANTS)
+        self.assertEqual(many[0], "w" + "a" * 32)
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_run_of_openers_never_closed_is_read_in_one_pass(self):
+        started = time.monotonic()
+        self.assertEqual(dsl.unsorted_free("{" * 20000 + " x"), "{" * 20000 + " x")
+        self.assertEqual(dsl.spellings("(" * 400 + "x"), ["(" * 400 + "x"])
+        self.assertEqual(dsl.spellings(r"\{{a} \(b) (c\)d)"), ["{ (b) c)d", "{ (b)"])
+        # No headword is that long: it is not indexed at all.
+        self.assertEqual(dsl.spellings("(" * 20000), [])
+        self.assertLess(time.monotonic() - started, 1)
+
 
 class DslFiles(unittest.TestCase):
     def setUp(self):
@@ -242,6 +263,25 @@ class DslFiles(unittest.TestCase):
         offset, size = self._index(packed)["glorp"]
         self.assertEqual(packed.render("glorp", packed.read(offset, size)),
                          plain.render("glorp", plain.read(offset, size)))
+
+    def test_headwords_that_would_not_end_are_indexed_and_their_neighbours_too(self):
+        folder = os.path.join(self.dir, "hostile")
+        os.makedirs(folder)
+        write_dsl(os.path.join(folder, "hostile.dsl"),
+                  '#NAME "Hostile"\n\n'
+                  "glorp" + "()" * 32 + "\n\t[m1]found all the same\n"
+                  + "x" * 5000 + "\n"
+                  "zib\n\t[m1]after a line too long to be a headword\n")
+        library = Library(types.SimpleNamespace(dictionaries_dir=folder,
+                                                dictionaries_disabled=[]),
+                          cache_dir=os.path.join(self.dir, "cache"))
+        started = time.monotonic()
+        entry, = library.look_up("glorp")["results"][0]["entries"]
+        self.assertEqual(entry["text"], "found all the same")
+        entry, = library.look_up("zib")["results"][0]["entries"]
+        self.assertEqual(entry["text"], "after a line too long to be a headword")
+        self.assertEqual(library.look_up("x" * 5000)["results"], [])
+        self.assertLess(time.monotonic() - started, 5)
 
     def test_utf8_dsl(self):
         path = os.path.join(self.dir, "utf8.dsl")

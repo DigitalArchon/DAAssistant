@@ -28,6 +28,16 @@ from .dictzip import DictzipFile
 
 # How many spellings one headword's optional parts may expand to.
 MAX_VARIANTS = 8
+# How many ways of taking them or leaving them are tried for those: all of them, for
+# four parts or fewer. Stopping at MAX_VARIANTS spellings found was no stop for parts
+# that never make a new one - "word()()()…", thirty-two empty ones, was tried all 2^32
+# ways, and indexing never ended.
+MAX_TRIES = 16
+# No headword runs to more characters than this. A line in column 0 that does is a
+# body line that lost its indent, or garbage, and is not indexed - nor, at more than
+# four bytes a character, even decoded: a line of a hundred megabytes cost as much
+# again as a string, and every spelling of it as much again.
+MAX_HEADWORD = 512
 
 
 class Encoding:
@@ -234,6 +244,13 @@ class DSL:
         in_header = True
         for start in self._starts(data):
             end = self._line_end(data, start)
+            if end - start > 4 * MAX_HEADWORD:
+                # Too long to be a headword (see MAX_HEADWORD): it ends the entry
+                # before it, and begins none.
+                for word in group:
+                    yield word, group_start, start - group_start
+                group, previous_end = [], None
+                continue
             line = bytes(data[start:end]).decode(enc.name, "replace")
             line = line.lstrip("\ufeff").rstrip("\r")
             if not line.strip():
@@ -309,26 +326,71 @@ def display_headword(line):
     return " ".join("".join(out).split())
 
 
+_MARKUP = {"{": re.compile(r"[\\{}]"), "(": re.compile(r"[\\()]")}
+
+
+def _parts(text, opener):
+    """`text` cut where it has an `opener` - "{" or "(" - and the next closer after it,
+    neither escaped: ([the pieces between them], [what each pair holds]), one piece
+    more than there are parts. An opener with no closer after it is text.
+
+    In one pass, from one markup character to the next. The lazy regular expression
+    this was done with searched the rest of the line for a closer from every opener,
+    found or not: a headword of twenty thousand "(" took two seconds to index, and
+    "{" as long in one being shown as long again."""
+    closer = "}" if opener == "{" else ")"
+    markup_char = _MARKUP[opener]
+    pieces, parts = [], []
+    piece_start, opened, position = 0, None, 0
+    while True:
+        match = markup_char.search(text, position)
+        if match is None:
+            break
+        position = match.start()
+        char = text[position]
+        if char == "\\":
+            position += 2               # it and the character it escapes
+            continue
+        if opened is None:
+            if char == opener:
+                opened = position
+        elif char == closer:
+            pieces.append(text[piece_start:opened])
+            parts.append(text[opened + 1:position])
+            piece_start, opened = position + 1, None
+        position += 1
+    pieces.append(text[piece_start:])
+    return pieces, parts
+
+
 def unsorted_free(line):
     """A headword line less its {unsorted} parts - what ~ in the body stands for."""
-    return " ".join(_unescape(re.sub(r"(?<!\\)\{.*?(?<!\\)\}", "", line)).split())
+    return " ".join(_unescape("".join(_parts(line, "{")[0])).split())
 
 
 def spellings(line):
-    """Every way a headword line can be looked up: optional parts with and without."""
-    text = re.sub(r"(?<!\\)\{.*?(?<!\\)\}", "", line.strip())
-    pieces, optional = [], []
-    position = 0
-    for match in re.finditer(r"(?<!\\)\((.*?)(?<!\\)\)", text):
-        pieces.append(text[position:match.start()])
-        optional.append(match.group(1))
-        position = match.end()
-    pieces.append(text[position:])
+    """Every way a headword line can be looked up: optional parts with and without.
+
+    At most MAX_VARIANTS of them, from at most MAX_TRIES ways of taking the parts, and
+    none for a line too long to be a headword (MAX_HEADWORD)."""
+    text = line.strip()
+    if len(text) > MAX_HEADWORD:
+        return []
+    pieces, optional = _parts("".join(_parts(text, "{")[0]), "(")
+    # An empty part, "()", is the same spelling taken or left: it is no part at all.
+    kept, rests = [], [pieces[0]]
+    for part, rest in zip(optional, pieces[1:]):
+        if part:
+            kept.append(part)
+            rests.append(rest)
+        else:
+            rests[-1] += rest
     found = []
-    for choice in itertools.product((True, False), repeat=len(optional)):
-        out = [pieces[0]]
-        for keep, part, rest in zip(choice, optional, pieces[1:]):
-            out.append(part if keep else "")
+    for choice in itertools.islice(itertools.product((True, False), repeat=len(kept)),
+                                   MAX_TRIES):
+        out = [rests[0]]
+        for take, part, rest in zip(choice, kept, rests[1:]):
+            out.append(part if take else "")
             out.append(rest)
         word = " ".join(_unescape("".join(out)).split())
         if word and word not in found:

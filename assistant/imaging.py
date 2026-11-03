@@ -64,7 +64,16 @@ def flatten(img):
 
 def pixels_only(img):
     """A brand-new image made from `img`'s pixel bytes alone: no .info, so no metadata of
-    any kind can be carried over into what is encoded from it."""
+    any kind can be carried over into what is encoded from it.
+
+    A palette picture's bytes are indexes into its palette, so it is made the colours
+    they stand for first - with its transparency, which a palette's is kept in .info.
+    Rebuilt from its indexes alone it lost the palette: a picture pasted from the
+    clipboard showed and saved near-black, though the model, sent it flattened, saw
+    its colours."""
+    if img.mode in ("P", "PA"):
+        img = img.convert("RGBA" if img.mode == "PA" or "transparency" in img.info
+                          else "RGB")
     return Image.frombytes(img.mode, img.size, img.tobytes())
 
 

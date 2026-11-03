@@ -22,12 +22,17 @@ Two presentations share the crop maths:
 from .. import gtkcompat  # noqa: F401  (pins GI versions - must come first)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
+from .. import imaging
+
 MIN_SELECTION = 8   # px, in image space; below this a drag is treated as a stray click
 
 
 def pil_to_pixbuf(img):
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    """`img` to draw: as it is sent (imaging.flatten), a 16-bit grey's values scaled to
+    eight bits and transparency on white. convert("RGB") clipped a 16-bit picture at
+    255, so a scan pasted from the clipboard showed blank white in the review and in the
+    black-out editor - nothing there to black out, in a picture sent with its greys."""
+    img = imaging.flatten(img)
     w, h = img.size
     return GdkPixbuf.Pixbuf.new_from_bytes(
         GLib.Bytes.new(img.tobytes()), GdkPixbuf.Colorspace.RGB, False, 8, w, h, w * 3)

@@ -558,6 +558,44 @@ class PicturesAndFilesAtTheEdges(unittest.TestCase):
         self.assertEqual(picture.getpixel((255, 0))[0], 255)
         self.assertEqual(picture.getpixel((0, 0))[0], 0)
 
+    def test_a_16_bit_greyscale_picture_is_shown_with_its_greys(self):
+        # The review's preview and the black-out editor: what is shown is what is sent.
+        from assistant.capture.selector import pil_to_pixbuf
+        gradient = Image.new("I;16", (256, 4))
+        gradient.putdata([x * 257 for x in range(256)] * 4)
+        pixbuf = pil_to_pixbuf(gradient)
+        row = pixbuf.get_pixels()[:256 * 3]
+        greys = {row[x * 3] for x in range(256)}
+        self.assertGreater(len(greys), 200, "shown blank white")
+        self.assertEqual((row[0], row[255 * 3]), (0, 255))
+
+    def test_transparency_is_shown_on_white_as_it_is_sent(self):
+        from assistant.capture.selector import pil_to_pixbuf
+        pixbuf = pil_to_pixbuf(Image.new("RGBA", (4, 4), (255, 0, 0, 0)))
+        self.assertEqual(tuple(pixbuf.get_pixels()[:3]), (255, 255, 255))
+
+    def _palette_picture(self, transparent=None):
+        picture = Image.new("P", (4, 2))
+        picture.putpalette([200, 30, 30, 20, 120, 220] + [0, 0, 0] * 254)
+        picture.putdata([0, 0, 1, 1] * 2)
+        if transparent is not None:
+            picture.info["transparency"] = transparent
+        return picture
+
+    def test_a_palette_picture_keeps_its_colours_in_the_screenshot(self):
+        # Shown, viewed, and saved by Save screenshot and beside the Markdown.
+        with Image.open(BytesIO(imaging.screenshot_png(self._palette_picture()))) as shot:
+            shot = shot.convert("RGB")
+            self.assertEqual(shot.getpixel((0, 0)), (200, 30, 30))
+            self.assertEqual(shot.getpixel((3, 1)), (20, 120, 220))
+
+    def test_and_its_transparency(self):
+        png = imaging.screenshot_png(self._palette_picture(transparent=1))
+        with Image.open(BytesIO(png)) as shot:
+            self.assertEqual(shot.convert("RGBA").getpixel((0, 0)), (200, 30, 30, 255))
+            self.assertEqual(shot.convert("RGBA").getpixel((3, 0))[3], 0)
+        self.assertEqual(set(png_chunks(png)[0]) - {"IHDR", "IDAT", "IEND"}, set())
+
     def test_a_pipe_is_refused_without_waiting_for_it(self):
         fifo = os.path.join(self.dir, "pipe")
         os.mkfifo(fifo)

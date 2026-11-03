@@ -43,10 +43,16 @@ def _kept_actions(webkit):
 
 
 def menu_item(webkit, label, callback, name="custom"):
-    """A context menu item of our own that runs `callback()`."""
+    """A context menu item of our own, saying `label` as written, that runs
+    `callback()`.
+
+    WebKit builds its menu from a GMenu (gtk_menu_shell_bind_model), which reads every
+    label as a mnemonic, as its own "_Copy" is: an underscore marks the key and is not
+    shown. So a selection looked up, snake_case_word, was offered as "snakecaseword".
+    Doubled, each one is shown as itself."""
     action = Gio.SimpleAction.new(name, None)
     action.connect("activate", lambda *_args: callback())
-    return webkit.ContextMenuItem.new_from_gaction(action, label, None)
+    return webkit.ContextMenuItem.new_from_gaction(action, label.replace("_", "__"), None)
 
 
 class Guard:

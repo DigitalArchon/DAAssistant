@@ -272,6 +272,45 @@ class TheViewStaysOnItsPage(unittest.TestCase):
         self.assertTrue(self.guard._on_context_menu(self.view, menu, None, hit))
 
 
+class MenuLabelsSayWhatIsSelected(unittest.TestCase):
+    """WebKit reads a context menu item's label as a mnemonic, as GTK's own menus built
+    from a model do; a text view's popup menu does not."""
+
+    CONFIG = types.SimpleNamespace(dictionaries_dir="/dictionaries",
+                                   encyclopedia_enabled=True)
+
+    def test_an_underscore_in_a_webkit_menu_is_shown_not_taken_for_a_key(self):
+        from assistant.ui import lookups
+        made = []
+        webkit = types.SimpleNamespace(ContextMenuItem=types.SimpleNamespace(
+            new_from_gaction=lambda _action, label, _target: made.append(label) or label,
+            new_separator=lambda: "separator"))
+        menu = mock.Mock()
+        menu.get_items.return_value = []
+        lookups.add_to_webkit_menu(webkit, menu, self.CONFIG, "snake_case_word",
+                                   lambda kind, what: None)
+        self.assertEqual(made, ["Look up “snake__case__word” in the dictionary",
+                                "Search the encyclopedia for “snake__case__word”"])
+
+    def test_a_text_views_menu_takes_the_label_as_written(self):
+        from assistant.ui import lookups
+        menu = Gtk.Menu()
+        lookups.add_to_gtk_menu(menu, self.CONFIG, "snake_case_word",
+                                lambda kind, what: None)
+        labels = [item.get_label() for item in menu.get_children()
+                  if not isinstance(item, Gtk.SeparatorMenuItem)]
+        self.assertEqual(labels, ["Look up “snake_case_word” in the dictionary",
+                                  "Search the encyclopedia for “snake_case_word”"])
+
+    @unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+    def test_the_item_is_webkits_own_and_runs_what_it_was_given(self):
+        from assistant.ui import webpolicy
+        ran = []
+        item = webpolicy.menu_item(chat.WebKit2, "a_b", lambda: ran.append(True))
+        item.get_gaction().activate(None)
+        self.assertEqual(ran, [True])
+
+
 @unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
 class AnArticleFromAFolderWithASpace(unittest.TestCase):
     def test_its_own_load_is_let_through_however_the_uri_is_spelled(self):

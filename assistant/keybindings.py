@@ -210,6 +210,16 @@ class GSettingsKeybindings:
         """A Cinnamon entry under the name used before 4.0, which no rebuild lets go of."""
         return self.desktop == "cinnamon" and entry.startswith(f"{PREFIX}-")
 
+    def _command(self, action):
+        """What `action`'s shortcut runs. GNOME's media keys launch it through
+        g_app_info_create_from_commandline, which makes it the Exec of a desktop entry,
+        whose field codes are expanded on launch: in the launcher's path 50%off became
+        50ff, pct%u became pct and 100%% became 100%. So GNOME is given each % doubled,
+        which that makes one % again. Cinnamon splits the command as the shell would
+        (GLib.shell_parse_argv), with no field codes, and is given it as it is."""
+        run = command(action)
+        return run.replace("%", "%%") if self.desktop == "gnome" else run
+
     def _current(self):
         code, out = self.run(["gsettings", "get", self.list_schema, self.list_key])
         if code == 127:
@@ -268,7 +278,7 @@ class GSettingsKeybindings:
             if accel:
                 path = self._item(self._entry(action))
                 self._set(path, "name", self._string(f"{NAME}: {labels[action]}"))
-                self._set(path, "command", self._string(command(action)))
+                self._set(path, "command", self._string(self._command(action)))
                 self._set(path, "binding", self._gvariant([accel]) if self.binding_list
                           else self._string(accel))
         for entry in ours:

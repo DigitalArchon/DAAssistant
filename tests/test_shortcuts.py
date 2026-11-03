@@ -364,6 +364,25 @@ def gvariant_string(text):
     return GLib.Variant.parse(GLib.VariantType("s"), text, None, None).get_string()
 
 
+def gnome_runs(commandline):
+    """What GNOME's media keys run for a custom shortcut's `commandline`. They launch it
+    through g_app_info_create_from_commandline, which makes it a desktop entry's Exec,
+    expanded as GLib expands one: %% is a %, %c, %i and %k the app's name, icon and
+    file, any other % code nothing, there being no files - and then split as the shell
+    would."""
+    out, i = [], 0
+    while i < len(commandline):
+        if commandline[i] == "%" and i + 1 < len(commandline):
+            code = commandline[i + 1]
+            out.append({"%": "%", "c": "'name'", "i": "--icon 'icon'", "k": "'file'"}
+                       .get(code, ""))
+            i += 2
+            continue
+        out.append(commandline[i])
+        i += 1
+    return GLib.shell_parse_argv("".join(out))[1]
+
+
 CINNAMON_BASE = "/org/cinnamon/desktop/keybindings/custom-keybindings"
 
 
@@ -473,6 +492,23 @@ class GSettingsWriter(unittest.TestCase):
         sent = next(c for c in host.calls if c[3:4] == ["command"])[4]
         self.assertNotEqual(sent, wanted)
         self.assertEqual(gvariant_string(sent), wanted)
+
+    def test_a_percent_in_the_launchers_path_reaches_gnome_as_it_is(self):
+        # gsd-media-keys runs a custom shortcut through g_app_info_create_from_
+        # commandline, which expands field codes: 50%off ran 50ff, pct%u ran pct and
+        # 100%% ran 100%.
+        for path in ("/home/u/50%off/DA.AppImage", "/home/u/pct%u/DA.AppImage",
+                     "/home/u/100%%/DA.AppImage", "/home/u/My %c Apps/DA.AppImage"):
+            for desktop, runs in (("gnome", gnome_runs),
+                                  ("cinnamon", lambda line: GLib.shell_parse_argv(line)[1])):
+                with self.subTest(path=path, desktop=desktop):
+                    host = FakeHost()
+                    with mock.patch.dict(os.environ, {"APPIMAGE": path}):
+                        keybindings.GSettingsKeybindings(desktop, host).apply(
+                            {"ocr_only": "F5"}, LABELS, NAMES)
+                    sent = next(c for c in host.calls if c[3:4] == ["command"])[4]
+                    self.assertEqual(runs(gvariant_string(sent)),
+                                     [path, "--action=ocr_only"])
 
     def test_what_gsettings_said_is_in_the_error(self):
         def refuses(args):

@@ -73,18 +73,22 @@ def write_dsl(path, text=DSL_TEXT):
         f.write(dsl_bytes(text))
 
 
-def write_dictzip(path, data, chunk=64, claimed=None):
+def write_dictzip(path, data, chunk=64, claimed=None, dictd=False):
     """A real dictzip: deflate flushed every `chunk` bytes, sizes in an RA field - which
-    says the chunks are `claimed` bytes long, if given, whatever they are."""
+    says the chunks are `claimed` bytes long, if given, whatever they are. With `dictd`,
+    laid out as dictd's dictzip writes one: the stream's last block after the last
+    chunk, outside the table, rather than in it."""
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
     sizes, body = [], b""
     for start in range(0, len(data), chunk):
         piece = compressor.compress(data[start:start + chunk])
         piece += compressor.flush(zlib.Z_FULL_FLUSH)
-        if start + chunk >= len(data):
+        if start + chunk >= len(data) and not dictd:
             piece += compressor.flush(zlib.Z_FINISH)
         sizes.append(len(piece))
         body += piece
+    if dictd:
+        body += compressor.flush(zlib.Z_FINISH)
     ra = (struct.pack("<HHH", 1, claimed or chunk, len(sizes))
           + struct.pack(f"<{len(sizes)}H", *sizes))
     extra = b"RA" + struct.pack("<H", len(ra)) + ra
@@ -203,6 +207,23 @@ class Dictzip(unittest.TestCase):
         write_dictzip(path, bytes(range(256)) * 4, chunk=128, claimed=64)
         with self.assertRaises(dzmodule.DictzipError):
             DictzipFile(path).read(0, 10)
+
+    def test_dictds_own_layout_is_whole(self):
+        # dictd's dictzip ends the deflate stream after the last chunk, outside the
+        # table: every .dsl.dz it makes was reported cut short, though read whole.
+        data = dsl_bytes('#NAME "Zipped"\n\n' + "".join(
+            f"glorp{i}\n\t[m1]invented sense {i}\n" for i in range(300)))
+        path = os.path.join(self.dir, "dictd.dsl.dz")
+        write_dictzip(path, data, chunk=1000, dictd=True)
+        dz = DictzipFile(path)
+        self.assertEqual(bytes(dz.read_all()), data)
+        self.assertIsNone(dz.cut_short)
+        # Without its end it is cut short still, though every chunk is there.
+        with open(path, "r+b") as f:
+            f.truncate(os.path.getsize(path) - 8)
+        dz = DictzipFile(path)
+        self.assertEqual(bytes(dz.read_all()), data)
+        self.assertIn("is cut short", dz.cut_short)
 
     def test_a_file_cut_short_reads_as_far_as_it_goes(self):
         import random

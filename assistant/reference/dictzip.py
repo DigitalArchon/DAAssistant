@@ -153,6 +153,21 @@ class DictzipFile:
                                f"{self.chunk_length} bytes")
         return data, inflater.eof
 
+    def _trailer_records(self, size):
+        """Whether the file's gzip trailer records `size`, the length its chunks unpacked
+        to, as the low 32 bits gzip keeps. dictd's dictzip, which makes nearly every
+        .dsl.dz there is, writes the deflate stream's last block after the last chunk,
+        outside the table of chunks: a whole file's last chunk does not end the stream,
+        and its trailer is what shows it whole. A file that lost its end has some other
+        bytes where the trailer was."""
+        try:
+            with open(self.path, "rb") as f:
+                f.seek(-4, os.SEEK_END)
+                recorded = struct.unpack("<I", f.read(4))[0]
+        except (OSError, struct.error):
+            return False
+        return recorded == size & 0xFFFFFFFF
+
     def _chunk(self, f, index):
         cached = self._cache.get(index)
         if cached is not None:
@@ -296,7 +311,8 @@ class DictzipFile:
                         self.cut_short = f"{e}, of {count}"
                         break
                     data += chunk
-                    if index == count - 1 and not complete:
+                    if index == count - 1 and not complete \
+                            and not self._trailer_records(len(data)):
                         self.cut_short = f"its last chunk, {index}, is cut short"
             if most is None and len(data) > self.limit:
                 raise self._too_large()

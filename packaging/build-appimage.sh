@@ -28,9 +28,10 @@ if ! podman image exists "$TAG"; then
     # The host's CA bundle, for apt to reach the snapshot over https, goes in as a copy in
     # the build context rather than a mount: on an SELinux host (Fedora, RHEL) a mount needs
     # :Z, and rootless Podman may not relabel a file root owns - nor should anything
-    # relabel a file the host's own programs read.
+    # relabel a file the host's own programs read. Readable by all, whatever the umask:
+    # COPY keeps its mode, and apt fetches as its own user, _apt.
     mkdir "$WORK/context"
-    cp "$ca" "$WORK/context/hostca.crt"
+    install -m 0644 "$ca" "$WORK/context/hostca.crt"
     podman build -t "$TAG" \
         --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg APT_SNAPSHOT="$APT_SNAPSHOT" \
         -f packaging/appimage/Containerfile "$WORK/context"

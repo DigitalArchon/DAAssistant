@@ -468,7 +468,8 @@ class ReproducibleBuild(unittest.TestCase):
         # :Z on the host's root-owned CA bundle: rootless Podman on an SELinux host (Fedora,
         # RHEL) cannot relabel it, so nobody there could rebuild a release.
         self.assertNotRegex(self.wrapper, r"podman build[^\n]*-v ")
-        self.assertIn('cp "$ca" "$WORK/context/hostca.crt"', self.wrapper)
+        # 0644 whatever the umask: apt reads it as _apt, and COPY keeps the mode.
+        self.assertIn('install -m 0644 "$ca" "$WORK/context/hostca.crt"', self.wrapper)
         containerfile = (PACKAGING / "Containerfile").read_text()
         self.assertIn("COPY hostca.crt /hostca.crt", containerfile)
         self.assertRegex(containerfile, r"rm [^\n]*/hostca\.crt")

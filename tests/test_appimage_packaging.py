@@ -429,9 +429,26 @@ class ReproducibleBuild(unittest.TestCase):
                               "$W/src/packaging/private-mode.lock"}, locks)
         self.assertIn("--only-binary :all: -r \"$P/requirements.lock\"", self.build)
 
+    def test_nothing_is_installed_but_from_a_lock_or_built_here(self):
+        # The lock run once installed "pip==26.2.2" "pip-tools==7.6.1": versions, not
+        # files, and what they pull in as it came on the day.
+        installs = 0
+        for line in self._commands():
+            command = line.split(" #", 1)[0].strip()
+            if command.startswith("#") or not re.search(r'pip"? install ', command):
+                continue
+            installs += 1
+            if re.search(r' -r "[^"]+\.lock"', command):
+                self.assertIn("--require-hashes", command, command)
+            else:
+                self.assertRegex(command, r'pip"? install( -[-\w]+)* "\$W/wheels"/\S+\.whl$')
+        self.assertGreaterEqual(installs, 6)
+        self.assertIn('--require-hashes --no-deps -r "$P/lock-requirements.lock"', self.build)
+        self.assertRegex(self.build, r"for name in [^;]*\block-requirements\b[^;]*; do")
+
     def test_every_locked_package_carries_a_hash(self):
         for path in [PACKAGING / f"{name}.lock" for name in
-                     ("requirements", "build-requirements", "sdists")] + \
+                     ("requirements", "build-requirements", "sdists", "lock-requirements")] + \
                 [ROOT / "packaging" / "private-mode.lock"]:
             if not path.exists():
                 self.skipTest(f"{path.name} not generated yet: packaging/build-appimage.sh lock")

@@ -64,6 +64,7 @@ never plain http, not even through a redirect; downloads are cached in
 | Runtime Python packages (wheels, with hashes) | `appimage/requirements.lock`, from `requirements.in` |
 | PyGObject, pycairo (source archives, with hashes) | `appimage/sdists.lock`, from `sdists.in` |
 | meson, meson-python, ninja, setuptools (with hashes) | `appimage/build-requirements.lock` |
+| pip and pip-tools, which write the locks above, and what they run on (with hashes) | `appimage/lock-requirements.lock`, from `lock-requirements.in` |
 | Privacy Mode's client (wheels, with hashes) | `private-mode.lock`, by `lock-private-mode.sh`, resolved against `requirements.lock` |
 | Ruffle (npm tarball, SHA-512) | `ruffle.lock` |
 | The fallback libraries and typelibs | the apt snapshot in `appimage/pins.sh` |

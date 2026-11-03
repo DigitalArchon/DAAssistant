@@ -368,13 +368,19 @@ class ConfigFileKeybindings:
         raises OSError. Where that block stops is anybody's guess, and taking everything
         after BEGIN, as this once did, took the user's own lines with it - after which
         the next save backed the damaged file up over the only good copy.
+
+        Text with no block in it comes back as it was, to the byte. The blank lines at
+        its end were once trimmed whatever it held, so that a first start with no
+        shortcuts chosen rewrote any config that did not end in exactly one newline -
+        its backup overwritten, the compositor reloaded - with nothing of the app's in
+        it before or after.
         """
-        out, begun = [], None
+        out, begun, found = [], None, False
         for number, line in enumerate(text.splitlines(keepends=True), 1):
             if line.lstrip().startswith(begin):
                 if begun is not None:
                     break                   # a second BEGIN before the first one's END
-                begun = number
+                begun, found = number, True
             elif begun is None:
                 out.append(line)
             elif line.strip() == end:
@@ -383,6 +389,8 @@ class ConfigFileKeybindings:
             raise OSError(f"{where}: the {NAME} block that begins on line {begun} has no "
                           f'"{end}" line to end it, so nothing was changed. Put that '
                           f"line back where the block ends, or delete the block")
+        if not found:
+            return text
         return "".join(out).rstrip("\n") + ("\n" if out else "")
 
     def _read(self):
@@ -437,7 +445,8 @@ class ConfigFileKeybindings:
         block = self.block(bindings, labels, actions)
         after = self.strip(before, self.describe(), self.begin, self.end)
         if block:
-            after = after + ("\n" if after else "") + block + "\n"
+            body = after.rstrip("\n")
+            after = (body + "\n\n" if body else "") + block + "\n"
         if after == before:
             return
         self._write(after)

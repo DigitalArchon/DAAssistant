@@ -612,6 +612,30 @@ class ConfigFileWriter(TempDir):
         writer.remove(NAMES)
         self.assertEqual(self.read(path), "bind = SUPER, Q, exec, kitty\n")
 
+    def test_with_nothing_to_write_and_none_of_ours_there_the_file_is_left_alone(self):
+        # A first start with no shortcuts chosen rewrote a config that did not end in
+        # exactly one newline, overwrote its backup and reloaded the compositor.
+        for text in ("bind = SUPER, Q, exec, kitty", "bind = SUPER, Q, exec, kitty\n\n\n",
+                     "", "\n", "# mine\n\n"):
+            for desktop in ("hyprland", "sway"):
+                with self.subTest(text=text, desktop=desktop):
+                    writer, path = self.writer(text, desktop)
+                    writer.apply({}, LABELS, NAMES)
+                    writer.remove(NAMES)
+                    self.assertEqual(self.read(path), text)
+                    self.assertFalse(os.path.exists(path + ".da-assistant.bak"))
+                    self.assertEqual(self.host.calls, [])
+
+    def test_a_block_goes_after_the_users_lines_and_comes_out_whole(self):
+        for text in ("bind = SUPER, Q, exec, kitty", "bind = SUPER, Q, exec, kitty\n\n\n"):
+            with self.subTest(text=text):
+                writer, path = self.writer(text)
+                writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+                self.assertTrue(self.read(path).startswith(
+                    "bind = SUPER, Q, exec, kitty\n\n# --- DA Assistant hotkeys"))
+                writer.remove(NAMES)
+                self.assertEqual(self.read(path), "bind = SUPER, Q, exec, kitty\n")
+
     def test_a_hash_in_the_launchers_path_is_doubled_for_hyprland(self):
         writer, path = self.writer("")
         with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/C# Apps/DA#1.AppImage"}):
@@ -957,6 +981,23 @@ class Manager(TempDir):
         self.assertIn("does not exist", manager.error)
         self.assertIsNone(manager.trigger_label("ocr_only"))
         self.assertEqual(self.config().hotkeys_installed, {})       # tried again next time
+
+    def test_a_first_start_with_no_shortcuts_changes_nothing_in_the_desktop(self):
+        os.makedirs(os.path.join(self.dir, "hypr"))
+        path = os.path.join(self.dir, "hypr", "hyprland.conf")
+        with open(path, "w") as f:
+            f.write("bind = SUPER, Q, exec, kitty\n\n")
+        host = FakeHost()
+        with Patched(session_of(desktop="hyprland")), \
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            manager = self.manager(self.config(), host)
+            manager.start()
+        self.assertEqual(manager.mode, "desktop")
+        self.assertIsNone(manager.error)
+        with open(path) as f:
+            self.assertEqual(f.read(), "bind = SUPER, Q, exec, kitty\n\n")
+        self.assertFalse(os.path.exists(path + ".da-assistant.bak"))
+        self.assertEqual(host.calls, [])
 
     def test_a_config_with_latin1_in_it_is_written_and_the_app_starts(self):
         # Read as strict UTF-8 it raised UnicodeDecodeError out of start(), which runs

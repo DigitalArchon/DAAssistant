@@ -702,7 +702,8 @@ checked like any other), and with Strict off, what is under the heading *Not fro
 encyclopedia*, up to the next heading as high as it. With Strict on nothing is set
 apart: a quotation under such a heading is checked like the rest. A quotation not found
 word for word is marked ⚠ where it stands, and
-listed under the answer. Click the
+listed under the answer; an answer with nothing quoted to check says so there ("none"),
+rather than looking like one whose every quotation was found. Click the
 ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
 passage's own words highlighted - where it was found under another number, or where the
 passage comes closest to it, so you can see straight away what the source really says.

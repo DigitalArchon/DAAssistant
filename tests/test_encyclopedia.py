@@ -832,6 +832,19 @@ class Sources(unittest.TestCase):
         self.assertIn("⚠ “made &lt;up&gt;” cited as [1]: not found in any passage", html)
         self.assertIn("switch Strict off", html)
 
+    def test_an_answer_with_nothing_to_check_says_so(self):
+        # With no "N of M" line, it looked just like an answer whose every quotation
+        # was found.
+        from assistant.ui import markdown_html
+        from assistant.ui.encyclopedia_windows import sources_markdown
+        passages = [self.passage(1, "One")]
+        said = "Quotations checked against the passages: none - nothing in this answer"
+        self.assertIn(said, markdown_html.sources_html(passages, [1], 0, []))
+        self.assertIn(said, sources_markdown(passages, [1], None, []))
+        # Where no check was made, it says nothing of one.
+        self.assertNotIn("Quotations checked", markdown_html.sources_html(passages, [1], 0))
+        self.assertNotIn("Quotations checked", sources_markdown(passages, [1], None))
+
     def test_a_quotation_not_found_links_to_where_it_is_or_comes_closest(self):
         from assistant.ui import markdown_html
         from assistant.ui.encyclopedia_windows import sources_markdown
@@ -1212,6 +1225,19 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertIn("⚠", window.status.get_text())
             self.assertIn("each spring\" [1] ⚠", window._markdown())
             self.assertNotIn("enc://cite", window._markdown())
+        finally:
+            window.destroy()
+
+    def test_an_answer_that_quotes_nothing_is_not_passed_off_as_checked(self):
+        self.client.answer = "They cross the sea every winter [1]."
+        window = self._window(question="Where do zorblaxes migrate?")
+        try:
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            _question, answer, sources = window.conversation
+            self.assertEqual(answer["checks"], [])
+            self.assertIn("none - nothing in this answer was checked", sources["html"])
+            self.assertIn("none - nothing in this answer was checked", window._markdown())
         finally:
             window.destroy()
 

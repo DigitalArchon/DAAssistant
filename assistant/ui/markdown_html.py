@@ -506,6 +506,9 @@ EDITION_NAMES = {"EB": "Encyclopedia", "EBI": "Student Encyclopedia",
                  "EBK": "Elementary Encyclopedia"}
 # Contributors named beside a source before the rest become "and 20 others".
 BYLINE_NAMES = 3
+# Under an answer with no quotation of the passages in it to check.
+NOTHING_CHECKED = ("Quotations checked against the passages: none - nothing in this "
+                   "answer was checked word for word.")
 
 
 def check_where(check):
@@ -518,7 +521,7 @@ def check_where(check):
     return "not found in any passage"
 
 
-def sources_html(passages, cited, turn, checks=(), limited=False):
+def sources_html(passages, cited, turn, checks=None, limited=False):
     """The encyclopedia passages an Ask Encyclopedia answer was given, under it.
 
     Those it cited, by their numbers - each a link that opens the article in Search
@@ -573,6 +576,9 @@ def sources_html(passages, cited, turn, checks=(), limited=False):
             lines.append(f'<p class="check-failed">⚠ “{html.escape(_short(check["quote"]))}”'
                          f"{cited_as}: {check_where(check)}{show}.</p>")
         parts.append("".join(lines))
+    elif checks is not None:
+        # Checked, and nothing quoted to check: not to be taken for all found.
+        parts.append(f'<p class="checks">{NOTHING_CHECKED}</p>')
     tiles, seen = [], set()
     for _n, passage in used:
         credits = passage.get("credits") or {}

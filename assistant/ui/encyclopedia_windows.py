@@ -618,10 +618,11 @@ def _md(text):
     return re.sub(r"([\\`*_\[\]<>])", r"\\\1", " ".join((text or "").split()))
 
 
-def sources_markdown(passages, cited_numbers, turn, checks=(), limited=False):
+def sources_markdown(passages, cited_numbers, turn, checks=None, limited=False):
     """An answer's sources as Markdown - what sources_html shows, for the plain-text
     view and for Copy and Save. With `turn`, the answer's place in the conversation, the
     sources and their pictures and films are links the window follows; without, plain.
+    `checks`: check_quotes' - [] says that nothing was checked, None says nothing.
     """
     def link(label, address):
         return f"[{_md(label)}]({address})" if turn is not None else _md(label)
@@ -660,6 +661,8 @@ def sources_markdown(passages, cited_numbers, turn, checks=(), limited=False):
                     if turn is not None and check.get("near") else "")
             lines.append(f"⚠ “{_md(check['quote'])}”{cited_as}: "
                          f"{markdown_html.check_where(check)}{show}.")
+    elif checks is not None:
+        lines += ["", markdown_html.NOTHING_CHECKED]
     media, seen = [], set()
     for _n, passage in used:
         credits = passage.get("credits") or {}

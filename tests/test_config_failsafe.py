@@ -79,6 +79,18 @@ class BrokenBeforeItStarted(TempDir):
             self.write(json.dumps({"privacy_mode": value}))
             self.assertFalse(Config(self.path).privacy_mode, value)
 
+    def test_and_so_is_null(self):
+        """null passed as "undecided", which a setting may be until it is decided - and
+        Privacy Mode undecided was off. It still is that for one that may be."""
+        self.write(json.dumps({"privacy_mode": None, "privacy_strict": None,
+                               "hotkeys": None}))
+        config = Config(self.path)
+        self.assertIs(config.privacy_mode, True)
+        self.assertIs(config.privacy_strict, True)
+        self.assertIn("privacy_mode in config.json is null, which is not true or false; "
+                      "using true.", config.load_warnings)
+        self.assertIsNone(config.hotkeys)
+
 
 if __name__ == "__main__":
     unittest.main()

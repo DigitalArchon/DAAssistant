@@ -171,7 +171,8 @@ class ConfigError(Exception):
 # A value of the wrong type falls back to the default, and a file that cannot be read
 # at all to the defaults - which for these is off: a stray comma or "privacy_mode":
 # "enabled" sent the next capture to the ordinary models. Read as on, the worst is a
-# request held back, and a notice that says why.
+# request held back, and a notice that says why. null is of the wrong type for these
+# too, though it passes elsewhere as "undecided" (_coerce): undecided was off.
 FAIL_SAFE = {"privacy_mode": True, "privacy_strict": True}
 _SAYS_ON = r'"%s"\s*:\s*(?:true|1|"\s*(?:true|yes|on|1)\s*")'
 
@@ -319,6 +320,8 @@ class Config:
             if key not in DEFAULTS:
                 continue
             try:
+                if value is None and key in FAIL_SAFE:
+                    raise ValueError(value)     # never "undecided": see FAIL_SAFE
                 values[key] = _in_range(key, _coerce(DEFAULTS[key], value))
             except (TypeError, ValueError):
                 instead = FAIL_SAFE.get(key, DEFAULTS[key])

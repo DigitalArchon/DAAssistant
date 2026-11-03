@@ -184,9 +184,16 @@ class StarDict:
 
     def _read_picture(self, name):
         kind = PICTURE_TYPES.get(os.path.splitext(name)[1].lower())
-        res = os.path.realpath(self.res)
-        path = os.path.realpath(os.path.join(res, name))
-        if kind is None or not path.startswith(res + os.sep):
+        # No file's name holds a NUL. One written %00 into an entry's <img> made
+        # realpath() raise, and took the whole entry with it, not just the picture.
+        if kind is None or "\x00" in name:
+            return None
+        try:
+            res = os.path.realpath(self.res)
+            path = os.path.realpath(os.path.join(res, name))
+        except (OSError, ValueError):
+            return None
+        if not path.startswith(res + os.sep):
             return None
         try:
             if os.path.getsize(path) > MAX_PICTURE:

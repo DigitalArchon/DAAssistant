@@ -408,6 +408,16 @@ class StarDictFiles(unittest.TestCase):
         self.assertIn('<img src="data:image/png;base64,iVBORyBtYWRlIHVw" width="15">',
                       html)
 
+    def test_a_nul_in_a_pictures_name_drops_the_picture_not_the_entry(self):
+        os.mkdir(os.path.join(self.dir, "res"))
+        ifo = write_stardict(self.dir, "h", [
+            ("alpha", b"<b>kept</b> <img src='a%00.png'> <IMG SRC='b\x00.png'> too")])
+        d = StarDict(ifo)
+        (word, offset, size), = d.headwords()
+        html, text = d.render(word, d.read(offset, size))
+        self.assertNotIn("<img", html)
+        self.assertEqual(text, "kept too")
+
     def test_xdxf_and_plain_text_articles(self):
         ifo = write_stardict(self.dir, "x", [
             ("gamma", b"<k>gamma</k>\n<abr>n</abr> letter <kref>delta</kref>")],

@@ -237,10 +237,9 @@ def _bword_links(text):
 
 
 # XDXF article markup -> HTML. Anything not listed stays as it is: an element the
-# browser does not know, showing its text.
+# browser does not know, showing its text. The headword and a cross-reference are
+# pairs, made by _pairs; the rest are tags, one for one.
 _XDXF = [
-    (re.compile(r"<k>(.*?)</k>", re.S), r'<b class="hw">\1</b>'),
-    (re.compile(r"<kref>(.*?)</kref>", re.S), None),
     (re.compile(r'<c(?:\s+c="([^"]*)")?>', re.S),
      lambda m: f"<font{markup.coloured(markup.text_colour(m.group(1)))}>"),
     (re.compile(r"</c>"), "</font>"),
@@ -255,12 +254,30 @@ _XDXF = [
 ]
 
 
+def _pairs(text, opener, closer, make):
+    """`text` with each `opener`...`closer` in it made make(what is between) - the
+    first closer after each opener, and an opener with none after it left as it is.
+
+    As the lazy regular expressions <k>(.*?)</k> and <kref>(.*?)</kref> did it, but
+    without searching the rest of the article for a closer from every opener that has
+    none: twenty thousand <k> took four seconds."""
+    out, position = [], 0
+    while True:
+        start = text.find(opener, position)
+        end = -1 if start == -1 else text.find(closer, start + len(opener))
+        if end == -1:
+            break
+        out.append(text[position:start])
+        out.append(make(text[start + len(opener):end]))
+        position = end + len(closer)
+    out.append(text[position:])
+    return "".join(out)
+
+
 def xdxf_html(text):
+    text = _pairs(text, "<k>", "</k>", lambda word: f'<b class="hw">{word}</b>')
+    text = _pairs(text, "<kref>", "</kref>", lambda word: (
+        f'<a href="{markup.lookup_href(markup.html_to_text(word))}">{word}</a>'))
     for pattern, replacement in _XDXF:
-        if replacement is None:
-            text = pattern.sub(
-                lambda m: f'<a href="{markup.lookup_href(markup.html_to_text(m.group(1)))}">'
-                          f"{m.group(1)}</a>", text)
-        else:
-            text = pattern.sub(replacement, text)
+        text = pattern.sub(replacement, text)
     return text.replace("\n", "<br>")

@@ -566,6 +566,14 @@ class StarDictFiles(unittest.TestCase):
         html, text = d.render(word, d.read(offset, size))
         self.assertEqual(html, "line one<br>line &lt;two&gt;")
 
+    def test_xdxf_pairs_never_closed_are_read_in_one_pass(self):
+        # Twenty thousand <k> took four seconds: each searched the rest for its </k>.
+        started = time.monotonic()
+        for opener in ("<k>", "<kref>"):
+            self.assertEqual(stardict.xdxf_html(opener * 20000), opener * 20000)
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(stardict.xdxf_html("<k>a</k><k>b"), '<b class="hw">a</b><k>b')
+
     def test_without_sametypesequence_each_field_has_its_type(self):
         ifo = write_stardict(self.dir, "t", [("zeta", b"mplain\x00hb<b>bold</b>")],
                              types_="")
@@ -1137,6 +1145,19 @@ class DictionaryHTML(unittest.TestCase):
     def test_whatever_is_left_open_is_closed_and_stray_closers_dropped(self):
         self.assertEqual(self.balance("</div><b>bold <font size=1>small</span>"),
                          '<b>bold <font size="1">small</font></b>')
+
+    def test_end_tags_cost_no_more_than_what_is_open(self):
+        # Each </i> was looked for down forty thousand <b>: 49 seconds.
+        started = time.monotonic()
+        html = self.balance("<i>" + "<b>" * 40000 + "x" + "</i>" * 40000)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(html.count("<b>"), html.count("</b>"))
+        self.assertEqual(html.count("<i>"), html.count("</i>"))
+        self.assertIn("x", html)
+        # Nested deeper than MAX_DEPTH, the extra ones are let go, and so are their ends.
+        depth = markup._Balancer.MAX_DEPTH
+        self.assertEqual(self.balance("<span>" * 100 + "x" + "</span>" * 100 + "<b>y</b>"),
+                         "<span>" * depth + "x" + "</span>" * depth + "<b>y</b>")
 
     def test_paragraphs_and_list_items_end_where_a_browser_ends_them(self):
         self.assertEqual(self.balance("<p>one<p>two<ul><li>a<li>b</ul>"),

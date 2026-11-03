@@ -9,6 +9,7 @@ a dictionary wraps it in, and every tag is context window spent on nothing.
 import functools
 import html
 import re
+from collections import Counter
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote
 
@@ -217,11 +218,19 @@ class _Balancer(HTMLParser):
     ENDS_P = {"p", "div", "ul", "ol", "dl", "table", "blockquote", "pre", "hr", "h1",
               "h2", "h3", "h4", "h5", "h6", "section", "article", "center"}
     WALLS = {"div", "td", "th", "li", "dd", "blockquote", "table"}
+    # How deep elements may nest; one opened deeper is let go, and so is the end tag
+    # that would have closed it. An end tag was looked for down all that was open, and
+    # one that closes an outer element closes and reopens everything inside it: an
+    # <i>, forty thousand <b> and forty thousand </i> took 49 seconds to show. A real
+    # entry nests a dozen deep at most.
+    MAX_DEPTH = 64
 
     def __init__(self, links, picture):
         super().__init__(convert_charrefs=True)
         self.parts = []
         self._open = []                 # (tag, opening tag as written)
+        self._opened = Counter()        # tag -> how many of it are open
+        self._let_go = Counter()        # tag -> how many of it were opened too deep
         self._suppress = 0
         self._links = tuple(links)
         self._picture = picture
@@ -265,16 +274,21 @@ class _Balancer(HTMLParser):
             return None
         return self._picture(unquote(value))
 
+    def _push(self, tag, opening):
+        self._open.append((tag, opening))
+        self._opened[tag] += 1
+        self.parts.append(opening)
+
     def _close_to(self, index, reopen):
         inner = self._open[index + 1:]
         for tag, _opening in reversed(self._open[index:]):
             self.parts.append(f"</{tag}>")
+            self._opened[tag] -= 1
         del self._open[index:]
         if reopen:
             for tag, opening in inner:
                 if tag in self.REOPEN:
-                    self._open.append((tag, opening))
-                    self.parts.append(opening)
+                    self._push(tag, opening)
 
     def _last(self, tag, walls):
         """Where the innermost open `tag` is, unless one of `walls` is inside it."""
@@ -309,8 +323,10 @@ class _Balancer(HTMLParser):
             index = self._last(tag, self.SIBLINGS[tag])
             if index is not None:
                 self._close_to(index, reopen=False)
-        self._open.append((tag, opening))
-        self.parts.append(opening)
+        if len(self._open) >= self.MAX_DEPTH:
+            self._let_go[tag] += 1
+            return
+        self._push(tag, opening)
 
     def handle_startendtag(self, tag, attrs):
         if tag in self.VOID:
@@ -327,11 +343,15 @@ class _Balancer(HTMLParser):
             return
         if tag in self.PREFORMATTED:
             tag = "pre"
+        if self._let_go[tag]:
+            self._let_go[tag] -= 1
+            return
+        if not self._opened[tag]:
+            return                      # closes nothing open: dropped
         for index in range(len(self._open) - 1, -1, -1):
             if self._open[index][0] == tag:
                 self._close_to(index, reopen=tag in self.REOPEN)
                 return
-        # Closes nothing open: dropped.
 
     def handle_data(self, data):
         if not self._suppress:

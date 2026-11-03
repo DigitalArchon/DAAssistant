@@ -513,21 +513,58 @@ class Quotes(unittest.TestCase):
                          ["humming as they go"])
         self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 3)
 
+    def test_the_question_quoted_back_and_cited_is_checked(self):
+        # Said to be the passage's, it is a quotation of it: "Yes - “…” [1]" agreeing
+        # with the question's mistake went unchecked, and unmarked.
+        question = 'Does it say "the zorblaxes cross the shining sea"?'
+        answer = 'Yes - “the zorblaxes cross the shining sea” [1].'
+        check, = check_quotes(answer, self.PASSAGES, question=question)
+        self.assertFalse(check["ok"])
+        self.assertEqual(check_quotes('You ask whether “the zorblaxes cross the shining '
+                                      'sea”: no.', self.PASSAGES, question=question), [])
+
+    OWN = ('They "cross the glimmer sea" [1].\n\n## Not from the encyclopedia\n\n'
+           'Folklore has it that "a zorblax never hums alone".')
+
     def test_what_an_answer_adds_of_its_own_is_not_checked(self):
-        answer = ('They "cross the glimmer sea" [1].\n\n## Not from the encyclopedia\n\n'
-                  'Folklore has it that "a zorblax never hums alone".')
-        self.assertEqual([c["quote"] for c in check_quotes(answer, self.PASSAGES)],
+        self.assertEqual([c["quote"] for c in check_quotes(self.OWN, self.PASSAGES,
+                                                           strict=False)],
                          ["cross the glimmer sea"])
         for heading in ("**Not from the encyclopedia**",
                         "### *Not from the Encyclopedia:*",
                         "Not from the encyclopedia (from general knowledge)"):
             answer = (f'"cross the glimmer sea" [1]\n{heading}\n'
                       f'"a zorblax never hums alone"')
-            self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 1, heading)
+            self.assertEqual(len(check_quotes(answer, self.PASSAGES, strict=False)), 1,
+                             heading)
         # A sentence that only begins with the words is not that heading.
         answer = ('"cross the glimmer sea" [1]\nNot from the encyclopedia, but often '
                   'heard, is that "a zorblax never hums alone".')
-        self.assertEqual(len(check_quotes(answer, self.PASSAGES)), 2)
+        self.assertEqual(len(check_quotes(answer, self.PASSAGES, strict=False)), 2)
+
+    def test_a_strict_answer_has_nothing_of_its_own_set_apart(self):
+        # Strict asks for no such section; one written anyway was taken at its word,
+        # and everything after its heading went unchecked.
+        self.assertEqual([(c["quote"], c["ok"]) for c in check_quotes(self.OWN,
+                                                                      self.PASSAGES)],
+                         [("cross the glimmer sea", True),
+                          ("a zorblax never hums alone", False)])
+
+    def test_only_that_section_is_set_apart(self):
+        # Wherever the heading was, everything after it went unchecked.
+        answer = ('## Not from the encyclopedia\n\n"A zorblax never hums alone".\n\n'
+                  '### Folklore\n\n"Nor does it hum at noon," they say.\n\n'
+                  '## What the encyclopedia says\n\nThey "cross the shining sea" [1].')
+        self.assertEqual([c["quote"] for c in check_quotes(answer, self.PASSAGES,
+                                                           strict=False)],
+                         ["cross the shining sea"])
+        answer = ('**Not from the encyclopedia**\n"A zorblax never hums alone".\n'
+                  '**Sources**\n"they fly to the moon" [2]\n'
+                  'Not from the encyclopedia\n"Nor does it hum at noon"\n---\n'
+                  '"eat moonberries and nothing" [1]')
+        self.assertEqual([c["quote"] for c in check_quotes(answer, self.PASSAGES,
+                                                           strict=False)],
+                         ["they fly to the moon", "eat moonberries and nothing"])
 
     IRON = [{"text": 'In old age he was known as "the Iron Zorblax" to all.'}]
 
@@ -685,7 +722,8 @@ class Quotes(unittest.TestCase):
                   '[1] says they "cross the glimmer sea" [1] and "fly to the moon each '
                   'spring" [1].\n\n**Not from the encyclopedia**\n\n"A zorblax never hums '
                   'alone," it is said.')
-        checks = check_quotes(answer, passages, question="Where do zorblaxes go?")
+        checks = check_quotes(answer, passages, question="Where do zorblaxes go?",
+                              strict=False)
         self.assertEqual([c["ok"] for c in checks], [True, False])
         self.assertIn("1 of 2 found word for word",
                       markdown_html.sources_html(passages, [1], 0, checks))
@@ -1267,6 +1305,22 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertEqual([c["ok"] for c in answer["checks"]], [True])
             self.assertNotIn("⚠", answer["export"])
             self.assertIn("1 of 1 found word for word", sources["html"])
+        finally:
+            window.destroy()
+
+    def test_unless_the_answer_was_to_be_strict(self):
+        self.client.answer = ('They "cross the glimmer sea" [1].\n\n'
+                              '## Not from the encyclopedia\n\n'
+                              'It is said that "a zorblax never hums alone".')
+        window = self._window(question="Where do zorblaxes migrate?")
+        try:
+            self.assertTrue(window.strict_switch.get_active())
+            window._send()
+            self.assertTrue(self._answered(window, 3))
+            _question, answer, sources = window.conversation
+            self.assertEqual([c["ok"] for c in answer["checks"]], [True, False])
+            self.assertIn('hums alone" ⚠', answer["export"])
+            self.assertIn("1 of 2 found word for word", sources["html"])
         finally:
             window.destroy()
 

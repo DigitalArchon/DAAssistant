@@ -697,8 +697,11 @@ ends no sentence; after any other abbreviation it is taken for the end of one, w
 can only mark a true quotation ⚠.
 What is in quotation marks but not quoted from the passages is left
 alone, and not counted among the quotations checked: a word or two, a passage's title or
-section heading, your question quoted back, and whatever is under *Not from the
-encyclopedia*. A quotation not found word for word is marked ⚠ where it stands, and
+section heading, your question quoted back with no citation after it (cited, it is
+checked like any other), and with Strict off, what is under the heading *Not from the
+encyclopedia*, up to the next heading as high as it. With Strict on nothing is set
+apart: a quotation under such a heading is checked like the rest. A quotation not found
+word for word is marked ⚠ where it stands, and
 listed under the answer. Click the
 ⚠ (or **show it** in the list) and the article opens in Search Encyclopedia with the
 passage's own words highlighted - where it was found under another number, or where the

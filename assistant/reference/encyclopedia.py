@@ -108,8 +108,27 @@ _SPACED_DASH = re.compile(r" ?- ?")
 # Where an answer that is not Strict puts what is not from the encyclopedia (see
 # prompts.ask_encyclopedia_rules): a line of its own - a Markdown heading, in bold,
 # or plain - beginning with these words.
-_OWN_KNOWLEDGE = re.compile(r"^[ \t>#*_]*not from the encyclopa?edia\b[^\n]{0,40}$",
+_OWN_KNOWLEDGE = re.compile(r"^([ \t>#*_]*)not from the encyclopa?edia\b[^\n]{0,40}$",
                             re.I | re.M)
+# What can end that section: a Markdown heading (its level), a line all in bold, or a
+# rule across the page.
+_HEADING_LINE = re.compile(r"^[ \t>]*(?:(#{1,6})[ \t]+\S[^\n]*|(\*\*|__)[^\n]+\2[ \t]*:?"
+                           r"|-{3,}|\*{3,}|_{3,})[ \t]*$", re.M)
+
+
+def _own_sections(answer):
+    """[(start, end)] of `answer` under the heading "Not from the encyclopedia": from
+    it to the next heading as high or higher, or after one in bold or plain, to the
+    next heading of any kind; to the end when none follows."""
+    out = []
+    for own in _OWN_KNOWLEDGE.finditer(answer):
+        level, end = own.group(1).count("#"), len(answer)
+        for heading in _HEADING_LINE.finditer(answer, own.end()):
+            if not level or not heading.group(1) or len(heading.group(1)) <= level:
+                end = heading.start()
+                break
+        out.append((own.start(), end))
+    return out
 
 
 def _plain(text):
@@ -369,7 +388,7 @@ def nearest(passage, quote):
     return passage[stretch[0][1]:stretch[-1][2]].strip(".,;:!?"), best_score / total
 
 
-def check_quotes(answer, passages, question=None):
+def check_quotes(answer, passages, question=None, strict=True):
     """Every quotation in `answer`, checked against the passages it was given.
 
     [{quote, cited: [numbers after it], found: the passage it is in or None, ok,
@@ -393,23 +412,26 @@ def check_quotes(answer, passages, question=None):
     left alone - not checked, not marked, not counted among the quotations checked: a
     word or two, which is a term; a passage's title or section heading, or part of
     one, which the model is shown in quotation marks (research_context) and names the
-    passage by; the user's own `question`, or words of it, quoted back; and anything
-    under the heading "Not from the encyclopedia", where an answer that is not Strict
-    says what it adds of its own.
+    passage by; the user's own `question`, or words of it, quoted back with nothing
+    cited - cited, it is said to be the passage's, and is checked; and, unless
+    `strict`, what is under the heading "Not from the encyclopedia" (_own_sections),
+    where an answer that is not Strict says what it adds of its own. A Strict answer
+    is to have nothing of its own, so nothing in it is set apart: a heading of that
+    kind in it is not taken at its word.
     """
     answer = answer or ""
     names = [_Passage(name) for passage in passages
              for name in (passage.get("title"), passage.get("heading")) if name]
     texts = [_Passage(passage["text"]) for passage in passages]
-    own = _OWN_KNOWLEDGE.search(answer)
+    own = [] if strict else _own_sections(answer)
     out = []
     for match in _QUOTED.finditer(answer):
-        if own and match.start() >= own.start():
-            break
+        if any(start <= match.start() < end for start, end in own):
+            continue
         *quoted, citations = match.groups()
         quote = next(part for part in quoted if part is not None).strip()
         if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
-                or (question and _contains(question, quote))):
+                or (question and not citations and _contains(question, quote))):
             continue
         numbers = [n for n in cited(citations) if 1 <= n <= len(passages)]
         found = None

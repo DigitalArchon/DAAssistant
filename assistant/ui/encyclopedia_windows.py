@@ -519,7 +519,7 @@ class AskEncyclopediaWindow(ChatWindow):
                         else prompts.ASK_ENCYCLOPEDIA_NOTHING_LABELLED)
             status("Nothing found in the encyclopedia…")
         return addition, {"passages": passages, "limited": limited and strict,
-                          "question": question}
+                          "question": question, "strict": strict}
 
     # ---- the answer ---------------------------------------------------------
 
@@ -532,8 +532,10 @@ class AskEncyclopediaWindow(ChatWindow):
             return
         index = len(self.conversation)      # where the answer is about to go
         text = display = turn["content"]
-        # The question quoted back is the reader's words, not a quotation of a passage.
-        checks = check_quotes(text, passages, question=(payload or {}).get("question"))
+        # The question quoted back is the reader's words, not a quotation of a passage;
+        # what a Strict answer says of its own, under whatever heading, is checked too.
+        checks = check_quotes(text, passages, question=payload.get("question"),
+                              strict=payload.get("strict", True))
         for number, check in sorted(enumerate(checks), key=lambda c: -c[1]["end"]):
             if check["ok"]:
                 continue

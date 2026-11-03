@@ -260,6 +260,24 @@ def _style(style):
     return ";".join(kept)
 
 
+def _hidden(attrs):
+    """Whether an element's attributes hide it: the hidden attribute, or a style of
+    display:none or visibility:hidden (or collapse) - the last of each in it counting,
+    as in a browser."""
+    display = "none" if any(name == "hidden" for name, _value in attrs) else ""
+    visibility = ""
+    style = next((value for name, value in attrs if name == "style"), None) or ""
+    for declaration in style.split(";"):
+        name, _colon, value = declaration.partition(":")
+        name = name.strip().lower()
+        value = re.sub(r"\s*!\s*important\s*$", "", value.strip(), flags=re.I).lower()
+        if name == "display":
+            display = value
+        elif name == "visibility":
+            visibility = value
+    return display == "none" or visibility in ("hidden", "collapse")
+
+
 class _Balancer(HTMLParser):
     """A dictionary's HTML, closed off and kept to what an entry needs. Every tag it
     opens is closed by its end, and the ones it closes out of order are closed and
@@ -275,6 +293,12 @@ class _Balancer(HTMLParser):
     (it would restyle the whole window), <meta> (a refresh would navigate it away), a
     style that places or sizes a box, the window's own classes and ids, and links the
     window could not follow anyway.
+
+    And what the entry hides goes, with all it holds (see _hidden). No style that
+    would hide it is kept here, so kept, its text was shown; and hidden or not, it
+    went to the model with the rest, whose text is made from this HTML. It goes as
+    far as the element is ended here - by its end tag, or where a browser ends it. A
+    part of one that a visibility of its own makes visible again goes with it.
     """
 
     VOID = {"area", "br", "col", "embed", "hr", "img", "input", "source", "track", "wbr"}
@@ -308,10 +332,11 @@ class _Balancer(HTMLParser):
     def __init__(self, links, picture):
         super().__init__(convert_charrefs=True)
         self.parts = []
-        self._open = []                 # (tag, opening tag as written)
+        self._open = []                 # (tag, opening tag as written, whether hidden)
         self._opened = Counter()        # tag -> how many of it are open
         self._let_go = Counter()        # tag -> how many of it were opened too deep
         self._suppress = 0
+        self._hiding = 0                # how many of those open are hidden
         self._links = tuple(links)
         self._picture = picture
 
@@ -365,21 +390,25 @@ class _Balancer(HTMLParser):
             return None
         return self._picture(unquote(value))
 
-    def _push(self, tag, opening):
-        self._open.append((tag, opening))
+    def _push(self, tag, opening, hidden=False):
+        self._open.append((tag, opening, hidden))
         self._opened[tag] += 1
-        self.parts.append(opening)
+        self._hiding += hidden
+        if not self._hiding:
+            self.parts.append(opening)
 
     def _close_to(self, index, reopen):
         inner = self._open[index + 1:]
-        for tag, _opening in reversed(self._open[index:]):
-            self.parts.append(f"</{tag}>")
+        for tag, _opening, hidden in reversed(self._open[index:]):
+            if not self._hiding:        # its opening was written, and so is its end
+                self.parts.append(f"</{tag}>")
+            self._hiding -= hidden
             self._opened[tag] -= 1
         del self._open[index:]
         if reopen:
-            for tag, opening in inner:
+            for tag, opening, hidden in inner:
                 if tag in self.REOPEN:
-                    self._push(tag, opening)
+                    self._push(tag, opening, hidden)
 
     def _last(self, tag, walls):
         """Where the innermost open `tag` is, unless one of `walls` is inside it."""
@@ -399,6 +428,9 @@ class _Balancer(HTMLParser):
             return
         if tag in self.PREFORMATTED:
             tag = "pre"
+        hidden = _hidden(attrs)
+        if tag == "img" and (hidden or self._hiding):
+            return                      # a picture not shown, so not read
         attributes = self._attrs(tag, attrs)
         if attributes is None:
             return                      # a picture that cannot be shown
@@ -408,7 +440,8 @@ class _Balancer(HTMLParser):
             if index is not None:
                 self._close_to(index, reopen=False)
         if tag in self.VOID:
-            self.parts.append(opening)
+            if not (hidden or self._hiding):
+                self.parts.append(opening)
             return
         if tag in self.SIBLINGS:
             index = self._last(tag, self.SIBLINGS[tag])
@@ -417,7 +450,7 @@ class _Balancer(HTMLParser):
         if len(self._open) >= self.MAX_DEPTH:
             self._let_go[tag] += 1
             return
-        self._push(tag, opening)
+        self._push(tag, opening, hidden)
 
     def handle_startendtag(self, tag, attrs):
         if tag in self.VOID:
@@ -445,7 +478,7 @@ class _Balancer(HTMLParser):
                 return
 
     def handle_data(self, data):
-        if not self._suppress:
+        if not self._suppress and not self._hiding:
             self.parts.append(escape(data))
 
     def result(self):

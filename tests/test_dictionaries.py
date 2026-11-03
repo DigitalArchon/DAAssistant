@@ -693,6 +693,15 @@ class StarDictFiles(unittest.TestCase):
         self.assertNotIn("[…]", html)
         self.assertEqual(text.count("zib"), 100)
 
+    def test_what_an_entry_hides_is_not_shown_nor_given_to_the_model(self):
+        ifo = write_stardict(self.dir, "h", [
+            ("glorp", b'<b>glorp</b> <span style="display:none">glorps, glorped</span>'
+                      b'a made-up word')])
+        d = StarDict(ifo)
+        (word, offset, size), = d.headwords()
+        self.assertEqual(d.render(word, d.read(offset, size)),
+                         ("<b>glorp</b> a made-up word", "glorp a made-up word"))
+
     def test_a_nul_in_a_pictures_name_drops_the_picture_not_the_entry(self):
         os.mkdir(os.path.join(self.dir, "res"))
         ifo = write_stardict(self.dir, "h", [
@@ -1739,6 +1748,37 @@ class DictionaryHTML(unittest.TestCase):
                "<noscript>z</noscript>")
         self.assertEqual(self.balance(raw), "a b c")
         self.assertEqual(markup.html_to_text(raw), "a b c")
+
+    def test_what_an_entry_hides_is_neither_shown_nor_told(self):
+        # Keeping no display or visibility of a style, the balancer showed what an
+        # entry hid, and its text went to the model with the rest - as it always had.
+        html = self.balance(
+            '<b>a</b> <span style="display:none">glorp</span>'
+            '<div style="color:red; Visibility : Hidden !important">zib</div>'
+            '<p hidden>flimble</p><i style="visibility:collapse">x</i>'
+            '<br style="display:none"><img src="data:image/png;base64,AA==" '
+            'style="display: NONE">b')
+        self.assertEqual(html, "<b>a</b> b")
+        self.assertEqual(markup.html_to_text(html), "a b")
+        # What shows still keeps neither, nor any other display.
+        self.assertEqual(self.balance('<span style="display:none;display:block;'
+                                      'visibility:visible">a</span>'), "<span>a</span>")
+
+    def test_a_hidden_element_ends_where_a_browser_ends_it(self):
+        hide = ' style="display:none"'
+        # With all it holds, to its own end tag, and no picture is read for it.
+        asked = []
+        self.assertEqual(markup.balance(f"<span{hide}>a<span>b</span>c<img src='1.png'>"
+                                        f"</span>d<img{hide} src='2.png'>", (),
+                                        asked.append), "d")
+        self.assertEqual(asked, [])
+        # A <p> ended by the next, an <li> by the next, one left open by the entry's
+        # end - and one closed by a stray end tag and opened again is hidden again.
+        self.assertEqual(self.balance(f"<p{hide}>a<p>b"), "<p>b</p>")
+        self.assertEqual(self.balance(f"<ul><li{hide}>a<li>b</ul>"),
+                         "<ul><li>b</li></ul>")
+        self.assertEqual(self.balance(f"a<div{hide}>b<b>c"), "a")
+        self.assertEqual(self.balance(f"<b>a<i{hide}>b</b>c</i>d"), "<b>a</b>d")
 
     def test_plaintext_xmp_and_listing_are_written_as_pre(self):
         # A browser never closes <plaintext>: let through, it took the rest of the page

@@ -142,6 +142,49 @@ class WhichAddressesMayBeUsed(unittest.TestCase):
         self.assertIn("http:// for this machine", found)
 
 
+class SecretsStayOutOfWhatIsShown(TempDir):
+    """A key pasted with a line break was refused by requests in words that quoted it
+    whole, shown in the chat; --probe printed a provider's address, password and all."""
+
+    BAD = ("sk-live-ABCDEF\nGHIJKL", "sk-live-ABCDEF\u200bGHIJKL", "sk-live ABCDEF")
+
+    def test_a_key_no_header_can_carry_is_refused_without_quoting_it(self):
+        for key in self.BAD:
+            found = netguard.key_problem(key, "NanoGPT")
+            self.assertIn("Enter it again", found)
+            self.assertNotIn("ABCDEF", found)
+        self.assertIsNone(netguard.key_problem("sk-live-ABCDEF_GHIJKL-0123"))
+        self.assertIsNone(netguard.key_problem(""))
+
+    def test_settings_and_requests_say_so_and_send_nothing(self):
+        from assistant import providers
+        config = Config(os.path.join(self.dir, "c.json"))
+        for key in self.BAD:
+            config.api_key = key
+            self.assertIn("Enter it again", providers.refused(config))
+            client = LLMClient(config)
+            client.session = mock.Mock()
+            with self.assertRaises(LLMError) as raised:
+                client.complete(config.model("text"), [{"role": "user", "content": "x"}])
+            self.assertNotIn("ABCDEF", str(raised.exception))
+            client.session.post.assert_not_called()
+
+    def test_a_request_made_elsewhere_with_such_a_key_goes_nowhere(self):
+        import requests
+        with mock.patch("requests.adapters.HTTPAdapter.send") as sent:
+            with self.assertRaises(requests.exceptions.InvalidHeader) as raised:
+                netguard.session().get("https://nano-gpt.com/api/v1/models",
+                                       headers={"Authorization": f"Bearer {self.BAD[0]}"})
+        self.assertNotIn("ABCDEF", str(raised.exception))
+        sent.assert_not_called()
+
+    def test_an_address_is_shown_without_its_password(self):
+        self.assertEqual(netguard.shown("https://alice:s3cret@llm.example.com/v1"),
+                         "https://…@llm.example.com/v1")
+        self.assertEqual(netguard.shown("http://192.168.1.20:11434/v1"),
+                         "http://192.168.1.20:11434/v1")
+
+
 class RedirectsKeepToTheRule(unittest.TestCase):
     """requests follows a redirect by itself, and a 307 carries the body along."""
 

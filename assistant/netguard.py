@@ -150,6 +150,27 @@ def problem(url):
     return None
 
 
+def shown(url):
+    """`url` as it may be shown, or copied into a bug report: without the user name and
+    password an address may carry (https://alice:secret@host/v1)."""
+    parsed = urlparse(url or "")
+    if "@" not in parsed.netloc:
+        return url
+    return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
+
+
+def key_problem(key, name="the provider"):
+    """Why `key` cannot be sent as an API key, or None. A key is plain ASCII with no
+    spaces in it; one pasted with a line break, or a zero-width space from a web page,
+    was refused by requests in words that quoted it whole, and those were shown in the
+    chat - Copy, Save and bug reports included - or raised from deep in http.client."""
+    if key and (not key.isascii() or UNSAFE.search(key) or " " in key):
+        return (f"The API key for {name} has a space, a line break or another character "
+                f"no API key has in it, picked up where it was copied from, perhaps. "
+                f"Enter it again in Settings > Providers.")
+    return None
+
+
 def check(url):
     """Raise InsecureURL unless `url` may be used. Returns it stripped."""
     found = problem(url)
@@ -198,6 +219,15 @@ def session():
                 if found:
                     raise RedirectRefused(found, response=response)
             return target
+
+        def prepare_request(self, request):
+            # Before requests checks the headers itself, which refuses such a key in
+            # words that quote it whole.
+            bearer = str((request.headers or {}).get("Authorization") or "")
+            if bearer.startswith("Bearer ") and key_problem(bearer[7:]):
+                raise requests.exceptions.InvalidHeader(
+                    key_problem(bearer[7:], urlparse(request.url).hostname))
+            return super().prepare_request(request)
 
         def send(self, request, **kwargs):
             # Every request comes through here, redirects included, with the proxies

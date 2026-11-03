@@ -205,7 +205,7 @@ class Provider:
     def key_problem(self):
         if self.kind.needs_key and not self.api_key:
             return f"No API key is set for {self.name}. Add it in Settings > Providers."
-        return None
+        return netguard.key_problem(self.api_key, self.name)
 
     def problem(self):
         """Why nothing can be sent to it, or None."""
@@ -302,7 +302,8 @@ def refused(config):
     for a provider nothing uses is judged too, once there is one - it is one click from
     being used."""
     for provider in in_use(config):
-        found = provider.url_problem()
+        found = provider.url_problem() or netguard.key_problem(provider.api_key,
+                                                                provider.name)
         if found:
             return found
     for kind_id in ORDER:

@@ -44,7 +44,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from . import models, proxy
+from . import models, netguard, proxy
 from .dcap import since_boot
 from .privacy import E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode
 
@@ -344,6 +344,9 @@ class PrivateModeClient:
     def _headers(self):
         headers = {"Content-Type": "application/json"}
         if self.api_key:
+            unfit = netguard.key_problem(self.api_key, "NanoGPT")
+            if unfit:
+                raise PrivacyError(unfit)
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 

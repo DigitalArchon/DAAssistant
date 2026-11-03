@@ -73,10 +73,13 @@ def probe():
     from .hotkeys import bindings, choose
     config = Config()
     print(f"Config file    : {config.config_file}")
-    from . import providers
+    from . import netguard, providers
     for provider in providers.in_use(config):
+        # Without a user and password in the address: this output is asked for in bug
+        # reports.
         print(f"{provider.name:<15}: {provider.problem() or 'ready'}"
-              + (f" ({provider.chat_url})" if provider.id != providers.NANOGPT else ""))
+              + (f" ({netguard.shown(provider.chat_url)})"
+                 if provider.id != providers.NANOGPT else ""))
     print(f"Keyring        : {config.keychain_error or config.keychain.describe()}")
     from .privacy import summary_lines
     for line in summary_lines(config):

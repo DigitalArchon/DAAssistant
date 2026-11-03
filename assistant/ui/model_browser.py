@@ -9,7 +9,7 @@ model is from.
 
 import threading
 
-from .. import gtkcompat
+from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import GLib, Gtk, Pango
 
 from .. import models as catalogue, privacy, providers, sealed

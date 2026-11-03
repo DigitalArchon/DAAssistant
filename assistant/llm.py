@@ -13,7 +13,6 @@ Details that matter:
 
 import gzip
 import json
-import threading
 import time
 
 import requests

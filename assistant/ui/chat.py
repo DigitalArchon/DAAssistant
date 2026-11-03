@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 from .. import errors, gtkcompat, webkitguard
 from gi.repository import Gdk, GLib, Gtk
 
-from . import (bubbles, find, lookups, markdown_html, markdown_text,
+from . import (bubbles, find, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
 from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
                 providers)

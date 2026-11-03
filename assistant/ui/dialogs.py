@@ -9,7 +9,7 @@ and the PNG payload size - so a bad capture is obvious before it costs a request
 
 import os
 
-from .. import gtkcompat
+from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,

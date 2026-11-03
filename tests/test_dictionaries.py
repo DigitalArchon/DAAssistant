@@ -990,6 +990,72 @@ class ReplacedFiles(unittest.TestCase):
                          ["Made-up StarDict"])
 
 
+class LinksOutOfTheFolder(unittest.TestCase):
+    """A dictionary is downloaded, and an archive of one can carry links to the user's
+    own files. None of them is read as any part of a dictionary."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        self.secret = os.path.join(self.dir, "home", "secretdir")
+        os.makedirs(self.secret)
+        self.config_file = os.path.join(self.secret, "config.toml")
+        with open(self.config_file, "wb") as f:
+            f.write(b"api_key = 'never for the model'\n" * 4)
+        self.library = Library(types.SimpleNamespace(dictionaries_dir=self.folder,
+                                                     dictionaries_disabled=[]),
+                               cache_dir=os.path.join(self.dir, "cache"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _link(self, target, name):
+        os.symlink(os.path.relpath(target, self.folder), os.path.join(self.folder, name))
+
+    def test_a_stardict_whose_dict_is_a_link_out_is_not_opened(self):
+        ifo = write_stardict(self.folder, "sd", [("alpha", b"x" * 40)])
+        os.unlink(ifo[:-len(".ifo")] + ".dict")
+        self._link(self.config_file, "sd.dict")
+        with self.assertRaises(ValueError):
+            StarDict(ifo)
+        self.assertEqual(self.library.available(), [])
+        self.assertEqual(self.library.look_up("alpha")["results"], [])
+
+    def test_nor_a_dsl_that_is_one_nor_an_annotation_or_icon(self):
+        write_dsl(os.path.join(self.secret, "mine.dsl"), '#NAME "Not Mine"\n\nalpha\n\tb')
+        self._link(os.path.join(self.secret, "mine.dsl"), "x.dsl")
+        self.assertEqual(self.library.available(), [])
+        path = os.path.join(self.folder, "real.dsl")
+        write_dsl(path)
+        self._link(self.config_file, "real.ann")
+        self._link(self.config_file, "real.bmp")
+        d = dsl.DSL(path)
+        self.assertEqual(d.about(), "")
+        self.assertIsNone(d.icon)
+        self.assertEqual([name for _path, name in self.library.available()],
+                         ["Invented Dictionary"])
+
+    def test_nor_pictures_through_a_res_that_is_a_link_out(self):
+        with open(os.path.join(self.secret, "1A.png"), "wb") as f:
+            f.write(b"\x89PNG not the dictionary's")
+        self._link(self.secret, "res")
+        ifo = write_stardict(self.folder, "sd", [("alpha", b"<img src='1A.png'> a")])
+        d = StarDict(ifo)
+        (word, offset, size), = d.headwords()
+        self.assertEqual(d.render(word, d.read(offset, size))[0], " a")
+
+    def test_links_within_the_folder_are_followed(self):
+        os.makedirs(os.path.join(self.folder, "store"))
+        ifo = write_stardict(os.path.join(self.folder, "store"), "sd",
+                             [("alpha", b"<b>within</b>")])
+        os.rename(ifo, os.path.join(self.folder, "sd.ifo"))
+        for suffix in (".idx", ".dict"):
+            self._link(ifo[:-len(".ifo")] + suffix, "sd" + suffix)
+        found = self.library.look_up("alpha")
+        self.assertEqual(found["results"][0]["entries"][0]["html"], "<b>within</b>")
+
+
 class Ordering(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

@@ -19,7 +19,7 @@ from collections import OrderedDict
 
 from . import markup
 from .dictzip import DictzipFile
-from .dsl import companion, icon_beside
+from .dsl import companion, icon_beside, inside
 
 LINKS = ("http:", "https:", "mailto:", markup.LOOKUP_SCHEME)
 
@@ -216,7 +216,9 @@ class StarDict:
             path = os.path.realpath(os.path.join(res, name))
         except (OSError, ValueError):
             return None
-        if not path.startswith(res + os.sep):
+        # In the res folder, and that in the dictionary's own: a res that is a link to
+        # a folder elsewhere showed the pictures there.
+        if not path.startswith(res + os.sep) or not inside(res, os.path.dirname(self.path)):
             return None
         try:
             if os.path.getsize(path) > MAX_PICTURE:

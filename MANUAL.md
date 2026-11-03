@@ -611,9 +611,12 @@ worth, to answer from and quote.
   its `.ifo` says of itself and whose it is). Release one to hide that dictionary's
   entries in every lookup in this window, and leave them out of what questions are sent
   with; press it again to bring them back. Only that window is affected.
-- **The files are read in place**; nothing is copied. The first lookup indexes the
-  headwords into `~/.cache/da-assistant/dictionaries.sqlite` - about 15 seconds and
-  120 MB for 2 GB of dictionaries - and other windows do not wait for it. A dictionary
+- **The files are read in place**; nothing is copied. A file in the folder that is a
+  link to one outside it is not read - as a dictionary, as a file beside one, or as a
+  picture - since an archive of a dictionary can carry links to your own files; links
+  within the folder are followed. The first lookup indexes the headwords into
+  `~/.cache/da-assistant/dictionaries.sqlite` - about 15 seconds and 120 MB for 2 GB of
+  dictionaries - and other windows do not wait for it. A dictionary
   is indexed again only when its files change: one replaced while the app runs, a newer
   edition copied over it, is read afresh at the next lookup. The first lookup after
   updating from 3.4 indexes every dictionary once more, for the new matching.

@@ -123,15 +123,33 @@ def detect(head, code_page=DEFAULT_CODE_PAGE):
     return eight_bit(code_page)
 
 
+def inside(path, folder):
+    """Whether `path` is in `folder`, or a folder in it, once every link on the way to
+    either is followed."""
+    try:
+        real, base = os.path.realpath(path), os.path.realpath(folder)
+    except (OSError, ValueError):
+        return False
+    return real.startswith(os.path.join(base, ""))
+
+
 def companion(stem, *suffixes):
     """The file beside a dictionary that is named `stem` and one of `suffixes`, the
     first of them there is, or None - in whatever case its name is written. Copied
     from Windows, where case does not matter, a dictionary is as often X.IFO beside
-    X.IDX and X.DICT.DZ, or LINGVO.DSL beside LINGVO.ANN and LINGVO.BMP."""
-    for suffix in suffixes:
-        if os.path.isfile(stem + suffix):
-            return stem + suffix
+    X.IDX and X.DICT.DZ, or LINGVO.DSL beside LINGVO.ANN and LINGVO.BMP.
+
+    Not one that is a link to a file outside the dictionary's folder. A dictionary is
+    downloaded, and an archive of one carrying X.DICT -> ../../../.config/... had that
+    file shown as entries - and sent to the model with the next question asked."""
     folder, name = os.path.split(stem)
+
+    def usable(path):
+        return os.path.isfile(path) and inside(path, folder or ".")
+
+    for suffix in suffixes:
+        if usable(stem + suffix):
+            return stem + suffix
     try:
         entries = sorted(os.listdir(folder or "."))
     except OSError:
@@ -141,7 +159,7 @@ def companion(stem, *suffixes):
         by_lower.setdefault(entry.lower(), entry)
     for suffix in suffixes:
         entry = by_lower.get((name + suffix).lower())
-        if entry is not None and os.path.isfile(os.path.join(folder, entry)):
+        if entry is not None and usable(os.path.join(folder, entry)):
             return os.path.join(folder, entry)
     return None
 

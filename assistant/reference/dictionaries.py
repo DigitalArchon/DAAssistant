@@ -17,7 +17,7 @@ import threading
 import unicodedata
 
 from .. import paths
-from .dsl import DSL, spellings
+from .dsl import DSL, inside, spellings
 from .stardict import StarDict
 
 CACHE_DIR = paths.CACHE_DIR
@@ -134,7 +134,11 @@ def discover(folder):
 
     Abbreviation lists - the *_abrv files Lingvo dictionaries ship beside themselves -
     are left out: GoldenDict uses them for tooltips, and as dictionaries of their own
-    they answer every lookup of "n" or "adj" with a line of nothing.
+    they answer every lookup of "n" or "adj" with a line of nothing. So is a file that
+    is a link to one outside the folder: a dictionary is downloaded, and an X.DSL
+    unpacked from one as a link to a file of the user's would be read as a dictionary,
+    its lines as headwords, and given to the model with the next question. (Folders in
+    it that are links are not looked in at all, as os.walk() has it.)
     """
     found = []
     if not folder or not os.path.isdir(folder):
@@ -148,9 +152,13 @@ def discover(folder):
                 continue
             path = os.path.join(root, name)
             if lower.endswith(".ifo"):
-                found.append(("stardict", path))
+                kind = "stardict"
             elif lower.endswith((".dsl", ".dsl.dz")):
-                found.append(("dsl", path))
+                kind = "dsl"
+            else:
+                continue
+            if inside(path, folder):
+                found.append((kind, path))
     return found
 
 

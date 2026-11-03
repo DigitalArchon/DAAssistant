@@ -524,6 +524,8 @@ class ChatWindow(Gtk.Window):
 
         if privacy is not None:
             box.pack_start(self._build_privacy_banner(), False, False, 0)
+        self._dictionary_list = dictionary_list
+        self._dictionary_buttons = {}
         if lookup is not None and dictionary_list is not None:
             box.pack_start(self._build_dictionary_bar(dictionary_list()), False, False, 0)
 
@@ -2084,6 +2086,7 @@ class ChatWindow(Gtk.Window):
         if self._destroyed:
             return False
         self._looking = False
+        self._refresh_dictionary_notes()
         if failure:
             self.status.set_text(f"Lookup failed: {failure}")
             return False
@@ -2277,6 +2280,7 @@ class ChatWindow(Gtk.Window):
             button = Gtk.ToggleButton(active=True)
             button.set_relief(Gtk.ReliefStyle.NONE)
             button.set_tooltip_text(f"{name}\n\n{about}" if about else name)
+            self._dictionary_buttons[path] = button
             button.get_style_context().add_class("dictionary-toggle")
             picture = None
             if icon:
@@ -2298,6 +2302,17 @@ class ChatWindow(Gtk.Window):
         frame.set_margin_bottom(4)
         frame.pack_start(bar, False, False, 0)
         return frame
+
+    def _refresh_dictionary_notes(self):
+        """Each button's hover text as the dictionaries now are. The bar is made before
+        the window's first lookup, which is what finds a dictionary that cannot be read,
+        so a reason the status line pointed to was not on its button yet."""
+        if self._dictionary_list is None or not self._dictionary_buttons:
+            return
+        for path, name, _icon, about in self._dictionary_list():
+            button = self._dictionary_buttons.get(path)
+            if button is not None:
+                button.set_tooltip_text(f"{name}\n\n{about}" if about else name)
 
     def _on_dictionary_toggled(self, button, path, name):
         if button.get_active():

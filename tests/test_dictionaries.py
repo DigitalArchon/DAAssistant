@@ -1819,6 +1819,25 @@ class DictionaryWindow(unittest.TestCase):
         finally:
             window.destroy()
 
+    def test_the_button_the_status_points_to_says_why_in_the_first_window(self):
+        """The bar is made before the first lookup, which is what finds a dictionary
+        that cannot be read; the status line then sends the reader to its button."""
+        with mock.patch.object(dsl.DSL, "headwords", side_effect=OSError("not just now")):
+            window = chat.ChatWindow(StubApp(self.config, self.client), "Look up", [],
+                                     web_search=False, lookup=self.library.look_up,
+                                     dictionary_list=self.library.listing,
+                                     lookup_word="glorp")
+            try:
+                self.assertTrue(self._run_until(lambda: window.conversation), "no lookup")
+                self.assertEqual(window.status.get_text(),
+                                 "Invented Dictionary could not be read: its button says why")
+                button, = [child.get_child()
+                           for child in window.dictionary_bar.get_children()]
+                self.assertEqual(button.get_tooltip_text(),
+                                 "Invented Dictionary\n\nNot indexed: OSError: not just now")
+            finally:
+                window.destroy()
+
     def _looked_up(self, window, count):
         self.assertTrue(self._run_until(lambda: not window._looking and len(
             [t for t in window.conversation if t["role"] == "lookup"]) >= count))

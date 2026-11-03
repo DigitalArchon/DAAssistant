@@ -289,12 +289,7 @@ def _fold(text, flat=False):
 
 def _agree(one, other):
     """How many characters `one` and `other` begin with alike."""
-    count = 0
-    for a, b in zip(one, other):
-        if a != b:
-            break
-        count += 1
-    return count
+    return len(os.path.commonprefix((one, other)))
 
 
 class FlashWindow(Gtk.Window):

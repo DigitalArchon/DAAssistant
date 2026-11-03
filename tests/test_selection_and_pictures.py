@@ -297,6 +297,26 @@ class PastingAPictureIntoAChat(unittest.TestCase):
         self.assertEqual(window.entry.get_buffer().get_text(
             *window.entry.get_buffer().get_bounds(), False), "")
 
+    def test_a_picture_larger_than_is_read_is_said_to_be(self):
+        app = mock.Mock(config=self.config)
+        window = chat.ChatWindow(app, "Ask anything", [])
+        self.addCleanup(window.destroy)
+        board = Gtk.Clipboard.get(clipboard.Gdk.SELECTION_CLIPBOARD)
+        board.set_image(GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 6, 4))
+        GLib.MainContext.default().iteration(False)
+
+        def too_large():
+            raise clipboard._TooLarge(64 << 20)
+
+        with mock.patch.object(clipboard, "_get_image", too_large), \
+                mock.patch.object(window, "_redact",
+                                  side_effect=AssertionError("opened the editor")):
+            window.entry.emit("paste-clipboard")
+        self.assertEqual(window._attachments, [])
+        self.assertEqual(window.status.get_text(),
+                         "Not attached: It holds more than 64 MB, more than "
+                         "DA Assistant reads at once.")
+
     def test_text_on_the_clipboard_pastes_as_text(self):
         app = mock.Mock(config=self.config)
         window = chat.ChatWindow(app, "Ask anything", [])

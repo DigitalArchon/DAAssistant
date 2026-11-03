@@ -1702,6 +1702,10 @@ class ChatWindow(Gtk.Window):
         from .. import clipboard
         image = clipboard.get_image()
         if image is None:
+            if clipboard.read_too_much():
+                # Not nothing, as the paste that follows would make it look.
+                entry.stop_emission_by_name("paste-clipboard")
+                self.status.set_text(f"Not attached: {clipboard.unreadable_hint()}")
             return
         entry.stop_emission_by_name("paste-clipboard")
         self.attach_image(image, "Pasted picture")

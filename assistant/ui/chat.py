@@ -78,13 +78,16 @@ COPY_BUTTON_JS = """
 
 
 # A Copy button on each finished answer, copying it as Markdown - what it said, not
-# the page's rendering of it - through the copyAnswer handler, by its place among the
-# transcript's turns. The streaming answer, which is still being written, has none.
+# the page's rendering of it - through the copyAnswer handler, by its place in the
+# conversation, which each turn carries (markdown_html.turn_html). Its place among the
+# page's turns was what it sent once: stray markup in an earlier answer, and the
+# button copied another one. The streaming answer, which is still being written, has
+# none.
 ANSWER_COPY_JS = """
 (function () {
   function decorate() {
     document.querySelectorAll('body > .turn.assistant').forEach(function (turn) {
-      if (turn.querySelector('.cursor')) return;
+      if (turn.querySelector('.cursor') || !turn.dataset.turn) return;
       var role = turn.querySelector('.role');
       if (!role || role.querySelector('.copy-answer')) return;
       var b = document.createElement('button');
@@ -92,9 +95,7 @@ ANSWER_COPY_JS = """
       b.textContent = 'Copy';
       b.title = 'Copy this answer as Markdown';
       b.addEventListener('click', function () {
-        var turns = document.querySelectorAll('body > .turn');
-        window.webkit.messageHandlers.copyAnswer.postMessage(
-          String(Array.prototype.indexOf.call(turns, turn)));
+        window.webkit.messageHandlers.copyAnswer.postMessage(turn.dataset.turn);
         b.textContent = 'Copied';
         setTimeout(function () { b.textContent = 'Copy'; }, 1200);
       });
@@ -1214,7 +1215,8 @@ class ChatWindow(Gtk.Window):
             look_up(kind, what)
 
     def _on_copy_answer(self, _manager, result):
-        """An answer's own Copy button: that answer, as the Markdown it was."""
+        """An answer's own Copy button: that answer, as the Markdown it was - found by
+        its place in the conversation, and only if what is there is a finished answer."""
         try:
             index = int(result.get_js_value().to_string())
         except (AttributeError, ValueError):
@@ -1223,6 +1225,8 @@ class ChatWindow(Gtk.Window):
         if not 0 <= index < len(turns):
             return
         turn = turns[index]
+        if turn.get("role") != "assistant" or turn.get("_streaming"):
+            return
         text = turn.get("export", turn.get("display", turn.get("content", "")))
         Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
         self.status.set_text("Copied the answer")
@@ -1303,7 +1307,8 @@ class ChatWindow(Gtk.Window):
         return turns
 
     @staticmethod
-    def _turn_html(turn):
+    def _turn_html(turn, index=None):
+        """`turn`, which is turn `index` of the conversation shown."""
         if turn.get("role") in REFERENCE_ROLES:
             return turn["html"]
         return markdown_html.turn_html(turn["role"],
@@ -1312,7 +1317,7 @@ class ChatWindow(Gtk.Window):
                                        turn.get("_streaming", False), turn.get("privacy"),
                                        turn.get("model"), turn.get("superseded", False),
                                        links=turn.get("links"),
-                                       attachments=turn.get("attachments"))
+                                       attachments=turn.get("attachments"), index=index)
 
     def _render(self, full=False, new_page=False):
         """Draw the transcript. By default only the final turn, as streaming wants;
@@ -1333,13 +1338,14 @@ class ChatWindow(Gtk.Window):
             return
 
         if new_page or not self._loaded:
-            body = self._screenshot_html + "".join(self._turn_html(t) for t in turns)
+            body = self._screenshot_html + "".join(self._turn_html(t, i)
+                                                   for i, t in enumerate(turns))
             self._loaded = False
             self.webview.load_html(markdown_html.document(body, self.dark), None)
             return
 
         if full:
-            html = "".join(self._turn_html(t) for t in turns)
+            html = "".join(self._turn_html(t, i) for i, t in enumerate(turns))
             # #end is put back at the foot of the page if it is not there: a turn whose
             # markup had wrapped it went with the turns, and the redraw that then found
             # no #end threw, leaving the page blank.
@@ -1358,7 +1364,7 @@ class ChatWindow(Gtk.Window):
         # whole document on every token.
         if not turns:
             return
-        html = self._turn_html(turns[-1])
+        html = self._turn_html(turns[-1], len(turns) - 1)
         # With no turn yet, the first goes before #end: after the screenshot, if any.
         self._js(
             "(function(){var t=document.querySelectorAll('body > .turn');"
@@ -1410,7 +1416,7 @@ class ChatWindow(Gtk.Window):
                 else:
                     self._js(to_start)          # once the page has loaded
             return
-        html = self._turn_html(turn)
+        html = self._turn_html(turn, len(self.conversation) - 1)
         if scroll != "end":
             self._js(
                 "(function(){var h=" + json.dumps(html) + ";"

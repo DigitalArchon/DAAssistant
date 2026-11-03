@@ -241,5 +241,64 @@ class ThePageKeepsItsShape(WindowCase):
         self.assertEqual(self.page(window, SHAPE), [2, 0, True])
 
 
+def clipboard_text():
+    return Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()
+
+
+def js_result(text):
+    """What copyAnswer's handler is given: a message whose value is `text`."""
+    return types.SimpleNamespace(
+        get_js_value=lambda: types.SimpleNamespace(to_string=lambda: text))
+
+
+ANSWERS = [{"role": "user", "content": "question one"},
+           {"role": "assistant", "content": "first answer", "model": "m"},
+           {"role": "user", "content": "question two"},
+           {"role": "assistant", "content": "second answer", "model": "m"}]
+
+
+class EachTurnCarriesItsPlace(unittest.TestCase):
+    def test_the_turn_says_where_it_is_and_an_answer_cannot_say_otherwise(self):
+        html = markdown_html.turn_html("assistant", '<div data-turn="0">x</div>', index=3)
+        self.assertTrue(html.startswith('<div class="turn assistant" data-turn="3">'))
+        self.assertEqual(html.count("data-turn"), 1)
+
+
+class AnAnswersCopyCopiesThatAnswer(WindowCase):
+    webkit = False
+
+    def test_a_place_that_is_not_a_finished_answer_copies_nothing(self):
+        window = self.window(ANSWERS)
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("untouched", -1)
+        window._streaming_text = "half an answer"
+        for place in ("0", "2", "4", "-1", "99", "x"):
+            window._on_copy_answer(None, js_result(place))
+            self.assertEqual(clipboard_text(), "untouched", place)
+        window._streaming_text = None
+        window._on_copy_answer(None, js_result("3"))
+        self.assertEqual(clipboard_text(), "second answer")
+
+
+@unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+class TheButtonNamesItsOwnAnswer(WindowCase):
+    def test_stray_turns_on_the_page_do_not_send_it_to_another_answer(self):
+        window = self.window(ANSWERS)
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("untouched", -1)
+        # A turn the conversation does not have, ahead of the first answer - as markup
+        # that escaped its bubble would leave: counted among the page's turns, the
+        # first answer's button was the second question's.
+        self.page(window, "(function () { var t = document.querySelectorAll("
+                          "'body > .turn'); t[1].insertAdjacentHTML('beforebegin', "
+                          "'<div class=\"turn\">stray</div>'); return 1; })()")
+        settle()
+        self.page(window, "(function () { var a = Array.prototype.filter.call("
+                          "document.querySelectorAll('body > .turn.assistant'), "
+                          "function (t) { return t.textContent.indexOf('first answer') "
+                          ">= 0; })[0]; a.querySelector('.copy-answer').click(); "
+                          "return 1; })()")
+        self.assertTrue(run_until(lambda: clipboard_text() != "untouched"))
+        self.assertEqual(clipboard_text(), "first answer")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -430,7 +430,10 @@ def model_badge(model, is_premium=False, superseded=False):
 
 
 def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
-              model=None, superseded=False, links=None, attachments=None):
+              model=None, superseded=False, links=None, attachments=None, index=None):
+    """A turn of the conversation. `index` is its place in the conversation, which the
+    turn carries for its Copy button to name (ANSWER_COPY_JS in chat.py): the sanitiser
+    lets no data- attribute through, so an answer cannot claim to be another."""
     label = "You" if role == "user" else "Assistant"
     badge = model_badge(model, is_premium, superseded)
     badge += privacy_html(privacy)
@@ -446,7 +449,8 @@ def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
         classes += " superseded"
     if privacy:
         classes += " private" + (" bad" if privacy.get("tone") == "bad" else "")
-    return (f'<div class="turn {classes}">'
+    place = f' data-turn="{int(index)}"' if index is not None else ""
+    return (f'<div class="turn {classes}"{place}>'
             f'<div class="role">{label}{badge}</div>'
             f'<div class="bubble">{body}</div></div>')
 

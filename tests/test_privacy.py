@@ -459,6 +459,24 @@ class RealEvidence(unittest.TestCase):
                          ("UpToDate", "UpToDate", "UpToDate"))
         self.assertEqual(result.fmspc, "20a06f000000")
 
+    def test_a_revoked_tcb_is_refused_whatever_else_is_named(self):
+        """Only the worst status was compared with Revoked, and one this app does not
+        list ranks above it: a platform Intel had revoked passed as partial beside it."""
+        for platform, module, qe in (("Revoked", "TDRelaunchAdvised", "UpToDate"),
+                                     ("UpToDate", "Revoked", "SomethingNew"),
+                                     ("SomethingNew", "UpToDate", "Revoked")):
+            dcap._cache.clear()
+            with mock.patch.object(dcap, "platform_level",
+                                   return_value={"tcbStatus": platform}), \
+                    mock.patch.object(dcap, "module_status", return_value=module), \
+                    mock.patch.object(dcap, "qe_status", return_value=qe), \
+                    self.assertRaisesRegex(dcap.DcapError, "revoked this platform"):
+                self.intel()
+        dcap._cache.clear()
+        with mock.patch.object(dcap, "module_status", return_value="TDRelaunchAdvised"):
+            result = self.intel()
+        self.assertEqual(result.status, "TDRelaunchAdvised")    # partial, and named
+
     def test_a_changed_report_breaks_the_quote_signature(self):
         tampered = bytearray(self.quote)
         tampered[dcap.HEADER_LEN + 520] ^= 1            # the report data: our nonce

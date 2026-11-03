@@ -640,7 +640,9 @@ def verify(raw, session=None, now=None):
     result.module = module_status(tcb_info, quote) or ""
     result.qe = qe_status(identity, quote.qe_report)
     result.status = _worst(result.platform, result.module, result.qe)
-    if result.status == "Revoked":
+    # Asked of each, not of the worst: a status this app does not list ranks above
+    # Revoked there, so a revoked platform beside one Intel added later passed as partial.
+    if "Revoked" in (result.platform, result.module, result.qe):
         raise DcapError("Intel has revoked this platform's TCB")
     parts = [f"platform {result.platform}"]
     if result.module:

@@ -12,6 +12,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 import zipfile
@@ -771,6 +772,22 @@ class Quotes(unittest.TestCase):
                              "humming as they go."}]
         check, = check_quotes('"they cross … humming as they go" [1]', passages)
         self.assertTrue(check["ok"])
+
+    def test_a_quotation_in_a_great_many_places_is_given_up_on_quickly(self):
+        # Each place of a part was tried against every later place of the next, however
+        # far, on the main loop: five parts, each in 3,000 places, none following another
+        # as it must, took over ten seconds. Given up on, it is not found - marked, never
+        # passed.
+        from assistant.reference.encyclopedia import _contains
+        text = "zorb flim xgax wib, " * 3000
+        started = time.monotonic()
+        self.assertFalse(_contains(text, " … ".join(["zorb flim"] * 4) + " … gax wib"))
+        self.assertLess(time.monotonic() - started, 2)
+        # Short of that, one that is there is found, thousands of places on.
+        self.assertTrue(_contains(text + "zorb flim and gax wib.", "zorb flim … gax wib"))
+        # A quotation in thousands of parts took the search deeper than Python goes.
+        self.assertFalse(_contains("zorb flim gax wib, " * 3000,
+                                   " … ".join(["zorb flim"] * 2000)))
 
     def test_german_and_french_quotation_marks_are_quotations_too(self):
         for answer in ("Sie „cross the glimmer sea“ [1].",

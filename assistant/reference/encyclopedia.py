@@ -255,6 +255,14 @@ _ABBREVIATIONS = set("""Mr Mrs Ms Dr St Mt Ft Jr Sr Gen Col Lt Capt Sgt Adm Gov 
                      Pres Prof Rev Hon Inc Corp Co Ltd Bros No Vol vs""".split())
 _CLOSERS = "\"'”’»)] \t"
 _OPENERS = "\"'“‘«([ \t\n"
+_CLOSING = re.compile(f"[{re.escape(_CLOSERS)}]*")
+# How long looking for one quotation in one passage may take, in places tried. One that
+# is there is found in a handful; one whose parts are each in a great many places, none
+# of which follow one another as they must, would be tried in every pair of them, on
+# the main loop. Given up on, it is not found - marked, never passed - and so is one of
+# more parts than a quotation has, each of which takes the search a step deeper.
+FIND_STEPS = 20000
+FIND_PARTS = 100
 
 
 def _abbreviated(text, stop):
@@ -288,28 +296,38 @@ class _Passage:
             if part:
                 parts.append(part)
                 counts.append(_word_count(written))
-        if not parts:
+        if not parts or len(parts) > FIND_PARTS:
             return None
-        plain = self.plain
+        plain, text, starts, steps = self.plain, self.text, self._starts, [FIND_STEPS]
 
         @functools.cache
         def end(index, at, words, omitted):
             """Where the quotation ends in the text, with part `index` at `at` in the
             plain text and each part after it found in turn, or None. `words`: how many
-            it has had since an ellipsis last left words out, `omitted` whether one has.
+            it has had since an ellipsis last left words out, up to PART_WORDS - all
+            that matters - and `omitted` whether one has.
             """
             span = self._span(at, at + len(parts[index]))
             if span is None:
                 return None
-            words += counts[index]
+            words = min(words + counts[index], PART_WORDS)
             if index + 1 == len(parts):
                 return span[1] if words >= PART_WORDS or not omitted else None
+            # The next part follows with nothing left out up to the passage's next word;
+            # past that, only with this part long enough, and before its sentence ends
+            # unless this part ends it (_reach). No place after those can do.
+            word = _COUNTED.search(text, span[1])
+            near = word.start() if word else len(text)
+            far = max(near, self._reach(span[1]) if words >= PART_WORDS else near)
             following = plain.find(parts[index + 1], at + len(parts[index]))
-            while following != -1:
-                start = self._starts[following]
-                if not _COUNTED.search(self.text, span[1], start):
+            while following != -1 and starts[following] <= far:
+                steps[0] -= 1
+                if steps[0] < 0:
+                    return None
+                start = starts[following]
+                if start <= near:
                     last = end(index + 1, following, words, omitted)
-                elif words >= PART_WORDS and self._joins(span[1], start):
+                elif self._joins(span[1], start):
                     last = end(index + 1, following, 0, True)
                 else:
                     last = None
@@ -319,10 +337,11 @@ class _Passage:
             return None
 
         at = plain.find(parts[0])
-        while at != -1:
+        while at != -1 and steps[0] > 0:
+            steps[0] -= 1
             last = end(0, at, 0, False)
             if last is not None:
-                return self._starts[at], last
+                return starts[at], last
             at = plain.find(parts[0], at + 1)
         return None
 
@@ -347,6 +366,35 @@ class _Passage:
         close the one and open the other, and the text compared keeps the brackets
         among them: a part ending after ".)" still ends its sentence, and one beginning
         at "(" still begins the next."""
+        stop, ends = self._sentence_end(end)
+        if stop is None or stop >= start:
+            return True                     # no sentence ends between them
+        if not ends:
+            return False
+        stops, begins = self._sentences()
+        last = bisect.bisect_left(stops, start) - 1     # the last to end before `start`
+        return start <= begins[last] and not self.text[start:begins[last]].strip(_OPENERS)
+
+    def _reach(self, end):
+        """How far past `end`, where a part of a quotation ends, the next can begin with
+        words left out between them (_joins): before this sentence ends - or anywhere,
+        if this part ends it, or none ends after it."""
+        stop, ends = self._sentence_end(end)
+        return len(self.text) if stop is None or ends else stop
+
+    def _sentence_end(self, end):
+        """Where the sentence that `end` is in ends - its full stop, or None if no
+        sentence ends after `end` - and whether `end` is at that end: nothing but the
+        marks that close it between them, or `end` among those after the stop."""
+        stops, begins = self._sentences()
+        first = bisect.bisect_right(begins, end)
+        if first == len(stops):
+            return None, True
+        return stops[first], _CLOSING.match(self.text, end).end() >= stops[first]
+
+    def _sentences(self):
+        """Where the passage's sentences end, at their full stops, and the next begin,
+        at their first words: ([stop], [begin]), worked out when first asked for."""
         if self._stops is None:
             text = self.text
             breaks = [(m.start(), m.end()) for m in _SENTENCE.finditer(text)
@@ -354,16 +402,7 @@ class _Passage:
                           m.group(1) == "." and _abbreviated(text, m.start())))]
             self._stops = [stop for stop, _begin in breaks]
             self._begins = [begin for _stop, begin in breaks]
-        stops, begins = self._stops, self._begins
-        # The first sentence to end at or after `end` - or that `end` is in the closing
-        # marks of - and the last to end before `start`.
-        first = bisect.bisect_right(begins, end)
-        if first == len(stops) or stops[first] >= start:
-            return True                     # no sentence ends between them
-        last = bisect.bisect_left(stops, start) - 1
-        return (not self.text[end:stops[first]].strip(_CLOSERS)
-                and start <= begins[last]
-                and not self.text[start:begins[last]].strip(_OPENERS))
+        return self._stops, self._begins
 
 
 def _contains(text, quote):

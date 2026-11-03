@@ -967,8 +967,12 @@ class LLMClient:
                 raise LLMError(f"{e}. Private Mode: nothing was sent in the clear",
                                model=model)
         else:
+            # The address and key the session attested at, not the settings', which a
+            # hand edit can change under an open conversation (see PrivacySession).
+            attested = self.config.detached(api_url=privacy.api_url,
+                                            api_key=privacy.api_key)
             response = self._post(payload, True, cancel,
-                                  providers.get(self.config, providers.NANOGPT))
+                                  providers.get(attested, providers.NANOGPT))
             if response is None:
                 return None
             privacy.note_sent(model)

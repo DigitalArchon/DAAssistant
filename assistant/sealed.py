@@ -224,7 +224,8 @@ def attestation_for(model, verified):
               f"{hashlib.sha256(verified.hpke_public_key.encode()).hexdigest()[:16]}…")
     return Attestation(model=model, kind=E2EE, level="full", detail=detail,
                        enclave=verified.enclave, hardware=verified.hardware,
-                       release=release, latest_release=verified.latest_release)
+                       release=release, latest_release=verified.latest_release,
+                       release_checked=verified.latest_checked)
 
 
 class Enclave:
@@ -300,13 +301,19 @@ class PrivateModeClient:
         self._preflight_client = preflight_client
         self._client = None
         self._client_key = None
+        # The proof the session last saw - attest() hands it over - and what to tell of
+        # one made here, in request(): PrivacySession._reattested, which raises to
+        # refuse it.
+        self._attested = None
+        self.reattested = None
 
     @property
     def endpoint(self):
         return self.enclave.relay + "/v1/chat/completions"
 
     def attest(self, model):
-        return attestation_for(model, self.enclave.current())
+        self._attested = self.enclave.current()
+        return attestation_for(model, self._attested)
 
     def private_ids(self):
         """nano-gpt's list of Private Mode models - public, no key is sent - read on the
@@ -406,6 +413,13 @@ class PrivateModeClient:
         _around_the_proxy()
         for attempt in (0, 1):
             verified = self.enclave.current()
+            if verified is not self._attested:
+                # Attested here, not by the session: the key rotated (the retry below),
+                # or the proof aged since. It is held to Strict as any other is, and the
+                # banner names the enclave that is sealed to, before anything is sent.
+                if self.reattested is not None:
+                    self.reattested(model, attestation_for(model, verified))
+                self._attested = verified
             client = self._sealed_client(verified)
             size = len(json.dumps(payload).encode("utf-8"))
             scope, upstream = self._preflight(model, size)

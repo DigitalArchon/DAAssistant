@@ -378,8 +378,9 @@ What you see:
   once it has proved itself (**TEE attested**, or **End-to-end encrypted**), amber if it
   proved less than it could - no GPU evidence, an Intel TCB status other than
   `UpToDate` (named as Intel names it), Intel's or NVIDIA's services out of reach, or an
-  enclave running an older release (with **Strict** on, such an enclave is refused
-  instead) - and red if it was refused. **Details…** lists everything that was checked, and what
+  enclave running an older release, or one whose release could not be looked up (with
+  **Strict** on, such an enclave is refused instead) - and red if it was refused, until
+  it next attests well. **Details…** lists everything that was checked, and what
   was not. The status line follows each step: attesting, sending, receiving, checking the
   signature.
 - **On every turn**, a badge: your messages read *Sent to attested TEE* or *Sealed
@@ -422,7 +423,10 @@ or that came back unsigned from a model whose attestation named the key it signs
 that model is attested again before it is sent anything more; if it attests well, the
 conversation carries on - while nano-gpt has no signatures to give (Nov 2026), that is
 before every message, a few seconds each. Chutes' models, which sign no replies, are not
-attested again for that. Like the models, Strict is fixed when a conversation starts. **Check
+attested again for that. An end-to-end encrypted enclave attested again in the middle of
+a request - after nano-gpt's relay says its key has changed - is held to the same, and
+the banner then names the enclave the message is sealed to. (Up to 3.4.0 that attestation
+was used unchecked.) Like the models, Strict is fixed when a conversation starts. **Check
 attestation** follows the box as ticked.
 
 nano-gpt retires Private Mode models from time to time, and the enclave - Tinfoil's

@@ -1426,6 +1426,18 @@ class PrivateRequests(TempConfig):
         self.assertTrue(any("/tee/signature/chatcmpl-42" in g for g in server.gets))
         self.assertEqual(privacy.receipt_badge(receipt)[1], "ok")
 
+    def test_a_tee_request_goes_where_the_session_attested(self):
+        """An open private conversation attested at nano-gpt.com, and posted to wherever
+        api_url said at the time: a hand edit, taken up by the next save."""
+        server = FakeNanoGpt()
+        session = session_for(server)
+        self.config.api_url = "https://llm-gateway.example.net/v1/chat/completions"
+        text = self.client(server).stream(TEXT, [{"role": "user", "content": "private"}],
+                                          privacy=session)
+        self.assertEqual(text, "Hello there")
+        self.assertEqual(len(server.chat_posts), 1)
+        self.assertFalse(any("llm-gateway" in post["url"] for post in server.posts))
+
     def test_nothing_is_sent_when_the_enclave_is_not_attested(self):
         server = FakeNanoGpt(nonce_bound=False)
         with self.assertRaisesRegex(LLMError, "nothing was sent"):
@@ -2066,6 +2078,104 @@ class Sealed(unittest.TestCase):
                 pass
         self.assertEqual(direct, [])
         self.assertEqual(seen, ["CONNECT nano-gpt.com:443 HTTP/1.1"])
+
+    def stream_privately(self, session):
+        llm = LLMClient(Config(os.path.join(tempfile.mkdtemp(), "c.json")))
+        return llm.stream(self.MODEL, [{"role": "user", "content": "my secret question"}],
+                          privacy=session)
+
+    def rotated(self, strict):
+        """The relay says the first sealed request was not sealed for the enclave's key,
+        and the enclave attested again is an older release than the latest."""
+        import dataclasses
+
+        import httpx
+        posts = []
+
+        def handler(request):
+            posts.append(request)
+            if len(posts) == 1:
+                return httpx.Response(400, json={"error": "missing_encrypted_body_header"})
+            return httpx.Response(200, headers={"x-nanogpt-private-mode": "tinfoil"},
+                                  content=self.stream_body())
+
+        proofs = iter([self.verified(),
+                       dataclasses.replace(self.verified("cd" * 32),
+                                           enclave="router-old.tinfoil.sh",
+                                           release_tag="v0.0.100",
+                                           latest_release="v0.0.155")])
+        client, _calls = self.make(handler, verifier=lambda: next(proofs))
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client, strict=strict)
+        events = []
+        session.listener = lambda event, model, detail: events.append((event, detail))
+        return session, posts, events
+
+    def test_an_enclave_attested_again_mid_request_is_held_to_strict(self):
+        """Strict was applied by the session alone: an attestation made inside the
+        request, after the relay's key-rotation answer, was used unchecked."""
+        session, posts, events = self.rotated(strict=True)
+        with self.assertRaisesRegex(LLMError, "attested again, proved less than it could "
+                                              ".an older release than v0.0.155.*nothing "
+                                              "was sent"):
+            self.stream_privately(session)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(events[-1][0], "refused")
+
+    def test_without_strict_the_banner_names_the_enclave_sealed_to(self):
+        session, posts, events = self.rotated(strict=False)
+        self.assertEqual(self.stream_privately(session), "Hi")
+        self.assertEqual(len(posts), 2)
+        attested = [detail for event, detail in events if event == "attested"]
+        self.assertEqual([a.enclave for a in attested],
+                         ["router-0.tinfoil.sh", "router-old.tinfoil.sh"])
+        self.assertEqual(session.attestations[self.MODEL].latest_release, "v0.0.155")
+
+    def test_a_release_not_checked_against_the_latest_falls_short(self):
+        import dataclasses
+        unchecked = dataclasses.replace(self.verified(), latest_checked=False)
+        self.assertIn("its release not checked against the latest",
+                      sealed.attestation_for(self.MODEL, unchecked).fell_short)
+        self.assertEqual(sealed.attestation_for(self.MODEL, self.verified()).fell_short, [])
+        client, _calls = self.make(lambda request: self.fail("sent"),
+                                   verifier=lambda: unchecked)
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client, strict=True)
+        with self.assertRaisesRegex(PrivacyError, "its release not checked"):
+            session.ensure(self.MODEL)
+
+    def test_a_good_attestation_after_a_refusal_clears_the_red_banner(self):
+        """The banner turns green only on "attested", which came only when the proof
+        said something new: one refusal left it red over messages that went."""
+        import httpx
+        clock = [0.0]
+        outcomes = iter([self.verified(), PrivacyError("TUF refused"), self.verified()])
+
+        def verify(relay, secret):
+            outcome = next(outcomes)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        relay = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"cacheScope": "c" * 64, "upstreamModel": "glm-5.3"}))
+        client = sealed.PrivateModeClient(
+            API_URL, "k", enclave=sealed.Enclave(sealed.relay_url(API_URL), verifier=verify,
+                                                 clock=lambda: clock[0]),
+            transport_factory=lambda key, route: httpx.MockTransport(
+                lambda request: self.fail("nothing is sent here")),
+            preflight_client=httpx.Client(transport=relay))
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client)
+        events = []
+        session.listener = lambda event, model, detail: events.append(event)
+        session.ensure(self.MODEL)
+        clock[0] = sealed.MAX_AGE_SECONDS + 1
+        with self.assertRaises(PrivacyError):
+            session.ensure(self.MODEL)
+        clock[0] = 2 * (sealed.MAX_AGE_SECONDS + 1)
+        session.ensure(self.MODEL)
+        self.assertEqual(events, ["attesting", "attested", "refused", "attested"])
 
     def test_a_sealed_request_is_attested_shaped_and_accepted(self):
         import httpx

@@ -225,6 +225,7 @@ class Attestation:
     hardware: str = ""
     release: str = ""
     latest_release: str = ""        # set when the enclave runs an older release
+    release_checked: bool = True    # False when the latest release could not be read
 
     @property
     def headline(self):
@@ -242,6 +243,10 @@ class Attestation:
         found = list(self.shortfalls)
         if self.latest_release:
             found.append(f"an older release than {self.latest_release}")
+        elif not self.release_checked:
+            # As Intel's or NVIDIA's services out of reach are for a TEE/ model: an
+            # enclave on a release long superseded would have passed Strict, green.
+            found.append("its release not checked against the latest")
         if self.level != "full" and not found:
             found.append("not everything could be checked")
         return found
@@ -830,6 +835,7 @@ class PrivacySession:
         self._attested_at = {}          # model -> the clock when its newest check began
         self.strict = bool(strict)
         self._doubted = set()           # TEE/ models to attest again: see check_reply
+        self._refused = set()           # models refused since they last attested well
         self._receipts = []
         # Called with (event, model, detail) from whichever thread is working:
         # "attesting", "attested" (detail: Attestation), "refused" (detail: message),
@@ -933,6 +939,7 @@ class PrivacySession:
                     from . import sealed
                     factory = sealed.PrivateModeClient
                 self._sealed = factory(self.api_url, self.api_key, self.request_timeout)
+                self._sealed.reattested = self._reattested
             return self._sealed
 
     def ensure(self, model):
@@ -1034,19 +1041,49 @@ class PrivacySession:
             self.note_retired(e)
             raise
         except PrivacyError as e:
-            self._emit("refused", model, str(e))
+            self._refuse(model, str(e))
             raise PrivacyError(f"{e}; nothing was sent") from e
         except Exception as e:  # the SDK's own errors, network failures
             message = f"{model}'s enclave could not be attested: {e}"
-            self._emit("refused", model, message)
+            self._refuse(model, message)
             raise PrivacyError(f"{message}; nothing was sent") from e
+        self._accept(model, attestation, started,
+                     announce or known.detail != attestation.detail)
+        return attestation
+
+    def _refuse(self, model, message):
+        with self._lock:
+            self._refused.add(model)
+        self._emit("refused", model, message)
+
+    def _accept(self, model, attestation, started, changed):
+        """Keep `attestation` as `model`'s, and tell the window when it says something
+        new - or when the model was refused since it last attested well, whose banner
+        would otherwise stay red over messages that went."""
         with self._lock:
             self.attestations[model] = attestation
             self._attested_at[model] = started
             self._doubted.discard(model)
-        if announce or known.detail != attestation.detail:
+            recovered = model in self._refused
+            self._refused.discard(model)
+        if changed or recovered:
             self._emit("attested", model, attestation)
-        return attestation
+
+    def _reattested(self, model, attestation):
+        """sealed.py attested the enclave again in the middle of a request - its key
+        had rotated, or its proof aged between ensure() and the send - and that is held
+        to what every attestation of this session is held to, and shown as one is.
+        Before, it was neither: Strict did not see it, and the banner went on naming
+        the enclave attested before. Raises PrivacyError to refuse it."""
+        lacking = attestation.fell_short if self.strict else []
+        if lacking:
+            message = (f"{model}'s enclave, attested again, proved less than it could "
+                       f"({', '.join(lacking)}), and strict attestation is on")
+            self._refuse(model, message)
+            raise PrivacyError(f"{message}; nothing was sent")
+        known = self.attestations.get(model)
+        self._accept(model, attestation, self._clock(),
+                     known is None or known.detail != attestation.detail)
 
     def check_reply(self, model, response_id):
         """Record and return what can be said about one reply.

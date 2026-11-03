@@ -477,6 +477,61 @@ class ReproducibleBuild(unittest.TestCase):
         self.assertIn("PYTHONHASHSEED=0", self.build)
         self.assertIn('-ffile-prefix-map=$W/=', self.build)
         self.assertIn("direct_url.json -delete", self.build)
+        self.assertIn('grep -rlaF "$W/AppDir" "$W/AppDir"', self.build)
+
+    def test_bytecode_names_its_source_as_it_is_inside_the_image(self):
+        """compileall as build.sh runs it, on a folder laid out as the AppDir is: each .pyc
+        unchecked-hash, naming /usr/..., not the folder the build ran in (4,988 of them
+        named /work/AppDir/... in 3.4.0)."""
+        import marshal
+        import shutil
+        import tempfile
+        command = next(line for line in self._commands() if "-m compileall" in line)
+        # -B: its interpreter would otherwise write its own imports' bytecode first,
+        # dated, and compileall would leave those as they are (42 in 3.4.0)
+        self.assertIn('"$PY" -B -m compileall', command)
+        w = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, w, True)
+        a = os.path.join(w, "AppDir", "usr", "lib", "da-assistant")
+        for folder in (os.path.join(w, "AppDir", "usr", "python", "lib", "python3.12"),
+                       os.path.join(a, "assistant")):
+            os.makedirs(folder)
+            with open(os.path.join(folder, "mod.py"), "w", encoding="utf-8") as f:
+                f.write("def f():\n    return 1\n")
+        subprocess.run(["bash", "-c", command], check=True,
+                       env={"PATH": os.environ.get("PATH", ""), "PY": sys.executable,
+                            "W": w, "A": a})
+        names = []
+        for root, _dirs, files in os.walk(w):
+            for name in files:
+                if name.endswith(".pyc"):
+                    with open(os.path.join(root, name), "rb") as f:
+                        data = f.read()
+                    self.assertEqual(int.from_bytes(data[4:8], "little"), 1, name)  # unchecked
+                    code = marshal.loads(data[16:])
+                    names += [code.co_filename, code.co_consts[0].co_filename]
+        self.assertEqual(sorted(set(names)), ["/usr/lib/da-assistant/assistant/mod.py",
+                                              "/usr/python/lib/python3.12/mod.py"])
+
+    def test_console_scripts_that_name_the_build_python_are_left_out(self):
+        import shutil
+        import tempfile
+        start = self.build.index('for script in "$W"/AppDir/usr/python/bin/*; do')
+        loop = self.build[start:self.build.index("\ndone\n", start) + 6]
+        w = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, w, True)
+        bin_dir = os.path.join(w, "AppDir", "usr", "python", "bin")
+        os.makedirs(bin_dir)
+        scripts = {"idna": f"#!{w}/AppDir/usr/python/bin/python3\nimport idna\n",
+                   "pydoc3.12": "#!/bin/sh\n'''exec' \"$(dirname -- \"$0\")/python3.12\"\n",
+                   "python3.12": "\x7fELF\x02\x01\x01\0" + "\0" * 64}
+        for name, text in scripts.items():
+            with open(os.path.join(bin_dir, name), "w", encoding="latin-1") as f:
+                f.write(text)
+        os.symlink("python3.12", os.path.join(bin_dir, "python3"))
+        subprocess.run(["bash", "-c", f"set -euo pipefail\n{loop}"], check=True,
+                       env={"PATH": os.environ.get("PATH", ""), "W": w})
+        self.assertEqual(sorted(os.listdir(bin_dir)), ["pydoc3.12", "python3", "python3.12"])
 
 
 class PillowsFontsAreLeftOut(unittest.TestCase):

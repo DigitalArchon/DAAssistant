@@ -42,7 +42,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work" "$DEST.new"' EXIT
 
 echo "Downloading Ruffle $version"
-curl -fsSL --retry 2 -o "$work/ruffle.tgz" "$url"
+# https only, redirects included: curl follows a redirect to plain http otherwise.
+curl --proto '=https' --tlsv1.2 -fsSL --retry 2 -o "$work/ruffle.tgz" "$url"
 actual="$(openssl dgst -sha512 -binary "$work/ruffle.tgz" | base64 -w0)"
 if [ "$actual" != "$sha512" ]; then
   echo "The download does not match packaging/ruffle.lock; nothing was installed." >&2

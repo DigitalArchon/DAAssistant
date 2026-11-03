@@ -253,6 +253,25 @@ class Composing(unittest.TestCase):
         self.assertIn("NO TEXT FOUND", message["content"])
         self.assertNotIn(self.picture["base64"], message["content"])
 
+    def test_after_a_failed_first_request_the_capture_goes_with_an_attached_picture(self):
+        # The first question, about the capture, failed; the next came with a picture.
+        # The two are one turn upstream, and it carried the picture alone.
+        from assistant import llm
+        from assistant.ui.chat import history_for
+        conversation = [{"role": "user", "content": "what is this?"},
+                        {"role": "assistant", "content": "**Error:** HTTP 503",
+                         "error": True},
+                        attachments.compose("and this one?", [self.picture])]
+        messages = attachments.to_messages(history_for(conversation), can_see=True)
+        [user] = llm.attach_image(messages, "CAPTURE")
+        urls = [part["image_url"]["url"] for part in user["content"]
+                if part["type"] == "image_url"]
+        self.assertEqual(urls, ["data:image/png;base64,CAPTURE",
+                                "data:image/png;base64," + self.picture["base64"]])
+        self.assertIn("and this one?", user["content"][-1]["text"])
+        # Given it again, the turn is left as it is.
+        self.assertEqual(llm.attach_image([user], "CAPTURE"), [user])
+
     def test_history_keeps_pictures_when_unanswered_turns_merge(self):
         from assistant.ui.chat import history_for
         first = attachments.compose("one", [self.picture])

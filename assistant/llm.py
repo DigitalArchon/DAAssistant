@@ -346,9 +346,14 @@ def attach_image(messages, image_base64, mime="image/png"):
     order vision models are trained on, and glm-ocr reads only in it: with the words
     first it read one column of a two-column page and left out the grey timestamps of a
     log, which with the image first it read without fault (Ollama 0.40.2, temperature 0;
-    and the same as Ollama's own API, which puts images first). If a message already
-    carries parts the image joins them rather than clobbering, so it survives repeated
-    turns.
+    and the same as Ollama's own API, which puts images first). If the turn already
+    carries parts the image goes ahead of them rather than clobbering them, and a turn
+    that has this image already is left as it is.
+
+    Already having some image is not having this one. A first request that failed is
+    folded into the next question (chat.history_for), and when that one came with a
+    picture attached the turn carried the picture - and the capture, the subject of the
+    whole conversation, was never sent.
     """
     if not image_base64:
         return [dict(m) for m in messages]
@@ -358,13 +363,12 @@ def attach_image(messages, image_base64, mime="image/png"):
     if idx is None:
         return out
 
+    url = f"data:{mime};base64,{image_base64}"
     content = out[idx].get("content", "")
     parts = list(content) if isinstance(content, list) else [{"type": "text", "text": content}]
-    if not any(p.get("type") == "image_url" for p in parts):
-        parts.insert(0, {
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime};base64,{image_base64}"},
-        })
+    if not any(p.get("type") == "image_url" and (p.get("image_url") or {}).get("url") == url
+               for p in parts):
+        parts.insert(0, {"type": "image_url", "image_url": {"url": url}})
     out[idx] = dict(out[idx], content=parts)
     return out
 

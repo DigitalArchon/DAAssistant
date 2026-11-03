@@ -139,6 +139,21 @@ class Spelling(unittest.TestCase):
         self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", "Shift+Ctrl+1"))
         self.assertFalse(hotkeys.shift_lost("<Control><Shift>k", "Ctrl+K"))   # a letter
         self.assertFalse(hotkeys.shift_lost("<Control>1", "Ctrl+1"))
+        self.assertTrue(hotkeys.shift_lost("<Control><Alt><Shift>5", "Alt+Ctrl+%"))
+
+    def test_a_key_the_user_chose_in_gnome_is_not_a_lost_shift(self):
+        # Changed in GNOME's own settings, perhaps through Change in system settings…:
+        # it was said to be a key no press matches, kept out of the tray menu, and
+        # blamed on 3.4.0 at every start.
+        for trigger in ("Ctrl+Alt+T", "Ctrl+@", "Super+F5", "Ctrl+1", "Shift+Ctrl+2"):
+            self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", trigger), trigger)
+        portal = hotkeys.PortalHotkeys(lambda name: None,
+                                       {"translate_text": "<Control><Shift>1"})
+        with mock.patch.object(session, "desktop", return_value="gnome"):
+            portal._take([("translate_text",
+                           {"trigger_description": "Press <Control><Alt>t"})])
+        self.assertEqual(portal.failed, {})
+        self.assertEqual(portal.triggers["translate_text"], "Ctrl+Alt+T")
 
     def test_gnomes_own_syntax_reads_as_ours(self):
         self.assertEqual(hotkeys.readable_trigger("Press <Control>parenleft"), "Ctrl+(")

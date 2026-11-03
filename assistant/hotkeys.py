@@ -197,10 +197,22 @@ def shift_lost(accel, trigger):
     """Whether GNOME holds `accel`, a key with Shift that makes a symbol of its own, as
     that symbol without Shift: what 3.4.0 sent every desktop's portal (Ctrl+! for
     Ctrl+Shift+1), which KDE matches and GNOME never does. GNOME keeps a shortcut it was
-    once given, and is not asked again, so it stays until changed in its own Settings."""
+    once given, and is not asked again, so it stays until changed in its own Settings.
+
+    Only that very key, the symbol with the other modifiers in any order, is one: once
+    any key without Shift in it counted, so a key the user had chosen in GNOME's own
+    settings - perhaps through Change in system settings… - was reported as one that no
+    key press matches, kept out of the tray menu, and blamed on 3.4.0 at every start."""
     mods, key = shortcuts.parts(accel)
-    return ("shift" in mods and shortcuts.shifted(key) is not None
-            and "shift" not in trigger.lower())
+    symbol = shortcuts.shifted(key) if "shift" in mods else None
+    if symbol is None or not trigger:
+        return False
+    lost = shortcuts.label("".join(f"<{mod}>" for mod in mods - {"shift"}) + symbol)
+
+    def keys(text):
+        return sorted(part.strip().lower() for part in text.split("+"))
+
+    return keys(trigger) == keys(lost)
 
 
 class X11Hotkeys:

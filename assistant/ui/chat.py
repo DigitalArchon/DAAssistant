@@ -1726,8 +1726,11 @@ class ChatWindow(Gtk.Window):
             bar.add(child)
         bar.set_visible(bool(self._attachments))
 
-    def _set_status(self, message):
-        if not self._destroyed:
+    def _set_status(self, message, cancel=None):
+        """The status line, from the main loop; with `cancel`, for that request only.
+        A worker stopped carries on until it notices, and what it had to say - "The web
+        search failed", "Reading the image…" - landed on the next request's line."""
+        if not self._stale(cancel):
             self.status.set_text(message)
         return False
 
@@ -1882,10 +1885,15 @@ class ChatWindow(Gtk.Window):
         prepared = self._prepare_answer()
 
         cancel = self._cancel
+
+        def say(message):
+            # The status line, for this request alone (_set_status).
+            GLib.idle_add(self._set_status, message, cancel)
+
         # The status line, for what the request has to say on its way - a web search
         # that failed, earlier messages left out to fit the model - and, in a private
         # conversation, its session and each step of attesting.
-        private_kwargs = {"status": lambda m: GLib.idle_add(self._set_status, m)}
+        private_kwargs = {"status": say}
         if privacy is not None:
             private_kwargs["privacy"] = privacy
 
@@ -1908,7 +1916,7 @@ class ChatWindow(Gtk.Window):
             try:
                 if preflight is not None:
                     stage = "read"
-                    update = preflight(cancel, lambda m: GLib.idle_add(self._set_status, m))
+                    update = preflight(cancel, say)
                     if cancel.is_set():
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return
@@ -1927,15 +1935,13 @@ class ChatWindow(Gtk.Window):
                         history = history_for(turns)
                     # Done, whatever it found: not made again.
                     GLib.idle_add(self._apply_preflight, update or {}, target)
-                    GLib.idle_add(self._set_status,
-                                  "Searching the web…" if web_search else "Thinking…")
+                    say("Searching the web…" if web_search else "Thinking…")
                 if need_reading:
                     # A model that cannot see, in a conversation about an image: the
                     # vision model reads it once - its text and a description - and
                     # that reading goes with this request and every later one like it.
                     stage = "read"
-                    GLib.idle_add(self._set_status,
-                                  f"Reading the image for {model.rsplit('/', 1)[-1]}…")
+                    say(f"Reading the image for {model.rsplit('/', 1)[-1]}…")
                     if privacy is not None:
                         privacy.enlist(reader)
                     reading = (self.app.client.complete(
@@ -1958,9 +1964,7 @@ class ChatWindow(Gtk.Window):
                         privacy.enlist(reader)
                     readings = {}
                     for picture in unread:
-                        GLib.idle_add(self._set_status,
-                                      f"Reading {picture['name']} for "
-                                      f"{model.rsplit('/', 1)[-1]}…")
+                        say(f"Reading {picture['name']} for {model.rsplit('/', 1)[-1]}…")
                         text = (self.app.client.complete(
                             reader, attachments.reading_request(picture),
                             cancel=cancel, **private_kwargs) or "").strip()
@@ -1982,9 +1986,8 @@ class ChatWindow(Gtk.Window):
                 payload = None
                 if prepared is not None:
                     stage = "gather"
-                    addition, payload = self._gather(
-                        prepared, cancel, lambda m: GLib.idle_add(self._set_status, m),
-                        private_kwargs)
+                    addition, payload = self._gather(prepared, cancel, say,
+                                                     private_kwargs)
                     if cancel.is_set():
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return

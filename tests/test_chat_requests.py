@@ -43,9 +43,9 @@ class Scripted:
         self.waiting = threading.Event()
 
     def stream(self, model, messages, image_base64=None, cancel=None, on_delta=None,
-               **_kwargs):
+               **kwargs):
         self.calls.append({"model": model, "messages": [dict(m) for m in messages],
-                           "image": image_base64})
+                           "image": image_base64, "status": kwargs.get("status")})
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -177,6 +177,31 @@ class AskingAgainForNothing(WindowCase):
         self.settled(window)
         self.assertTrue(window.conversation[1].get("superseded"))
         self.assertFalse(window.conversation[2].get("superseded"))
+
+
+class AStoppedRequestHasNoMoreToSay(WindowCase):
+    """Stop ends a request on screen at once; its worker carries on until it notices,
+    and what it went on to say landed on the status line of the request after it."""
+
+    def test_its_status_lines_do_not_overwrite_the_next_requests(self):
+        client = Scripted(Scripted.STALL, Scripted.STALL)
+        window = self.window(client, turns=ANSWERED[:1])
+        window._start_stream()
+        self.assertTrue(run_until(client.waiting.is_set))
+        stopped = client.calls[0]["status"]
+        window._stop()
+        client.waiting.clear()
+        window.entry.get_buffer().set_text("once more")
+        window._send()
+        self.assertTrue(run_until(client.waiting.is_set))
+        self.addCleanup(window._stop)
+        stopped("The web search failed (HTTP 502); answering without it")
+        client.calls[1]["status"]("Reading the image for m…")
+        self.assertTrue(run_until(lambda: window.status.get_text()
+                                  == "Reading the image for m…"))
+        stopped("1 earlier messages left out, to fit m's context")
+        run_until(lambda: False, timeout=0.3)
+        self.assertEqual(window.status.get_text(), "Reading the image for m…")
 
 
 if __name__ == "__main__":

@@ -185,10 +185,11 @@ to take it off again. A message can be pictures alone.
   as PNG, scaled down to 3000 pixels on the long side (`capture_max_long_edge` in
   `config.json`) if larger.
 - **Text files** are anything that reads as UTF-8 (or UTF-16 with a byte-order mark),
-  up to 512 KB: Markdown, JSON, CSV, YAML, logs, source code. The text goes into your
+  up to 512 KB: Markdown, JSON, CSV, YAML, logs, source code - even one that starts the
+  way some picture format does, such as a list starting `P1`. The text goes into your
   message in a fenced block under the file's name; nothing else of the file is sent.
   Files that are neither text nor a supported picture are refused, and the status line
-  says why.
+  says why; the files attached with one go ahead.
 - **Pasted pictures**: Ctrl+V in the message box, or Paste from its menu, with a picture
   on the clipboard and no text attaches the picture, through the same black-out editor.
 

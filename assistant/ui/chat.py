@@ -1549,6 +1549,13 @@ class ChatWindow(Gtk.Window):
                     self.status.set_text(f"Not attached: {message}" if name in message
                                          else f"Not attached: {name}: {message}")
                     continue
+                except Exception as e:
+                    # Not a refusal of attachments' own, and it must not cost the files
+                    # after it, as a ValueError from Pillow once did. Logged by its kind
+                    # alone: what it says can quote the file.
+                    errors.record(f"Attaching a file failed: {type(e).__name__}")
+                    self.status.set_text(f"Not attached: {name}: {type(e).__name__}")
+                    continue
                 image, photo = picture
 
                 def done(result, _boxes, name=name, photo=photo):

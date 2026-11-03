@@ -9,8 +9,9 @@ The result is PNG, or JPEG for a photo that was one, and it is what the user saw
 black-out editor (ui/redact.py) when they attached it.
 
 Text is anything that decodes as UTF-8 (or UTF-16 with a byte-order mark) and has no NUL
-bytes: Markdown, JSON, CSV, logs, source code. It goes into the message as a fenced
-block under its file name; nothing of the file but its name and its text is sent.
+bytes: Markdown, JSON, CSV, logs, source code - whatever its first bytes look like to an
+image library. It goes into the message as a fenced block under its file name; nothing
+of the file but its name and its text is sent.
 
 What a turn carries, and how a request is built from it, is here too, away from GTK, so
 it can be tested on its own: see to_messages.
@@ -56,16 +57,24 @@ def read_file(path):
     """The file's bytes, refusing anything too large before reading it - and anything
     that is not a file of its own: a pipe never ends, and opening one waits for a writer
     forever, which on the main loop was every window frozen; a device such as /dev/zero
-    reads until memory runs out, its size being 0."""
+    reads until memory runs out, its size being 0.
+
+    The path is asked first, so that a device is never opened at all, and then what was
+    opened, which is what is read: opened without waiting, so that a path made a pipe
+    in between cannot block either."""
     name = os.path.basename(path)
+    not_a_file = f"{name} is not a file (a folder, a device or a pipe)"
     try:
-        info = os.stat(path)
-        if not stat.S_ISREG(info.st_mode):
-            raise AttachmentError(f"{name} is not a file (a folder, a device or a pipe)")
-        if info.st_size > MAX_FILE_BYTES:
-            raise AttachmentError(f"{name} is {info.st_size // (1024 * 1024)} MB; the "
-                                  f"limit is {MAX_FILE_BYTES // (1024 * 1024)} MB")
-        with open(path, "rb") as f:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise AttachmentError(not_a_file)
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as f:
+            info = os.fstat(f.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise AttachmentError(not_a_file)
+            if info.st_size > MAX_FILE_BYTES:
+                raise AttachmentError(f"{name} is {info.st_size // (1024 * 1024)} MB; "
+                                      f"the limit is {MAX_FILE_BYTES // (1024 * 1024)} MB")
             raw = f.read(MAX_FILE_BYTES + 1)
     except OSError as e:
         raise AttachmentError(f"{name}: {e.strerror or e}") from e
@@ -77,13 +86,31 @@ def read_file(path):
 
 def sniff_image(raw):
     """(image, photo) for the picture in `raw` - decoded, upright, flattened to RGB, and
-    whether it was a JPEG - or None when `raw` is not a picture at all. Raises
-    AttachmentError for one that cannot be used."""
+    whether it was a JPEG - or None when `raw` is not a picture: one Pillow does not
+    know, or text that does not open as one. Raises AttachmentError for a picture that
+    cannot be used."""
+    try:
+        return _picture(raw)
+    except AttachmentError:
+        # Text can look like a picture to Pillow at first: a to-do list starting "P1 fix"
+        # is a PPM header that does not parse, notes starting "BM" a bitmap cut short,
+        # an ASCII PBM or a PostScript file a format not taken. Text is attached as text.
+        if _as_text(raw)[0] is not None:
+            return None
+        raise
+
+
+def _picture(raw):
+    """sniff_image's picture, or None for one Pillow does not know at all."""
     try:
         im = Image.open(BytesIO(raw))
     except UnidentifiedImageError:
         return None
-    except (OSError, Image.DecompressionBombError, SyntaxError) as e:
+    except Exception as e:
+        # A plugin's own way of saying no is not always OSError or SyntaxError: PPM's is
+        # ValueError for a header that does not parse, and PNG's ValueError for a text
+        # chunk that inflates past a megabyte. Raised, it took the rest of the files
+        # attached with it, and a fragment of the file into errors.log.
         raise AttachmentError(f"not a readable picture ({e})") from e
     with im:
         if im.format not in IMAGE_FORMATS:
@@ -96,7 +123,7 @@ def sniff_image(raw):
             im.seek(0)                                  # first frame only
             pixels = imaging.flatten(ImageOps.exif_transpose(im))
             pixels.load()
-        except (OSError, Image.DecompressionBombError, SyntaxError, ValueError) as e:
+        except Exception as e:
             raise AttachmentError(f"not a readable picture ({e})") from e
         photo = im.format == "JPEG"
     return imaging.pixels_only(pixels), photo
@@ -123,23 +150,30 @@ def thumbnail_png(image, side=THUMBNAIL_SIDE):
     return imaging.to_png_bytes(imaging.pixels_only(small))
 
 
+def _as_text(raw):
+    """(text, None) for what is text here, whatever its length - UTF-8, or UTF-16 with a
+    byte-order mark, and no NUL bytes - else (None, why it is not)."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return raw.decode("utf-16"), None
+        except UnicodeDecodeError:
+            return None, "is not readable text"
+    if b"\x00" in raw:
+        return None, "is not a text file or a picture"
+    try:
+        return raw.decode("utf-8-sig"), None
+    except UnicodeDecodeError:
+        return None, "is not UTF-8 text or a picture"
+
+
 def decode_text(raw, name="file"):
     """The text in `raw`, or AttachmentError for something that is not text."""
     if len(raw) > MAX_TEXT_BYTES:
         raise AttachmentError(f"{name} is {len(raw) // 1024} KB of text; the limit is "
                               f"{MAX_TEXT_BYTES // 1024} KB")
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        try:
-            text = raw.decode("utf-16")
-        except UnicodeDecodeError as e:
-            raise AttachmentError(f"{name} is not readable text") from e
-    else:
-        if b"\x00" in raw:
-            raise AttachmentError(f"{name} is not a text file or a picture")
-        try:
-            text = raw.decode("utf-8-sig")
-        except UnicodeDecodeError as e:
-            raise AttachmentError(f"{name} is not UTF-8 text or a picture") from e
+    text, refused = _as_text(raw)
+    if text is None:
+        raise AttachmentError(f"{name} {refused}")
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 

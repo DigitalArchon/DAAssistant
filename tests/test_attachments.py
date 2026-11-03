@@ -14,8 +14,10 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
 import unittest
 from io import BytesIO
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -477,6 +479,32 @@ class ChatAttachments(unittest.TestCase):
         self.assertEqual(turn["display"], "What do these show?")
         self.assertIn("photo.png", self.window._markdown())
 
+    def test_a_to_do_list_pillow_takes_for_a_picture_goes_with_the_rest(self):
+        todo = os.path.join(self.dir, "todo.txt")
+        with open(todo, "w", encoding="utf-8") as f:
+            f.write("P1 fix the login bug\nP2 write the docs\n")
+        self.window.attach_files([todo, self.md])
+        self.assertEqual([(a["name"], a["kind"]) for a in self.window._attachments],
+                         [("todo.txt", "text"), ("notes.md", "text")])
+        self.assertEqual(self.window.status.get_text(), "Attached notes.md")
+
+    def test_a_fault_in_one_file_does_not_cost_the_others(self):
+        real = attachments.sniff_image
+
+        def broken(raw):
+            if raw.startswith(b"boom"):
+                raise RuntimeError("a fragment of the file")
+            return real(raw)
+
+        boom = os.path.join(self.dir, "boom.txt")
+        with open(boom, "wb") as f:
+            f.write(b"boom")
+        with mock.patch.object(attachments, "sniff_image", broken), \
+                mock.patch.object(self.chat.errors, "record") as record:
+            self.window.attach_files([boom, self.md])
+        self.assertEqual([a["name"] for a in self.window._attachments], ["notes.md"])
+        self.assertNotIn("fragment", str(record.call_args_list))
+
     def test_a_model_that_cannot_see_is_given_one_reading_per_picture(self):
         self.sees = False
         self.window.attach_files([self.png])
@@ -595,6 +623,50 @@ class PicturesAndFilesAtTheEdges(unittest.TestCase):
             self.assertEqual(shot.convert("RGBA").getpixel((0, 0)), (200, 30, 30, 255))
             self.assertEqual(shot.convert("RGBA").getpixel((3, 0))[3], 0)
         self.assertEqual(set(png_chunks(png)[0]) - {"IHDR", "IDAT", "IEND"}, set())
+
+    def test_text_that_looks_like_a_picture_to_pillow_is_attached_as_text(self):
+        for raw in (b"P1 fix the login bug\nP2 write the docs\n",   # a PPM header to it
+                    b"BM is where these notes start\n",            # a bitmap cut short
+                    b"P1\n2 2\n0 1\n1 0\n",                         # an ASCII PBM
+                    b"%!PS-Adobe-3.0\n%%BoundingBox: 0 0 10 10\n"):  # PostScript
+            self.assertIsNone(attachments.sniff_image(raw), raw)
+            self.assertEqual(attachments.decode_text(raw), raw.decode())
+
+    def test_a_picture_pillow_refuses_in_its_own_way_is_refused_not_raised(self):
+        # A PNG whose text chunk inflates past a megabyte: ValueError from Pillow.
+        info = PngImagePlugin.PngInfo()
+        info.add_text("Comment", "a" * (2 * 1024 * 1024), zip=True)
+        buf = BytesIO()
+        Image.new("RGB", (4, 4)).save(buf, "PNG", pnginfo=info)
+        # And a bitmap cut short that is not text, either: a picture, refused as one.
+        for raw in (buf.getvalue(), b"BM is where these notes start\x00\n"):
+            with self.assertRaises(attachments.AttachmentError) as refused:
+                attachments.sniff_image(raw)
+            self.assertIn("not a readable picture", str(refused.exception))
+
+    def test_a_path_made_a_pipe_after_it_was_asked_about_is_not_waited_on(self):
+        fifo = os.path.join(self.dir, "pipe")
+        os.mkfifo(fifo)
+        regular, real_stat = os.stat(__file__), os.stat
+        refused = []
+
+        def read():
+            try:
+                attachments.read_file(fifo)
+            except attachments.AttachmentError as e:
+                refused.append(str(e))
+
+        # The path a file when asked, and a pipe when opened.
+        with mock.patch.object(attachments.os, "stat", lambda path, *a, **k:
+                               regular if path == fifo else real_stat(path, *a, **k)):
+            reader = threading.Thread(target=read, daemon=True)
+            reader.start()
+            reader.join(5)
+        if reader.is_alive():
+            os.close(os.open(fifo, os.O_WRONLY))        # a writer, so that it ends
+            reader.join(5)
+            self.fail("opening the pipe waited for a writer")
+        self.assertIn("not a file", refused[0])
 
     def test_a_pipe_is_refused_without_waiting_for_it(self):
         fifo = os.path.join(self.dir, "pipe")

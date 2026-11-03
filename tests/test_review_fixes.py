@@ -209,6 +209,36 @@ class ModelCacheBelongsToAProvider(TempDir):
             self.assertIsNotNone(models.load_cache(url="https://one.example/v1/models"))
             self.assertIsNone(models.load_cache(url="https://two.example/v1/models"))
 
+    def test_two_saves_at_once_leave_one_whole_list(self):
+        # The start-up refresh and a first request's ensure_listed, on two threads:
+        # both part way through writing when either renames its file into place.
+        import threading
+        cache = os.path.join(self.dir, "models.json")
+        both_writing = threading.Barrier(2, timeout=10)
+        real_dump = json.dump
+
+        def dump(payload, f, **kwargs):
+            real_dump(payload, f, **kwargs)
+            f.flush()
+            both_writing.wait()
+
+        lists = {"long": [{"id": f"vendor/model-{n}"} for n in range(500)],
+                 "short": [{"id": "a/b"}]}
+        with mock.patch.object(models, "CACHE_DIR", self.dir), \
+                mock.patch.object(models, "CACHE_FILE", cache), \
+                mock.patch.object(models.json, "dump", dump):
+            savers = [threading.Thread(target=models.save_cache,
+                                       args=(listed, "https://one.example/v1/models"))
+                      for listed in lists.values()]
+            for saver in savers:
+                saver.start()
+            for saver in savers:
+                saver.join(15)
+        with open(cache) as f:
+            saved = json.load(f)["models"]
+        self.assertIn(saved, list(lists.values()))
+        self.assertEqual(os.listdir(self.dir), ["models.json"])
+
 
 class CaptureTempFiles(unittest.TestCase):
     def test_the_path_sits_in_a_directory_nobody_else_can_enter(self):

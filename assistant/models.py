@@ -18,6 +18,7 @@ Results are cached on disk, a file per provider, because NanoGPT's detailed list
 import copy
 import json
 import os
+import tempfile
 import threading
 import time
 from urllib.parse import urlparse
@@ -328,15 +329,27 @@ def load_cache(max_age=CACHE_TTL, url=None, provider=providers.NANOGPT):
 
 def save_cache(models, url, provider=providers.NANOGPT):
     path = cache_file(provider)
+    tmp = None
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
+        # A file of its own to write, then renamed into place. The start-up refresh
+        # and a first request's ensure_listed can save the same list at once, on two
+        # threads, and with one name for that file they wrote into the same one: one
+        # renamed the other's half-written copy into place, and the other's rename
+        # failed.
+        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=os.path.basename(path) + ".",
+                                   suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
             json.dump({"version": CACHE_VERSION, "url": url, "fetched": time.time(),
                        "models": models}, f)
         os.replace(tmp, path)
     except OSError:
-        pass        # a cache failure must never break the browser
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        # a cache failure must never break the browser
 
 
 def _listed(body):

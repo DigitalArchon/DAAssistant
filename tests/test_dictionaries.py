@@ -34,6 +34,7 @@ collector.install()
 from assistant import prompts
 from assistant.config import Config
 from assistant.reference import dictionaries, dsl, markup, stardict
+from assistant.reference import dictzip as dzmodule
 from assistant.reference.dictionaries import Library, fold, stems
 from assistant.reference.dictzip import DictzipFile
 from assistant.reference.stardict import StarDict
@@ -72,8 +73,9 @@ def write_dsl(path, text=DSL_TEXT):
         f.write(dsl_bytes(text))
 
 
-def write_dictzip(path, data, chunk=64):
-    """A real dictzip: deflate flushed every `chunk` bytes, sizes in an RA field."""
+def write_dictzip(path, data, chunk=64, claimed=None):
+    """A real dictzip: deflate flushed every `chunk` bytes, sizes in an RA field - which
+    says the chunks are `claimed` bytes long, if given, whatever they are."""
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
     sizes, body = [], b""
     for start in range(0, len(data), chunk):
@@ -83,7 +85,8 @@ def write_dictzip(path, data, chunk=64):
             piece += compressor.flush(zlib.Z_FINISH)
         sizes.append(len(piece))
         body += piece
-    ra = struct.pack("<HHH", 1, chunk, len(sizes)) + struct.pack(f"<{len(sizes)}H", *sizes)
+    ra = (struct.pack("<HHH", 1, claimed or chunk, len(sizes))
+          + struct.pack(f"<{len(sizes)}H", *sizes))
     extra = b"RA" + struct.pack("<H", len(ra)) + ra
     header = (b"\x1f\x8b\x08\x04" + b"\x00" * 4 + b"\x02\x03"
               + struct.pack("<H", len(extra)) + extra)
@@ -140,6 +143,93 @@ class Dictzip(unittest.TestCase):
         with gzip.open(path, "wb") as f:
             f.write(b"hello world")
         self.assertEqual(DictzipFile(path).read(6, 5), b"world")
+
+    def test_without_it_any_span_is_read_from_the_nearest_place_kept(self):
+        import random
+        rng = random.Random(4)
+        data = bytes(rng.randrange(40) for _ in range(300_000))
+        path = os.path.join(self.dir, "plain.dz")
+        # Two gzip members, one after the other, as gzip reads them: one file.
+        with open(path, "wb") as f:
+            f.write(gzip.compress(data[:120_000]) + gzip.compress(data[120_000:]))
+        with mock.patch.object(dzmodule, "SPAN", 20_000), \
+                mock.patch.object(dzmodule, "PIECE", 4096), \
+                mock.patch.object(dzmodule, "STEP", 1024):
+            dz = DictzipFile(path)
+            self.assertIsNone(dz.chunk_length)
+            for offset, size in ((0, 10), (299_990, 50), (119_990, 20), (50_000, 70_000),
+                                 (5, 0), (400_000, 9), (150_000, 1)):
+                self.assertEqual(dz.read(offset, size), data[offset:offset + size])
+            self.assertGreater(len(dz._places), 10)
+            self.assertEqual(dz.read_all(), data)
+            self.assertIsNone(dz.cut_short)
+            self.assertEqual(dz.read_all(most=1000), data[:1000])
+
+    def test_opening_one_reads_its_head_and_no_more(self):
+        # Settings and every Look up window open the dictionaries on the main loop: one
+        # without the field was inflated whole there, and kept so.
+        head = dsl_bytes('#NAME "Plain Gzip"\n\nglorp\n\t[m1]an entry\n')
+        compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+        deflated = (compressor.compress(head + b"\x00\x00" * 400_000)
+                    + compressor.flush(zlib.Z_FULL_FLUSH))
+        path = os.path.join(self.dir, "head.dsl.dz")
+        with open(path, "wb") as f:      # what matters, then a block of no known type
+            f.write(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03" + deflated + b"\x06" * 9)
+        with mock.patch.object(dzmodule, "PIECE", 4096):
+            d = dsl.DSL(path)
+            self.assertEqual(d.name, "Plain Gzip")
+            data = d._dz.read_all()
+        self.assertTrue(data.startswith(head))
+        self.assertIn("will not inflate", d._dz.cut_short)
+
+    def test_nothing_unpacks_to_more_than_a_file_of_its_size_holds(self):
+        head = dsl_bytes('#NAME "Bomb"\n\nglorp\n\t[m1]an entry\n')
+        filler = b"\x00" * 1_000_000
+        plain = os.path.join(self.dir, "bomb.dsl.dz")
+        with open(plain, "wb") as f:
+            f.write(gzip.compress(head + filler))
+        chunked = os.path.join(self.dir, "chunked.dsl.dz")
+        write_dictzip(chunked, head + filler, chunk=60000)
+        with mock.patch.object(dzmodule, "RATIO", 2), \
+                mock.patch.object(dzmodule, "FLOOR", 80_000), \
+                mock.patch.object(dzmodule, "PIECE", 4096):
+            for path in (plain, chunked):
+                d = dsl.DSL(path)                  # its head is within the limit
+                self.assertEqual(d.name, "Bomb")
+                with self.assertRaises(dzmodule.TooLarge):
+                    list(d.headwords())
+        # A chunk that unpacks to more than its table says is not trusted either.
+        path = os.path.join(self.dir, "lying.dz")
+        write_dictzip(path, bytes(range(256)) * 4, chunk=128, claimed=64)
+        with self.assertRaises(dzmodule.DictzipError):
+            DictzipFile(path).read(0, 10)
+
+    def test_a_file_cut_short_reads_as_far_as_it_goes(self):
+        import random
+        rng = random.Random(2)
+        data = bytes(rng.randrange(256) for _ in range(10_240))     # 11 chunks, none small
+        path = os.path.join(self.dir, "short.dz")
+        write_dictzip(path, data, chunk=1000)
+        with open(path, "r+b") as f:
+            f.truncate(os.path.getsize(path) - 2000)
+        dz = DictzipFile(path)
+        got = dz.read_all()
+        self.assertGreaterEqual(len(got), 7000)
+        self.assertEqual(len(got) % 1000, 0)
+        self.assertEqual(bytes(got), data[:len(got)])
+        self.assertIn("of 11", dz.cut_short)
+        self.assertEqual(dz.read(1500, 100), data[1500:1600])
+        with self.assertRaises(dzmodule.DictzipError):
+            dz.read(9500, 50)
+
+    def test_a_header_that_does_not_end_is_no_gzip_file(self):
+        path = os.path.join(self.dir, "named.dz")
+        with open(path, "wb") as f:
+            f.write(b"\x1f\x8b\x08\x08" + b"\x00" * 6 + b"n" * 200_000)
+        started = time.monotonic()
+        with self.assertRaises(dzmodule.DictzipError):
+            DictzipFile(path)
+        self.assertLess(time.monotonic() - started, 1)
 
 
 class DslHeadwords(unittest.TestCase):

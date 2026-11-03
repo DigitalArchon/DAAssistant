@@ -671,11 +671,14 @@ whatever else the model learned. Each question goes through four steps:
 4. **Answer**, from the passages found, treated as the authority: each statement cited by
    passage number, key facts quoted word for word.
 
-**Strict**, on by default, keeps the answer to the encyclopedia: where it has nothing,
-the answer says so rather than filling in - and if even the second search found little,
-the sources say so, and suggest switching Strict off. Off, what the encyclopedia does not
-cover may be answered too, but only under a heading of its own, *Not from the
-encyclopedia*. **Written for** chooses the reader: a General reader is answered from the
+**Strict**, on by default, tells the model to answer from the passages found and nothing
+else, and where they have nothing on the question, to say so rather than fill in - and
+if even the second search found little, the sources say so, and suggest switching Strict
+off. Off, what the encyclopedia does not cover may be answered too, but only under a
+heading of its own, *Not from the encyclopedia*. Strict is an instruction, which a model
+can fail to keep: what the app checks, Strict or not, is the answer's quotations, not
+what it says in its own words.
+**Written for** chooses the reader: a General reader is answered from the
 main Encyclopedia first, a Student from the Student Encyclopedia, a Young reader from the Elementary one -
 each falling back on the others - and in words for that reader. The defaults for both are
 under **Settings > Reference**.

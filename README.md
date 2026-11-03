@@ -24,7 +24,7 @@ Nine operations, from the tray menu or a global shortcut you choose:
 | OCR only | `Ctrl+Shift+5` | Reads the text in a screen region, word for word |
 | Look up word | `Ctrl+Shift+6` | Every entry your own dictionaries (DSL, StarDict) have for a word |
 | Search Encyclopedia | `Ctrl+Shift+7` | Read your encyclopedia DVD - [off by default](#the-encyclopedia) |
-| Ask Encyclopedia | `Ctrl+Shift+8` | Answers from the encyclopedia alone, every quotation checked - [off by default](#the-encyclopedia) |
+| Ask Encyclopedia | `Ctrl+Shift+8` | Answers from the encyclopedia, every quotation checked against it - [off by default](#the-encyclopedia) |
 
 **Ask anything**, at the top of the tray menu, opens a chat with nothing captured, to
 type into straight away (suggested key `Ctrl+Shift+9`). **Your own actions** - a prompt

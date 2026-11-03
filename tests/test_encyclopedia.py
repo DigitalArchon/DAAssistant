@@ -1266,6 +1266,19 @@ class AskWindow(EncyclopediaWindowCase):
         finally:
             window.destroy()
 
+    def test_strict_says_what_it_does_and_no_more(self):
+        # It said the answer was "the encyclopedia's alone": Strict is an instruction to
+        # the model, and only quotations are checked.
+        window = self._window()
+        try:
+            tip = window.strict_switch.get_parent().get_tooltip_text()
+            self.assertNotIn("alone", tip)
+            self.assertIn("the model is told to answer from the passages", tip)
+            self.assertIn("checks the answer's quotations against the passages, not what "
+                          "it says in its own words", tip)
+        finally:
+            window.destroy()
+
     def test_planned_searched_checked_answered_and_its_quotes_checked(self):
         self.client.answer = ('They "cross the glimmer sea" [1], and "they fly to the '
                               'moon each spring" [1].')

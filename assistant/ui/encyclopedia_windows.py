@@ -404,11 +404,15 @@ class AskEncyclopediaWindow(ChatWindow):
         strict = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         strict.pack_start(Gtk.Label(label="Strict"), False, False, 0)
         strict.pack_start(self.strict_switch, False, False, 0)
+        # What it does, which is to ask: the model is told how to answer, and the
+        # answer's quotations are checked - nothing else in it is.
         strict.set_tooltip_text(
-            "On: the answer is the encyclopedia's alone - where it has nothing, the "
-            "answer says so rather than filling in. Off: what the encyclopedia does not "
-            "cover may be answered too, under a heading of its own, Not from the "
-            "encyclopedia.")
+            "On: the model is told to answer from the passages found and nothing else, "
+            "and where they do not answer the question, to say so rather than fill in; "
+            "if even a second search finds little, the sources say that too. Off: it may "
+            "answer what the passages do not cover, under a heading of its own, Not "
+            "from the encyclopedia. Either way the app checks the answer's quotations "
+            "against the passages, not what it says in its own words.")
         header.pack_end(strict)
 
         self.audience = Gtk.ComboBoxText()

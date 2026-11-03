@@ -263,7 +263,9 @@ class InTheWebKitView(unittest.TestCase):
         self.assertEqual(order, "shot,turn user,turn assistant,end")
 
         viewed = []
-        window._view_screenshot = lambda: viewed.append(True) or Gtk.main_quit()
+        # _run_until's poll sees it. Quitting the loop here as well left that poll
+        # running, to quit the main loop of whichever test came next.
+        window._view_screenshot = lambda: viewed.append(True)
         window.webview.run_javascript(
             "document.querySelector('.shot img').click()", None, None, None)
         self._run_until(lambda: viewed, timeout=5)

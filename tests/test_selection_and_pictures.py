@@ -139,7 +139,8 @@ class ReadsHaveALimit(unittest.TestCase):
     def test_more_than_a_read_takes_in_is_said_to_be(self):
         for case in ({"readers": [(ENDLESS, "endless")]},
                      {"readers": [(ENDLESS, "endless")], "session_type": "wayland"},
-                     {"gtk_text": "x" * ((1 << 20) + 1)}):
+                     {"gtk_text": "x" * ((1 << 20) + 1)},
+                     {"gtk_text": "語" * 400_000}):         # 1.2 MB, in 400,000 characters
             with self.subTest(**{k: str(v)[:40] for k, v in case.items()}):
                 text, hint, selection, selection_hint = self.text_from(**case)
                 self.assertEqual(text, (None, "empty"))

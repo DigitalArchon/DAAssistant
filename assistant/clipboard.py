@@ -142,8 +142,12 @@ def _run(argv, timeout=3, binary=False):
 
 
 def _bounded(text):
-    """`text`, which GTK has read in whole, unless it is more than a read takes in."""
-    if text and len(text) > TEXT_LIMIT:
+    """`text`, which GTK has read in whole, unless it is more than a read takes in -
+    in bytes, as the other readers count: 8 million characters of Japanese are 24 MB.
+    Encoded only where the characters alone cannot tell."""
+    if text and len(text) * 4 > TEXT_LIMIT and (
+            len(text) > TEXT_LIMIT
+            or len(text.encode("utf-8", "surrogatepass")) > TEXT_LIMIT):
         raise _TooLarge(TEXT_LIMIT)
     return text
 

@@ -274,15 +274,19 @@ class Assistant:
     def _on_privacy_toggled(self, widget):
         self.config.privacy_mode = widget.get_active()
         self._refresh_reviews()
+        unsaved = ""
         try:
             self.config.save()
         except OSError as e:
-            self.notify(f"Could not save settings: {e}", urgency="normal")
-            return
+            # In force all the same, open conversations included. Going back on it here
+            # left Privacy Mode on for new conversations, the tray ticked, and the open
+            # ones sending their next message - a web search too - to the ordinary
+            # models.
+            unsaved = f" Not saved ({e}): this holds until the app quits."
         if not self.config.privacy_mode:
             self._release_privacy_holds()
             self.notify("Privacy Mode off for new conversations. Open private "
-                        "conversations stay private until they are closed.")
+                        "conversations stay private until they are closed." + unsaved)
             return
         found = privacy_module.problems(self.config)
         held = self._make_open_windows_private()
@@ -290,7 +294,7 @@ class Assistant:
             self.notify("Privacy Mode is on, but cannot be used yet: " + " ".join(found)
                         + " Choose models in Settings > Privacy."
                         + (f" {held[1]} open conversation{'s' if held[1] != 1 else ''} "
-                           f"will send nothing until then." if held[1] else ""),
+                           f"will send nothing until then." if held[1] else "") + unsaved,
                         urgency="normal")
             return
         answers = (self.config.private_premium_model if self.config.use_premium
@@ -301,7 +305,8 @@ class Assistant:
                     f"before anything is sent. Web search is off."
                     + (f" {upgraded} open conversation{'s go' if upgraded != 1 else ' goes'} "
                        f"private from {'their' if upgraded != 1 else 'its'} next message."
-                       if upgraded else ""))
+                       if upgraded else "") + unsaved,
+                    urgency="normal" if unsaved else "low")
 
     def _make_open_windows_private(self):
         """Privacy Mode switched on: every open conversation goes private from its next
@@ -1048,8 +1053,11 @@ class Assistant:
                 try:
                     self.config.save()
                 except OSError as e:
-                    self.notify(f"Could not save settings: {e}", urgency="normal")
-                    return
+                    # In force all the same, as a key the keyring cannot take is: going
+                    # back on them here switched Privacy Mode on for new conversations
+                    # but not the open ones, and left the tray's tick as it was.
+                    self.notify(f"Could not save settings: {e} They are used until the "
+                                "app quits.", urgency="normal")
                 except KeychainError as e:
                     # Everything else is saved; the key is in memory until the app quits.
                     self.notify(f"Settings saved, but the API key could not be kept: {e} "

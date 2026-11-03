@@ -146,6 +146,41 @@ class OpenConversationsGoPrivate(TempConfig):
         self.assertIsNone(third.privacy)
         self.assertTrue(third._privacy_hold)
 
+    def test_ticked_with_the_config_unwritable_it_holds_all_the_same(self):
+        """A full disk or a read-only config folder: the tray stayed ticked and new
+        conversations were private, while the open ones were left as they were."""
+        from unittest import mock
+
+        from assistant.app import Assistant
+        window = self.window(RecordingClient())
+        self.assertTrue(self.run_until(lambda: window._cancel is None))
+        told = []
+
+        class Stub:
+            _on_privacy_toggled = Assistant._on_privacy_toggled
+            _make_open_windows_private = Assistant._make_open_windows_private
+
+            def __init__(stub):
+                stub.config = self.config
+
+            def _refresh_reviews(stub):
+                pass
+
+            def notify(stub, message, urgency="low"):
+                told.append(message)
+
+        class Tick:
+            def get_active(self):
+                return True
+
+        full = OSError(28, "No space left on device")
+        with mock.patch.object(type(self.config), "save", side_effect=full):
+            Stub()._on_privacy_toggled(Tick())
+        self.assertTrue(self.config.privacy_mode)
+        self.assertIsInstance(window.privacy, PrivacySession)
+        self.assertIn("Not saved", told[-1])
+        self.assertIn("until the app quits", told[-1])
+
     def test_a_conversation_with_pictures_needs_the_vision_model(self):
         window = self.window(RecordingClient(), image_base64="iVBORw0KGgo=")
         self.assertIn("vision", window.privacy_uses())

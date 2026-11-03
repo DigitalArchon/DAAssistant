@@ -199,6 +199,28 @@ class OnlyASilentExitIsACancel(ToolCase):
         self.assertIn("builtin screenshot interface", str(raised.exception))
         self.assertEqual(self.select("gnome-screenshot", 0, write=True).size, (64, 48))
 
+    CHATTER = ("Gtk-Message: 10:21:07.316: Failed to load module \"canberra-gtk-module\"\n"
+               "(gnome-screenshot:4242): GLib-GIO-DEBUG: 10:21:07.400: _g_io_module_get\n"
+               "qt.qpa.wayland: Wayland does not support QWindow::requestActivate()\n"
+               "kf.kirigami.platform: Failed to find a Kirigami platform plugin\n"
+               "libEGL warning: DRI3: Screen seems not DRI3 capable\n"
+               "MESA-LOADER: failed to open iris: cannot open shared object file\n")
+
+    def test_what_every_run_prints_does_not_make_an_escape_a_failure(self):
+        # Taken for a complaint, it sent the chain on to a window for cropping the
+        # whole screen after the user had pressed Esc.
+        self.assertIsNone(self.select("grim", 1, self.CHATTER + "selection cancelled\n"))
+        self.assertIsNone(self.select("gnome-screenshot", 1, self.CHATTER))
+        with mock.patch.object(cli, "_spectacle_args",
+                               side_effect=lambda path, region: ["spectacle", path]):
+            self.assertIsNone(self.select("spectacle", 1, self.CHATTER))
+            with self.assertRaises(cli.CaptureError) as raised:
+                self.select("spectacle", 1, self.CHATTER + "Could not take a screenshot\n")
+        self.assertEqual(str(raised.exception), "spectacle failed: Could not take a screenshot")
+        with self.assertRaises(cli.CaptureError):
+            self.select("gnome-screenshot", 1,
+                        "(gnome-screenshot:4242): Gtk-WARNING **: cannot open display: :9")
+
     def test_after_a_tool_that_failed_the_next_rung_is_tried(self):
         self.programs(lambda cmd: answered(cmd, 1, stderr="cannot open display"))
         manager = capture.CaptureManager.__new__(capture.CaptureManager)
@@ -212,6 +234,32 @@ class OnlyASilentExitIsACancel(ToolCase):
             pump(lambda: outcome)
         self.assertEqual(outcome, ["the next rung's"])
         self.assertEqual(manager.last_backend, "next")
+
+
+class SpectacleOfItsOwn(unittest.TestCase):
+    """Spectacle runs once per session: started while it was running, it handed the
+    capture to the one running and exited at once, which read as a cancel - and the
+    directory it was to write into was removed before the picture came."""
+
+    HELP = ("Usage: spectacle [options]\n"
+            "  -b, --background            Take a screenshot and exit without showing the GUI\n"
+            "  -n, --nonotify              In background mode, do not pop up a notification\n"
+            "  -o, --output <fileName>     In background mode, save image to specified file\n"
+            "  -r, --region                Capture a rectangular region of the screen\n"
+            "  -f, --fullscreen            Capture the entire desktop (default)\n")
+    NEW_INSTANCE = ("  -i, --new-instance          Starts a new GUI instance of spectacle "
+                    "without registering to DBus\n")
+
+    def args(self, help_text):
+        with mock.patch.object(cli.subprocess, "run",
+                               return_value=answered(["spectacle"], stdout=help_text)):
+            return cli._spectacle_args("/run/x/capture.png", region=True)
+
+    def test_a_new_instance_where_it_offers_one(self):
+        self.assertEqual(self.args(self.HELP + self.NEW_INSTANCE),
+                         ["spectacle", "--background", "--new-instance", "--nonotify",
+                          "--region", "--output", "/run/x/capture.png"])
+        self.assertNotIn("--new-instance", self.args(self.HELP))
 
 
 if __name__ == "__main__":

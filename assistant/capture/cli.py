@@ -7,12 +7,14 @@ Details that matter:
   - slurp geometry is parsed with a signed regex. `(\\d+),(\\d+)` failed on any monitor
     positioned left of or above the origin, which is a normal multi-head layout.
   - spectacle flags are probed from --help instead of hardcoding Plasma 5's `-bno`;
-    Plasma 6 (the CachyOS target) changed them.
+    Plasma 6 (the CachyOS target) changed them. It runs as a new instance, rather
+    than handing the capture to one already running.
   - Cinnamon's D-Bus has no region picker: ScreenshotArea takes a fixed rectangle.
     Cinnamon gives the whole screen, cropped in the app's own window.
-  - a tool that exits non-zero is a user's cancel only when it said nothing - or
-    said only that it was cancelled. Anything else is a failure, so that the next
-    rung of the chain is tried, rather than a cancel, which ends the chain.
+  - a tool that exits non-zero is a user's cancel only when it said nothing but
+    the chatter every run prints - or said that it was cancelled. Anything else is
+    a failure, so that the next rung of the chain is tried, rather than a cancel,
+    which ends the chain.
   - temp files are cleaned up on every path, including the error paths.
   - they live in a directory of our own rather than loose in /tmp. See _tempfile.
 """
@@ -72,13 +74,26 @@ def _await_image(path, timeout, interval=0.05):
         time.sleep(interval)
 
 
+# What tools print whether or not anything is wrong, and which says nothing of how a
+# capture went: GLib's messages below a warning ("Gtk-Message: Failed to load module
+# "canberra-gtk-module""), Qt's and KDE Frameworks' logging ("qt.qpa.wayland: ...",
+# "kf.kirigami.platform: ..."), and the graphics libraries' ("libEGL warning: ...").
+_CHATTER = re.compile(r"(\(\S+:\d+\): )?[\w-]+-(Message|INFO|DEBUG): "
+                      r"|(qt|kf|kf5|kf6)\.[\w.-]+: "
+                      r"|(libEGL|libGL|MESA|MESA-LOADER)( warning| error)?: ")
+
+
 def _complaint(result, cancelled=()):
     """What a tool that exited non-zero said was wrong; "" when that was a cancel.
 
-    It is a cancel only when the tool said nothing, or one of the things in `cancelled`:
-    slurp says "selection cancelled" when Esc is pressed."""
-    said = (result.stderr or "").strip()
-    return "" if not said or said.lower() in cancelled else said
+    It is a cancel only when the tool said nothing but chatter (_CHATTER), or said one
+    of the things in `cancelled`: slurp says "selection cancelled" when Esc is pressed.
+    Chatter taken for a complaint made Esc a failure, and a failure goes on down the
+    chain - to a window for cropping the whole screen, after the user had cancelled."""
+    lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+    if any(line.lower() in cancelled for line in lines):
+        return ""
+    return "\n".join(line for line in lines if not _CHATTER.match(line))
 
 
 def _tempfile():
@@ -143,6 +158,12 @@ def _spectacle_args(path, region):
     # --background is what keeps this to the picker alone: no Spectacle window opens,
     # the rectangle is dragged, and the file is written.
     args.append("--background" if _has_flag(help_text, "--background") else "-b")
+    # Spectacle runs once per session: started while it is running - its window open,
+    # say - it hands what it was asked to the one running and exits at once. That read
+    # as the user's cancel, and the directory it was to write into was gone by the
+    # time the picture came. A new instance of its own does the work itself.
+    if _has_flag(help_text, "--new-instance"):
+        args.append("--new-instance")
     if _has_flag(help_text, "--nonotify"):
         args.append("--nonotify")
     elif _has_flag(help_text, "-n"):
@@ -247,8 +268,9 @@ class CliBackend(ScreenshotBackend):
                     # Nothing written. Esc during the rectangle looks exactly like this,
                     # and some Spectacle versions also exit non-zero for it, so only call
                     # it a failure when the tool actually complained about something.
-                    if result.returncode != 0 and result.stderr.strip():
-                        raise CaptureError(f"spectacle failed: {result.stderr.strip()}")
+                    complaint = _complaint(result) if result.returncode != 0 else ""
+                    if complaint:
+                        raise CaptureError(f"spectacle failed: {complaint}")
                     return None
                 return _load(path)
             finally:

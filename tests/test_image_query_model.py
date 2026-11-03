@@ -614,6 +614,46 @@ class AConversationFollowsItsModelMenu(unittest.TestCase):
         finally:
             window.destroy()
 
+    def test_a_reading_made_again_sends_the_capture_only_to_a_model_that_sees(self):
+        # A question put to a model that sees: the capture goes with the first request,
+        # and the OCR model's reading beside it. That reading failed; asked again of a
+        # model that cannot see, the capture is read for it instead of sent to it.
+        from assistant.llm import LLMError
+
+        class FailsFirstReading(RecordingClient):
+            failed = False
+
+            def complete(self, model, messages, **kwargs):
+                if not self.failed:
+                    self.failed = True
+                    raise LLMError("HTTP 503: overloaded", model=model)
+                return super().complete(model, messages, **kwargs)
+
+        self.client = self.app.client = FailsFirstReading(
+            transcription="## Text\nOK\n\n## Description\nA dialog")
+        question = "what is this?"
+        window = ChatWindow(self.app, "Query image", [
+            {"role": "user", "content": prompts.query_image(question), "display": question}],
+            image_base64="IMAGEDATA", autostart=True,
+            preflight=self.app._read_preflight(
+                "IMAGEDATA",
+                lambda q, extracted=None: (prompts.query_image(q, extracted), q),
+                question))
+        try:
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and window.conversation[-1].get("error")))
+            self.assertEqual(self.streams(), [])
+            window._ask_again("text")
+            self.assertTrue(self._answered(window, 1))
+            [answer] = self.streams()
+            self.assertEqual(answer["model"], TEXT_MODEL)
+            self.assertFalse(answer["image"])
+            self.assertEqual([c["prompt"] for c in self.client.calls
+                              if c["kind"] == "complete"][-2:].count(prompts.IMAGE_BRIEF), 1)
+            self.assertIn("A dialog", window.reading)
+        finally:
+            window.destroy()
+
     def test_asking_again_replaces_the_answer_in_the_history_but_not_on_screen(self):
         window = self._window(image_base64=None, autostart=True)
         try:

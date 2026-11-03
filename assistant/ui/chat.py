@@ -1835,10 +1835,15 @@ class ChatWindow(Gtk.Window):
 
         # The capture: the first request carries it if the operation says so; later
         # ones if their model can see, and otherwise the vision model's reading of it.
+        # Made again, a first request that went without it goes without it again, its
+        # preflight being the reading; one that carried it is a later one's choice, its
+        # model perhaps changed since to one that cannot see.
         image, need_reading, reading_in_system = None, False, False
         if self.image_base64:
-            if first or redo:
+            if first:
                 image = self.image_base64 if self._image_first else None
+            elif redo and not self._image_first:
+                pass
             elif catalogue.accepts_images(self.config, model):
                 image = self.image_base64
             else:

@@ -5,9 +5,9 @@ here.
 
 Why the fallbacks matter more on Wayland than they look: a Wayland client is only offered
 the clipboard while it holds keyboard focus. This app is a tray icon driven by a hotkey
-and has no focused window at the moment it reads, so Gtk.Clipboard.wait_for_text() comes
-back empty every time - not because the clipboard is empty, but because nobody is allowed
-to tell us. Everything below exists to get an answer anyway:
+and has no focused window at the moment it reads, so Gtk.Clipboard.wait_for_text() has
+nothing current to give - not because the clipboard is empty, but because nobody is
+allowed to tell us. Everything below exists to get an answer anyway:
 
   wl-paste  - wl-clipboard's own protocol (wlr/ext-data-control), which is exempt from
               the focus rule. Needs the wl-clipboard package.
@@ -22,7 +22,11 @@ On Wayland GTK is asked last, not first. It hears of a new clipboard only while 
 has focus, and otherwise answers with what it last heard - so once one of the app's
 windows had been focused, the text copied after it closed came back as the text before
 (measured on KDE, GNOME 50 and Hyprland, Nov 2026): Translate clipboard text translated
-the wrong text. wl-paste and Klipper ask the compositor afresh each time.
+the wrong text. wl-paste and Klipper ask the compositor afresh each time. And GTK is
+asked at all only while one of the app's windows has focus, when what it heard is
+current. Asked at any other time, with neither tool to read it, it gave back the app's
+own Copy from an hour before as the clipboard - text, picture or file - with nothing
+to say it was not; now the read comes back empty, and unreadable_hint says why.
 """
 
 import shutil
@@ -120,6 +124,12 @@ def _wayland():
     return session.session_type() == "wayland"
 
 
+def _focused():
+    """Whether one of the app's windows has the keyboard now: on Wayland, the only time
+    what GTK says of the clipboard is current (see the module docstring)."""
+    return any(window.is_active() for window in Gtk.Window.list_toplevels())
+
+
 def _gtk_text(board):
     text = board.wait_for_text()
     return text if text and text.strip() else None
@@ -153,15 +163,17 @@ def get_text():
     if text:
         return text, "text"
 
-    if wayland:
-        # Last, with no tool to ask: right while the app has focus, stale otherwise.
+    # On Wayland GTK last, and only while it is current: with no window of ours focused
+    # it is whatever was copied when one last was, and the read is "empty" instead.
+    current = not wayland or _focused()
+    if wayland and current:
         text = _gtk_text(clipboard)
         if text:
             return text, "text"
         if clipboard.wait_is_image_available():
             return None, "image"
 
-    if clipboard.wait_is_uris_available():
+    if current and clipboard.wait_is_uris_available():
         return None, "file"
     return None, "empty"
 
@@ -169,7 +181,8 @@ def get_text():
 def get_selection():
     """The highlighted text, or None: GTK's primary selection, then the command-line
     tools, which on Wayland can read it without focus as they read the clipboard - and
-    on Wayland the tools first, GTK's being stale whenever the app lacks focus."""
+    on Wayland the tools first, and GTK only while one of the app's windows has focus,
+    its selection being stale at any other time."""
     primary = Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY)
     wayland = _wayland()
     if not wayland:
@@ -183,7 +196,7 @@ def get_selection():
         if result is not None and result.returncode == 0 and result.stdout \
                 and result.stdout.strip():
             return result.stdout
-    return _gtk_text(primary) if wayland else None
+    return _gtk_text(primary) if wayland and _focused() else None
 
 
 def unreadable_hint(selection=False):
@@ -205,7 +218,8 @@ def unreadable_hint(selection=False):
 
 
 def get_image():
-    """PIL image from the clipboard, or None. On Wayland wl-paste first, as for text."""
+    """PIL image from the clipboard, or None. On Wayland wl-paste first, and GTK only
+    while one of the app's windows has focus, as for text."""
     from PIL import Image
 
     clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
@@ -236,7 +250,7 @@ def get_image():
                     return img.copy()
             except Exception:
                 pass
-    return from_gtk() if wayland else None
+    return from_gtk() if wayland and _focused() else None
 
 
 def set_text(text):

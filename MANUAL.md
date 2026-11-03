@@ -899,11 +899,15 @@ On X11 nothing extra is required at all.
 Clipboard fallbacks, used when GTK's own clipboard read comes back empty:
 `wl-clipboard` on Wayland, `xclip` or `xsel` on X11, and Plasma's Klipper over D-Bus on
 KDE. On Wayland these are not optional extras: a client is only offered the clipboard
-while it holds keyboard focus, which a tray app never does, so GTK returns nothing on
-every read. KDE is covered by Klipper without installing anything; elsewhere on Wayland,
-install `wl-clipboard`. The highlighted text, for Translate selected text, is read the
-same way: GTK on X11, else `wl-paste --primary`, `xclip` or `xsel`; Klipper does not
-offer it, so on KDE Wayland that one needs `wl-clipboard` too.
+while it holds keyboard focus, which a tray app never does, so GTK knows only what was
+on the clipboard the last time one of the app's windows had focus - an answer you
+copied from it an hour ago, say. On Wayland the app reads the clipboard through
+`wl-paste` or Klipper first, and through GTK only while one of its own windows has
+focus; at any other time, with neither, it says it cannot read the clipboard rather
+than hand on what may be old. KDE is covered by Klipper without installing anything;
+elsewhere on Wayland, install `wl-clipboard`. The highlighted text, for Translate
+selected text, is read the same way: GTK on X11, else `wl-paste --primary`, `xclip` or
+`xsel`; Klipper does not offer it, so on KDE Wayland that one needs `wl-clipboard` too.
 
 ### Requests
 

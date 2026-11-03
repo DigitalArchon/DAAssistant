@@ -32,7 +32,8 @@ class ReadingTheSelection(unittest.TestCase):
     def test_gtks_primary_selection_first(self):
         primary = mock.Mock()
         primary.wait_for_text.return_value = "Guten Tag"
-        with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=primary):
+        with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=primary), \
+                mock.patch.object(clipboard.session, "session_type", return_value="x11"):
             self.assertEqual(clipboard.get_selection(), "Guten Tag")
 
     def test_on_wayland_without_focus_the_tools_read_it(self):
@@ -51,6 +52,42 @@ class ReadingTheSelection(unittest.TestCase):
         with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=primary), \
                 mock.patch.object(clipboard.shutil, "which", lambda name: None):
             self.assertIsNone(clipboard.get_selection())
+
+
+class NothingStaleOnWayland(unittest.TestCase):
+    """On Wayland GTK hears of a new clipboard only while one of the app's windows has
+    focus, and otherwise answers with what it heard last - the app's own Copy from an
+    hour before, as often as not. With no wl-paste and no Klipper to ask, that came back
+    as the clipboard, and nothing said otherwise; GTK is asked now only while current."""
+
+    def read(self, focused, text="copied an hour ago"):
+        board = mock.Mock()
+        board.wait_for_text.return_value = text
+        board.wait_is_image_available.return_value = False
+        board.wait_is_uris_available.return_value = True
+        board.wait_for_image.return_value = None
+        with mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=board), \
+                mock.patch.object(clipboard.session, "session_type",
+                                  return_value="wayland"), \
+                mock.patch.object(clipboard.shutil, "which", lambda name: None), \
+                mock.patch.object(clipboard, "_klipper_text", return_value=None), \
+                mock.patch.object(clipboard, "_focused", return_value=focused):
+            return (clipboard.get_text(), clipboard.get_selection(), clipboard.get_image(),
+                    clipboard.unreadable_hint(), board)
+
+    def test_with_no_window_of_ours_focused_gtk_is_not_asked(self):
+        text, selection, image, hint, board = self.read(focused=False)
+        self.assertEqual(text, (None, "empty"))
+        self.assertIsNone(selection)
+        self.assertIsNone(image)
+        self.assertIn("Install wl-clipboard", hint)       # what app.py says with "empty"
+        board.wait_for_text.assert_not_called()
+        board.wait_is_uris_available.assert_not_called()
+
+    def test_with_one_focused_what_gtk_says_is_current(self):
+        text, selection, _image, _hint, _board = self.read(focused=True, text="just now")
+        self.assertEqual(text, ("just now", "text"))
+        self.assertEqual(selection, "just now")
 
 
 class APictureIsNotKlippersDescriptionOfIt(unittest.TestCase):

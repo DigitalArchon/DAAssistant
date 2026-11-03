@@ -734,8 +734,11 @@ class StaleGtkOnWayland(unittest.TestCase):
             self.assertEqual(self.read(clipboard.get_text, board, {}), (None, "image"))
 
     def test_with_no_tool_gtk_is_still_asked(self):
-        self.assertEqual(self.read(clipboard.get_text, FakeClipboard("all there is"), {},
-                                   tools=()), ("all there is", "text"))
+        # While a window of the app's has focus, when GTK is current; see
+        # test_selection_and_pictures.NothingStaleOnWayland for any other time.
+        with mock.patch.object(clipboard, "_focused", return_value=True):
+            self.assertEqual(self.read(clipboard.get_text, FakeClipboard("all there is"),
+                                       {}, tools=()), ("all there is", "text"))
 
     def test_on_x11_gtk_comes_first_as_it_always_did(self):
         self.assertEqual(self.read(clipboard.get_text, FakeClipboard("from gtk"),

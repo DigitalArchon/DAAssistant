@@ -11,15 +11,15 @@ types are binary, prefixed with their size.
 """
 
 import base64
-import gzip
 import os
 import re
 import struct
+from array import array
 from collections import OrderedDict
 
 from . import markup
 from .dictzip import DictzipFile
-from .dsl import companion, icon_beside, inside
+from .dsl import MAX_HEADWORD, companion, icon_beside, inside
 
 LINKS = ("http:", "https:", "mailto:", markup.LOOKUP_SCHEME)
 
@@ -34,12 +34,19 @@ MAX_PICTURE = 512 * 1024
 # much a dictionary keeps of those it has read, so as not to read them again.
 ENTRY_PICTURES = 8 * MAX_PICTURE
 PICTURES_KEPT = 8 * MAX_PICTURE
+# The most of an .ifo that is read - a dozen lines, one of them a description - and of
+# an .idx or a .syn, read or unpacked: the largest StarDict dictionaries' run to a few
+# tens of megabytes.
+MAX_IFO = 256 * 1024
+MAX_INDEX = 512 << 20
+# No file has an offset past this, and the index cannot hold one.
+LARGEST_OFFSET = (1 << 63) - 1
 
 
 def read_ifo(path):
     info = {}
     with open(path, "rb") as f:
-        for raw in f.read().decode("utf-8", "replace").splitlines()[1:]:
+        for raw in f.read(MAX_IFO).decode("utf-8", "replace").splitlines()[1:]:
             key, sep, value = raw.partition("=")
             if sep:
                 info[key.strip()] = value.strip()
@@ -83,40 +90,54 @@ class StarDict:
 
     # ---- index ------------------------------------------------------------
 
-    def headwords(self):
-        """Every (headword, offset, size): the .idx, then the .syn's alternatives."""
+    def _index(self):
+        """The .idx, read or unpacked as far as its .ifo's idxfilesize says it goes, as
+        StarDict reads it, and no further than MAX_INDEX. An .idx.gz of 85 KB that
+        unpacked to 44 MB was unpacked, and then its headwords listed, to half a
+        gigabyte; unpacked now, it is bounded as any gzip file is here (see
+        dictzip.limit)."""
+        claimed = self.info.get("idxfilesize", "")
+        most = min(int(claimed), MAX_INDEX) if claimed.isdigit() else MAX_INDEX
         if self.idx_path.lower().endswith(".gz"):
-            with gzip.open(self.idx_path, "rb") as f:
-                data = f.read()
-        else:
-            with open(self.idx_path, "rb") as f:
-                data = f.read()
+            return DictzipFile(self.idx_path).read_all(most)
+        with open(self.idx_path, "rb") as f:
+            return f.read(most)
+
+    def headwords(self):
+        """Every (headword, offset, size): the .idx, then the .syn's alternatives -
+        one at a time, from the .idx as read, and not a list of them all. Not one that
+        no headword is that long (dsl.MAX_HEADWORD), nor one at an offset no file has."""
+        data = self._index()
         wide = self.info.get("idxoffsetbits") == "64"
         record = struct.Struct(">QI" if wide else ">II")
-        entries = []
+        # Where each headword's offset and size are, for the .syn, which names the
+        # headword it is another spelling of by its number.
+        numbers = array("Q") if self.syn_path else None
         position = 0
         while position < len(data):
             end = data.find(b"\x00", position)
             if end == -1 or end + 1 + record.size > len(data):
                 break
-            word = data[position:end].decode("utf-8", "replace")
+            if numbers is not None:
+                numbers.append(end + 1)
             offset, size = record.unpack_from(data, end + 1)
-            entries.append((word, offset, size))
+            if end - position <= 4 * MAX_HEADWORD and offset <= LARGEST_OFFSET:
+                yield data[position:end].decode("utf-8", "replace"), offset, size
             position = end + 1 + record.size
-        yield from entries
 
         if self.syn_path:
             with open(self.syn_path, "rb") as f:
-                syn = f.read()
+                syn = f.read(MAX_INDEX)
             position = 0
             while position < len(syn):
                 end = syn.find(b"\x00", position)
                 if end == -1 or end + 5 > len(syn):
                     break
-                word = syn[position:end].decode("utf-8", "replace")
                 index, = struct.unpack_from(">I", syn, end + 1)
-                if index < len(entries):
-                    yield (word, entries[index][1], entries[index][2])
+                if index < len(numbers) and end - position <= 4 * MAX_HEADWORD:
+                    offset, size = record.unpack_from(data, numbers[index])
+                    if offset <= LARGEST_OFFSET:
+                        yield syn[position:end].decode("utf-8", "replace"), offset, size
                 position = end + 5
 
     # ---- articles ---------------------------------------------------------

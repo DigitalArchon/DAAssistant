@@ -656,6 +656,41 @@ class StarDictFiles(unittest.TestCase):
         html, text = d.render(word, d.read(offset, size))
         self.assertEqual(html, "line one<br>line &lt;two&gt;")
 
+    def test_the_index_is_read_as_far_as_its_ifo_says_and_no_further(self):
+        # 64-bit offsets, one of them past any file - which the index could not hold.
+        base = os.path.join(self.dir, "wide")
+        idx = (b"first\x00" + struct.pack(">QI", 0, 5)
+               + b"bogus\x00" + struct.pack(">QI", 1 << 63, 5)
+               + b"x" * 5000 + b"\x00" + struct.pack(">QI", 0, 5)
+               + b"second\x00" + struct.pack(">QI", 5, 6))
+        with open(base + ".dict", "wb") as f:
+            f.write(b"firstsecond")
+        with open(base + ".idx", "wb") as f:
+            f.write(idx + b"beyond\x00" + struct.pack(">QI", 0, 5))
+        with open(base + ".syn", "wb") as f:
+            f.write(b"premier\x00" + struct.pack(">I", 0) + b"faux\x00" + struct.pack(">I", 1)
+                    + b"deuxieme\x00" + struct.pack(">I", 3))
+        with open(base + ".ifo", "w") as f:
+            f.write("StarDict's dict ifo file\nversion=3.0.0\nbookname=Wide\n"
+                    f"idxfilesize={len(idx)}\nidxoffsetbits=64\nsametypesequence=m\n")
+        d = StarDict(base + ".ifo")
+        self.assertEqual(list(d.headwords()), [("first", 0, 5), ("second", 5, 6),
+                                               ("premier", 0, 5), ("deuxieme", 5, 6)])
+        # Gzipped, the same; and an .idx.gz that unpacks as no index does is refused.
+        os.unlink(base + ".idx")
+        with open(base + ".idx.gz", "wb") as f:
+            f.write(gzip.compress(idx))
+        self.assertEqual(len(list(StarDict(base + ".ifo").headwords())), 4)
+        bomb = (b"w\x00" + struct.pack(">QI", 0, 1)) * 600_000
+        with open(base + ".idx.gz", "wb") as f:
+            f.write(gzip.compress(bomb, 9))
+        with open(base + ".ifo", "a") as f:
+            f.write(f"idxfilesize={len(bomb)}\n")
+        started = time.monotonic()
+        with self.assertRaises(dzmodule.TooLarge):
+            list(StarDict(base + ".ifo").headwords())
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_xdxf_pairs_never_closed_are_read_in_one_pass(self):
         # Twenty thousand <k> took four seconds: each searched the rest for its </k>.
         started = time.monotonic()

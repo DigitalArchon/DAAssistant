@@ -11,6 +11,7 @@ What matters here:
 """
 
 import json
+import math
 import os
 import stat
 import tempfile
@@ -177,6 +178,42 @@ _SAYS_ON = r'"%s"\s*:\s*(?:true|1|"\s*(?:true|yes|on|1)\s*")'
 _KINDS = {bool: "true or false", int: "a whole number", float: "a number", str: "text",
           list: "a list", dict: "an object"}
 
+# What a number edited into config.json by hand may be, from and to - None for no
+# bound. One outside is left out and its default used, as one of the wrong kind is:
+# checked for its kind alone, a capture_max_long_edge of -3000 sent every capture as
+# 1x1 and said nothing, a max_tokens of 0 sent none at all - which is how long
+# transcriptions come back cut short - and a chat_zoom of NaN, which Python's JSON
+# reads, sized the text NaN.
+RANGES = {
+    "capture_target_long_edge": (64, None),
+    "capture_max_long_edge": (64, None),
+    "max_tokens": (1, None),
+    "request_timeout": (1, None),
+    "chat_prompt_height": (0, None),            # 0: never dragged
+    "chat_zoom": (0.5, 3.0),                    # ui/chat.py's ZOOM_STEPS, end to end
+}
+
+
+def _expected(key):
+    """What `key` has to be, in words: "a whole number of at least 64"."""
+    kind = _KINDS.get(type(DEFAULTS[key]), "valid")
+    low, high = RANGES.get(key, (None, None))
+    if low is not None and high is not None:
+        return f"{kind} from {low} to {high}"
+    if low is not None:
+        return f"{kind} of at least {low}"
+    return kind
+
+
+def _in_range(key, value):
+    """`value` for `key` if it is one the setting can take; ValueError if not."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(value)
+    low, high = RANGES.get(key, (None, None))
+    if (low is not None and value < low) or (high is not None and value > high):
+        raise ValueError(value)
+    return value
+
 
 def _coerce(default, value):
     """`value`, read from a config.json that may have been edited by hand, as the type
@@ -258,7 +295,8 @@ class Config:
     def _read_file(self, warnings=None):
         """Current on-disk settings, or {} if absent/unreadable. A value of the wrong
         type is made the right one where that is plain ("3600" for a number), and left
-        out otherwise, so the default stands in; `warnings` collects what was."""
+        out otherwise, so the default stands in - as is a number out of its setting's
+        range (RANGES); `warnings` collects what was."""
         if not os.path.exists(self.config_file):
             return {}, None
         try:
@@ -274,7 +312,7 @@ class Config:
             if key not in DEFAULTS:
                 continue
             try:
-                values[key] = _coerce(DEFAULTS[key], value)
+                values[key] = _in_range(key, _coerce(DEFAULTS[key], value))
             except (TypeError, ValueError):
                 instead = FAIL_SAFE.get(key, DEFAULTS[key])
                 if key in FAIL_SAFE:
@@ -282,7 +320,7 @@ class Config:
                 if warnings is not None:
                     warnings.append(f"{key} in {os.path.basename(self.config_file)} is "
                                     f"{json.dumps(value)[:40]}, which is not "
-                                    f"{_KINDS.get(type(DEFAULTS[key]), 'valid')}; using "
+                                    f"{_expected(key)}; using "
                                     f"{json.dumps(instead)}.")
         return values, None
 

@@ -1022,13 +1022,15 @@ name or password written into it.
 
 A value edited into `config.json` by hand is read as its setting's kind where that is
 plain (`"3600"` for a number, `"true"` for a tick); one that cannot be is left out, its
-default used instead, and the startup notice says so. Privacy Mode and Strict are the
-exceptions: a value for them that is neither true nor false reads as on, and so does
-either one in a file too damaged to read at all, if the file plainly turns it on - left
-off, the next capture would have gone to the ordinary models. A file that cannot be read
-is set aside as `config.json.corrupt` when settings are next saved, and what the app is
-running with is written in its place. (Up to 3.4.0 that was the defaults, which the
-running app then took up too.)
+default used instead, and the startup notice says so. So is a number its setting cannot
+take: `capture_max_long_edge` or `capture_target_long_edge` under 64 pixels,
+`max_tokens` or `request_timeout` under 1, `chat_zoom` outside 0.5 to 3. Privacy Mode and
+Strict are the exceptions: a value for them that is neither true nor false reads as on,
+and so does either one in a file too damaged to read at all, if the file plainly turns it
+on - left off, the next capture would have gone to the ordinary models. A file that
+cannot be read is set aside as `config.json.corrupt` when settings are next saved, and
+what the app is running with is written in its place. (Up to 3.4.0 that was the
+defaults, which the running app then took up too.)
 
 ## Troubleshooting
 

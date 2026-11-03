@@ -52,7 +52,8 @@ file rules it out: a floor such as `pyasn1>=0.6.5` is how a security fix gets in
 Only committed files are built (`git archive HEAD`), and every timestamp is HEAD's commit
 time (`SOURCE_DATE_EPOCH`). Builds run in `packaging/appimage/Containerfile`: Ubuntu 24.04 pinned
 by digest, with packages from the Ubuntu archive as it was at a fixed moment
-([snapshot.ubuntu.com](https://snapshot.ubuntu.com)). Downloads are cached in
+([snapshot.ubuntu.com](https://snapshot.ubuntu.com)). Everything is downloaded over https,
+never plain http, not even through a redirect; downloads are cached in
 `~/.cache/da-assistant-appimage` and verified on every build.
 
 ## What is pinned, and where

@@ -406,6 +406,20 @@ class ReproducibleBuild(unittest.TestCase):
         is joined into one."""
         return re.sub(r"\\\n\s*", " ", self.build).splitlines()
 
+    def test_every_download_is_https_only(self):
+        # A hash proves what arrived, not that nobody saw it asked for: no download
+        # may fall back to http, through a redirect either.
+        curls = []
+        for path in sorted((ROOT / "packaging").rglob("*.sh")) + sorted((ROOT / "tools").glob("*.sh")):
+            for line in re.sub(r"\\\n\s*", " ", path.read_text()).splitlines():
+                if re.search(r"\bcurl\s+-", line) and not line.lstrip().startswith("#"):
+                    curls.append(path.name)
+                    self.assertIn("--proto '=https'", line, f"{path.name}: {line.strip()}")
+        self.assertLessEqual({"build.sh", "lock-private-mode.sh", "install-ruffle.sh"}, set(curls))
+        # the source archives are fetched by Python, which follows a redirect to http
+        self.assertIn("class HttpsOnly(urllib.request.HTTPRedirectHandler)", self.build)
+        self.assertNotIn("urllib.request.urlopen(", self.build)
+
     def test_every_package_installed_from_a_lock_is_hash_checked(self):
         installs = [line for line in self._commands() if re.search(r'pip"? install .*-r ', line)]
         for line in installs:

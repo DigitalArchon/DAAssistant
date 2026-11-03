@@ -174,6 +174,65 @@ class Spelling(unittest.TestCase):
                          "CTRL+parenright")
 
 
+def xkb_keysym(name):
+    """What libxkbcommon - every desktop's reader of key names - makes of `name`: 0 for
+    a name it does not know, None where the library is not installed."""
+    import ctypes
+    try:
+        xkb = ctypes.CDLL("libxkbcommon.so.0")
+    except OSError:
+        return None
+    xkb.xkb_keysym_from_name.restype = ctypes.c_uint32
+    xkb.xkb_keysym_from_name.argtypes = [ctypes.c_char_p, ctypes.c_int]
+    return xkb.xkb_keysym_from_name(name.encode(), 0)
+
+
+class KeysTheDesktopsRead(unittest.TestCase):
+    """A key is written as libxkbcommon names it, which is how Hyprland, Sway, the
+    portals and GNOME's and Cinnamon's window managers read one, and read back here. GDK
+    calls an Armenian letter U+0561 and the calculator key Calculator, which none of them
+    reads, and could not read U+0561 back itself, so such a shortcut was dropped."""
+
+    CTRL, ALT = Gdk.ModifierType.CONTROL_MASK, Gdk.ModifierType.MOD1_MASK
+
+    def test_a_letter_with_no_keysym_name_of_its_own(self):
+        accel = shortcuts.from_keys(0x1000561, self.CTRL | self.ALT)     # Armenian ayb
+        self.assertEqual(accel, "<Control><Alt>U0561")
+        self.assertEqual(shortcuts.canonical(accel), accel)
+        self.assertEqual(shortcuts.canonical("<Control><Alt>U+0561"), accel)    # GDK's
+        self.assertEqual(shortcuts.label(accel), "Ctrl+Alt+Ա")
+        self.assertEqual(shortcuts.hyprland(accel), ("CTRL ALT", "U0561"))
+        self.assertEqual(shortcuts.sway(accel), "Ctrl+Mod1+U0561")
+        self.assertEqual(shortcuts.portal_trigger(accel), "CTRL+ALT+U0561")
+        self.assertEqual(hotkeys.X11Hotkeys.keysym("U0561"), 0x1000561)
+        self.assertEqual(hotkeys.X11Hotkeys.keysym("U+0561"), 0x1000561)
+
+    def test_an_xf86_key_keeps_its_xf86(self):
+        accel = shortcuts.from_keys(0x1008ff1d, self.CTRL)
+        self.assertEqual(accel, "<Control>XF86Calculator")
+        self.assertEqual(shortcuts.canonical("<Control>Calculator"), accel)     # GDK's
+        self.assertEqual(shortcuts.hyprland(accel), ("CTRL", "XF86Calculator"))
+        self.assertEqual(shortcuts.sway(accel), "Ctrl+XF86Calculator")
+        self.assertEqual(shortcuts.portal_trigger(accel), "CTRL+XF86Calculator")
+
+    def test_a_key_gdk_can_only_number_is_refused(self):
+        # XF86BrightnessAuto, which GDK has no name for: GNOME and Cinnamon would read
+        # the number it gives instead as a key code.
+        self.assertIsNone(shortcuts.from_keys(0x100810f4, self.CTRL))
+        self.assertIn("no name", shortcuts.refused(0x100810f4, self.CTRL))
+
+    def test_libxkbcommon_reads_every_name_written(self):
+        if xkb_keysym("F5") is None:
+            self.skipTest("libxkbcommon is not installed")
+        for keyval in (0x1000561, 0x10010d0, 0x1000d85, 0x1008ff1d, 0x1008fe01, 0x6c6,
+                       0x7e1, 0xfe52, 0x20ac, 0xffc2, 0x31, 0x61, 0x28, 0xff0d):
+            name = shortcuts.key_name(keyval)
+            self.assertEqual(xkb_keysym(name), keyval, name)
+            self.assertEqual(shortcuts.key_value(name), keyval, name)
+        for gdks in ("Calculator", "U+0561", "Switch_VT_1"):
+            self.assertEqual(xkb_keysym(gdks), 0, gdks)
+
+
 # ---- what is bound, and how ------------------------------------------------------
 
 class WhatIsBound(TempDir):
@@ -195,6 +254,15 @@ class WhatIsBound(TempDir):
     def test_ask_anything_is_an_action(self):
         self.assertEqual(hotkeys.action_names()[0], "ask_anything")
         self.assertNotIn("ask_anything", hotkeys.LEGACY_KEYS)
+
+    def test_a_key_in_gdks_spelling_is_bound_in_the_desktops(self):
+        # As 3.4.0 wrote them: the first was dropped as invalid on every desktop.
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Alt>U+0561",
+                          "query_text": "<Control>Calculator"}
+        self.assertEqual(hotkeys.bindings(config),
+                         {"ocr_only": "<Control><Alt>U0561",
+                          "query_text": "<Control>XF86Calculator"})
 
 
 class Mechanism(TempDir):
@@ -990,6 +1058,16 @@ class CaptureButton(unittest.TestCase):
         self.button._on_key(self.button, key_event(Gdk.KEY_5, ctrl | shift | alt))
         self.assertEqual(self.changes, ["<Control><Alt><Shift>5"])
 
+    def test_a_letter_gdk_calls_u_plus_is_captured_as_the_desktops_name_it(self):
+        # It showed as Ctrl+Alt+0xffffff, and was gone when Settings opened again.
+        from assistant.ui.shortcuts import ShortcutButton
+        ctrl_alt = Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK
+        with mock.patch.object(ShortcutButton, "_base_keyval", return_value=0x1000561):
+            self.button.start_capture()
+            self.button._on_key(self.button, key_event(Gdk.KEY_a, ctrl_alt))
+        self.assertEqual(self.changes, ["<Control><Alt>U0561"])
+        self.assertEqual(self.button.get_label(), "Ctrl+Alt+Ա")
+
 
 class Page(TempDir):
     def page(self, mode="desktop", **config_values):
@@ -1022,6 +1100,11 @@ class Page(TempDir):
         self.assertEqual(page.values()["hotkeys"], {"query_text": "F5"})
         self.assertEqual(page.buttons["ocr_only"].get_label(), "Disabled")
         self.assertIn("went to Query clipboard text", page.notes["ocr_only"].get_text())
+
+    def test_a_key_saved_in_gdks_spelling_is_there_when_settings_opens(self):
+        page = self.page(hotkeys={"ocr_only": "<Control><Alt>U+0561"})
+        self.assertEqual(page.buttons["ocr_only"].get_label(), "Ctrl+Alt+Ա")
+        self.assertEqual(page.values()["hotkeys"], {"ocr_only": "<Control><Alt>U0561"})
 
     def test_by_hand_the_commands_follow_the_keys(self):
         page = self.page(mode="manual")

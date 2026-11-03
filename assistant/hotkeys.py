@@ -28,7 +28,7 @@ NumLock on.
 """
 
 from . import gtkcompat  # noqa: F401  (pins GI versions)
-from gi.repository import Gdk, GLib
+from gi.repository import GLib
 
 from . import APP_ID, keybindings, shortcuts
 
@@ -236,16 +236,16 @@ class X11Hotkeys:
 
     @staticmethod
     def keysym(name):
-        """The X keysym of a key's name - "F5", "Cyrillic_ef", "XF86Calculator" - or 0.
+        """The X keysym of a key's name - "F5", "Cyrillic_ef", "XF86Calculator",
+        "U0561" - or 0.
 
-        GDK's key values are X keysyms, and its names are the ones the config holds
-        (shortcuts.py), so GDK is asked. python-xlib's XK.string_to_keysym knows only
+        GDK's key values are X keysyms, and shortcuts.key_value reads the names the
+        config holds, with GDK's help. python-xlib's XK.string_to_keysym knows only
         its Latin-1 and miscellany tables, and gave 0 for Cyrillic and Greek letters,
         dead keys, the euro sign and every XF86 key: each such shortcut was reported as
         "no such key on this keyboard" and never bound.
         """
-        keyval = Gdk.keyval_from_name(name)
-        return 0 if keyval in (0, Gdk.KEY_VoidSymbol) else keyval
+        return shortcuts.key_value(name)
 
     def start(self):
         from Xlib import X, display, error

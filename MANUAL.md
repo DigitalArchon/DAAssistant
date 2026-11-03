@@ -780,6 +780,14 @@ force one if the automatic choice is wrong.
 Hyprland has a portal too, but it binds nothing until you write `global` binds into its
 config by hand, so the app writes ordinary binds there instead.
 
+In `hyprland.conf` and Sway's config each bind names its action in a comment, on one
+line whatever the name holds (Sway's on a comment line of its own above the bind, since
+Sway would run anything after the command as part of it), and the path it runs is
+quoted so that neither reads a variable such as `$mod` or a Sway command separator in
+it. A path with a backslash, a line break or another control character in it cannot be
+written into either file: Settings says so and nothing is written, so move the AppImage
+or the checkout. `hyprland.lua` takes any path.
+
 On KDE and GNOME's portal the app has to tell the portal who it is, and the portal
 accepts that only from an app with a `.desktop` entry. So the app keeps a hidden one,
 `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop`, which is also the

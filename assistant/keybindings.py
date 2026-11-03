@@ -27,6 +27,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import unicodedata
 
 from gi.repository import GLib
 
@@ -256,6 +257,46 @@ def _lua(text):
     return '"' + "".join(out) + '"'
 
 
+def _comment(text):
+    """`text` - an action's name, as typed or pasted into Settings > Actions - as the
+    rest of a comment line: on one line, every line break and control character a
+    space. A name pasted with a line break in it put its second line into the config
+    as a line of its own, where `exec = notify-send injected` was a command Hyprland
+    ran at every reload. A backslash at its end goes too, for any reader that takes a
+    line ending in one to go on to the next."""
+    flat = "".join(" " if unicodedata.category(c) == "Cc" else c for c in text)
+    return " ".join(flat.split()).rstrip("\\").rstrip()
+
+
+def _config_command(action, where):
+    """command(action) as it goes into a line of Hyprland's hyprland.conf or Sway's
+    config (`where`, for the error), each of which reads its lines before any shell
+    does. The launcher's path is always in single quotes, written so that neither
+    reader finds anything of its own in it:
+
+      ;  ,   Sway splits a key's command into several at either, wherever it is not in
+             quotes - and shlex leaves a path whose only odd character is a comma bare,
+             so /home/u/Apps,old/DA.AppImage ran /home/u/Apps.
+      $      Both put the value of a variable of the user's config, $mod or $mainMod,
+             in place of its name, quotes or none. Each $ is followed by the end of the
+             quoted part, which begins again after it: '$''mod', which no variable's
+             name can match, and which the shell reads as $mod.
+
+    Nothing can stand for a line break or another control character in a line of
+    either file. Nor for a backslash: Sway reads one as an escape before the shell is
+    reached, and Hyprland's config language, which in some versions escapes a $ with
+    one, may too. A path with any of these is refused, and nothing is written."""
+    path = launcher()
+    control = any(unicodedata.category(c) == "Cc" for c in path)
+    if control or "\\" in path:
+        what = "a line break or another control character" if control else "a backslash"
+        raise OSError(f"{where} cannot hold a line that runs {path!r}: its path has "
+                      f"{what} in it. Nothing was changed; move DA Assistant somewhere "
+                      f"whose path has none")
+    quoted = "'" + path.replace("'", "'\"'\"'").replace("$", "$''") + "'"
+    return f"{quoted} --action={action}"
+
+
 class ConfigFileKeybindings:
     """A block of binds in Hyprland's or Sway's config file, between marker lines.
 
@@ -287,7 +328,12 @@ class ConfigFileKeybindings:
 
         Hyprland's config language starts a comment at any # that is not doubled, inside
         shell quotes or not, so a # in the launcher's path is written ## - or the bind
-        stopped there, and ran a command cut off in the middle of the path."""
+        stopped there, and ran a command cut off in the middle of the path. Sway takes
+        only a whole line that begins with # for a comment: the rest of a bindsym line
+        is the command, and an action's name after it was run as part of it - a name
+        with a ; in it ran what followed as a command of Sway's own, exit among them. So
+        Sway is given the name on a comment line of its own, before the bind. See
+        _comment and _config_command for the rest."""
         lines = []
         for action in actions:
             accel = bindings.get(action)
@@ -300,11 +346,14 @@ class ConfigFileKeybindings:
                              f"{{ description = {_lua(f'{NAME}: {labels[action]}')} }})")
             elif self.desktop == "hyprland":
                 mods, key = shortcuts.hyprland(accel)
-                run = command(action).replace("#", "##")
-                lines.append(f"bind = {mods}, {key}, exec, {run}  # {labels[action]}")
+                run = _config_command(action, self.describe()).replace("#", "##")
+                lines.append(f"bind = {mods}, {key}, exec, {run}"
+                             f"  # {_comment(labels[action])}")
             else:
-                lines.append(f"bindsym {shortcuts.sway(accel)} exec {command(action)}"
-                             f"  # {labels[action]}")
+                # "DA Assistant: " first, so that no name makes the line a marker.
+                lines.append(f"# {NAME}: {_comment(labels[action])}")
+                lines.append(f"bindsym {shortcuts.sway(accel)} exec "
+                             f"{_config_command(action, self.describe())}")
         if not lines:
             return ""
         return "\n".join([f"{self.begin} (managed by {NAME}: Settings > Shortcuts) ---",

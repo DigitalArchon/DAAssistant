@@ -313,6 +313,63 @@ class TufThroughSocks(unittest.TestCase):
         with mock.patch.dict(sys.modules, absent):
             self.assertFalse(proxy.let_tuf_use_socks())
 
+    def test_a_proxys_password_is_sent_as_requests_sends_it(self):
+        """urllib3's ProxyManager sends no user name and password written into the
+        proxy's address - requests adds them itself - so a proxy that asks for one
+        refused TUF alone of the app's clients."""
+        proxy.let_tuf_use_socks()
+        for url in ("https://alice:s%40cret@proxy.example:3128",
+                    "http://alice:s3cret@127.0.0.1:3128"):
+            made = self.tuf_proxy.ProxyManager(url, headers={"a": "b"})
+            self.assertIs(type(made), self.Manager)
+            self.assertEqual(made.url, url)
+            self.assertEqual(made.kwargs["headers"], {"a": "b"})
+            sent = requests.adapters.HTTPAdapter().proxy_headers(url)
+            self.assertEqual(made.kwargs["proxy_headers"],
+                             {"proxy-authorization": sent["Proxy-Authorization"]})
+
+    def test_but_not_over_plain_http_to_a_proxy_elsewhere(self):
+        """Where it would cross the network as typed, as problem() refuses such a proxy
+        in Settings: the environment's may be one."""
+        proxy.let_tuf_use_socks()
+        for url in ("http://alice:s3cret@proxy.example:3128",
+                    "http://proxy.example:3128", "https://alice@proxy.example:3128",
+                    "https://proxy.example:3128"):
+            self.assertNotIn("proxy_headers", self.tuf_proxy.ProxyManager(url).kwargs,
+                             url)
+
+
+class TufAsItIsInstalled(Environment):
+    """The same through TUF's own proxy handling and urllib3's ProxyManager, as the
+    Private Mode client installs them: the managers are made, and nothing is sent."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            from tuf.ngclient._internal import proxy as tuf_proxy
+        except ImportError:
+            self.skipTest("Tinfoil's client is not installed "
+                          "(tools/install-private-mode.sh)")
+        patch = mock.patch.object(tuf_proxy, "ProxyManager", tuf_proxy.ProxyManager)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.tuf_proxy = tuf_proxy
+
+    def manager(self, url):
+        """The manager TUF would fetch Sigstore's trust root with, `url` the proxy."""
+        with mock.patch.dict(os.environ, {"HTTPS_PROXY": url, "https_proxy": url}):
+            proxy.let_tuf_use_socks()
+            environment = self.tuf_proxy.ProxyEnvironment()
+        return environment.get_pool_manager("https", "tuf-repo-cdn.sigstore.dev")
+
+    def test_an_https_proxys_password_goes_with_its_requests(self):
+        url = "https://alice:s3cret@proxy.example:3128"
+        self.assertEqual(self.manager(url).proxy_headers["proxy-authorization"],
+                         requests.adapters.HTTPAdapter().proxy_headers(url)[
+                             "Proxy-Authorization"])
+        self.assertEqual(self.manager("http://alice:s3cret@proxy.example:3128")
+                         .proxy_headers, {})
+
 
 class AttestationThroughAProxy(Environment):
     """A private/ model's attestation reads Sigstore's trust root, whose servers refuse

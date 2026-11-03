@@ -113,15 +113,19 @@ def for_url(url):
 
 
 def let_tuf_use_socks():
-    """Let TUF's fetcher through a SOCKS proxy too: it fetches Sigstore's trust root,
-    which Private Mode's attestation checks the enclave's release against.
+    """Let TUF's fetcher through a SOCKS proxy too, and through an http(s) one that
+    asks for a password: it fetches Sigstore's trust root, which Private Mode's
+    attestation checks the enclave's release against.
 
     tuf.ngclient builds a urllib3 ProxyManager for whatever proxy the environment names,
     and that speaks http and https only. Through Tor, live (Nov 2026), the refresh
     failed - "Failed to refresh TUF metadata" - and no private/ model could be attested.
     For a SOCKS proxy it is given urllib3's SOCKS manager instead, which uses PySocks,
-    as a SOCKS proxy needs anyway; any other proxy is left to TUF as it was. Returns
-    whether TUF's proxy handling was found where this expects it."""
+    as a SOCKS proxy needs anyway. Nor does a ProxyManager send the user name and
+    password written into an http(s) proxy's address, which requests sends itself: a
+    proxy that asks for them refused TUF alone of the app's clients, so they are handed
+    over as requests sends them (_authorization). Returns whether TUF's proxy handling
+    was found where this expects it."""
     try:
         from tuf.ngclient._internal import proxy as tuf_proxy
     except ImportError:
@@ -136,11 +140,34 @@ def let_tuf_use_socks():
         if str(proxy_url).lower().startswith("socks"):
             from urllib3.contrib.socks import SOCKSProxyManager
             return SOCKSProxyManager(proxy_url, *args, **kwargs)
+        authorization = _authorization(proxy_url)
+        if authorization:
+            kwargs["proxy_headers"] = {**(kwargs.get("proxy_headers") or {}),
+                                       **authorization}
         return original(proxy_url, *args, **kwargs)
 
     manager.da_assistant_socks = True
     tuf_proxy.ProxyManager = manager
     return True
+
+
+def _authorization(proxy_url):
+    """The Proxy-Authorization header for the user name and password written into an
+    http(s) proxy's address, as requests makes it (HTTPAdapter.proxy_headers) - or {}
+    for an address without both, and for plain http to a proxy elsewhere: as problem()
+    has it, the password would cross the network as typed. That one is refused in
+    Settings, but the environment's proxy is TUF's too."""
+    from urllib.parse import unquote
+    try:
+        parsed = urlparse(str(proxy_url))
+        user, password = unquote(parsed.username), unquote(parsed.password)
+    except (TypeError, ValueError):     # no user name or password, or no address at all
+        return {}
+    if not user or (parsed.scheme.lower() != "https"
+                    and not netguard.is_local(parsed.hostname)):
+        return {}
+    from urllib3.util import make_headers
+    return make_headers(proxy_basic_auth=f"{user}:{password}")
 
 
 _refused = None         # why the proxy set in Settings cannot be used, while it cannot

@@ -1868,6 +1868,18 @@ class TurnedOff(unittest.TestCase):
         finally:
             dialog.destroy()
 
+    def test_settings_says_what_strict_does_and_no_more(self):
+        # Its tooltip said that with Strict, the answer "says so rather than filling in":
+        # the model is told to, and can fail to.
+        from assistant.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(None, self.config, types.SimpleNamespace(config=self.config))
+        try:
+            tip = dialog.encyclopedia_strict.get_tooltip_text()
+            self.assertIn("the model is told to say so", tip)
+            self.assertNotIn("the answer says so", tip)
+        finally:
+            dialog.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

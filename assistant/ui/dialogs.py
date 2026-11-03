@@ -1306,7 +1306,8 @@ class SettingsDialog(Gtk.Dialog):
         self.encyclopedia_strict.set_active(bool(self.config.encyclopedia_strict))
         self.encyclopedia_strict.set_tooltip_text(
             "The default for new Ask Encyclopedia windows; each can switch it. Strict: "
-            "where the encyclopedia has nothing, the answer says so rather than filling in.")
+            "where the encyclopedia has nothing, the model is told to say so rather than "
+            "fill in.")
         asking.pack_start(self.encyclopedia_strict, False, False, 0)
         asking.pack_start(Gtk.Box(), True, True, 0)
         asking.pack_start(self._label("Written for"), False, False, 0)

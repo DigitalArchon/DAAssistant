@@ -36,7 +36,7 @@ choose one; these are the suggested keys:
 | OCR only | `Ctrl+Shift+5` | Transcribes text from a screen region |
 | Look up word | `Ctrl+Shift+6` | Shows every entry your own dictionaries have for a word, to ask about |
 | Search Encyclopedia | `Ctrl+Shift+7` | Reads your encyclopedia DVD's articles, and answers questions about the ones you tag |
-| Ask Encyclopedia | `Ctrl+Shift+8` | Answers a question from the encyclopedia alone, quoted, every quotation checked |
+| Ask Encyclopedia | `Ctrl+Shift+8` | Answers a question from the encyclopedia, citing it, and flags quotations not found in it word for word |
 
 **Ask anything**, at the top of the tray menu, opens a chat window with nothing captured:
 type a question, attach files if you like (see [Attachments](#attachments)), and it is
@@ -708,7 +708,7 @@ main Encyclopedia first, a Student from the Student Encyclopedia, a Young reader
 each falling back on the others - and in words for that reader. The defaults for both are
 under **Settings > Reference**.
 
-Every quotation in an answer is then checked against the passage it cites, in whatever
+The answer's quotations are then checked against the passages they cite, in whatever
 quotation marks the answer's language uses: “…”, "…", ‘…’, „…“, «…», »…«, ”…”, »…», 「…」
 or 『…』. A ’ that a letter follows is an apostrophe, not the end of a ‘…’ quotation; one
 with a plural's apostrophe in it (‘the soldiers’ pay’) is read only to there, unless

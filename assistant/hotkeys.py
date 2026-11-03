@@ -27,6 +27,8 @@ and CapsLock in the event state, so a single grab would leave every key dead wit
 NumLock on.
 """
 
+import re
+
 from . import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import GLib
 
@@ -178,41 +180,73 @@ def migrate(config):
     return True
 
 
+# A key in GTK's syntax as GNOME's portal writes it into a sentence: its modifiers, if
+# any, and its name. Key names are ASCII, so a key ends where a word of the sentence
+# begins, whether a space comes between them or not. A + is part of the name - GDK's
+# U+0561 - which also keeps KDE's own "Ctrl+F5" from being read as F5.
+_DESCRIBED_KEY = re.compile(r"((?:<[A-Za-z0-9_]+>)*)([A-Za-z0-9_+]+)")
+
+
+def described_keys(text):
+    """The keys a portal's description of a shortcut names in GTK's syntax, as written.
+
+    GNOME names the keys it holds in a sentence of the session's language - "Press %s",
+    "Drücken Sie %s", "%s を押す", or for two keys "Press %s or %s", "Pulse %s o %s"
+    (xdg-desktop-portal-gnome 50) - so a key is found wherever the sentence has it, by
+    its form rather than by the words around it. A word with no modifier before it is
+    taken for a key only when it is a function key, the one kind the app binds alone:
+    any word could be the name of a key, and Spanish's "o", for "or", is the O key's."""
+    found = []
+    for match in _DESCRIBED_KEY.finditer(text or ""):
+        mods, key = match.groups()
+        if mods or shortcuts.canonical(key):
+            found.append(match.group(0))
+    return found
+
+
 def readable_trigger(text):
-    """A portal's description of a key, for people. GNOME describes a shortcut it already
-    holds in its own syntax - "Press <Shift><Control>1" - which here reads as the rest of
-    the app writes keys, "Ctrl+Shift+1"; anything else is left as the desktop put it."""
-    text = (text or "").strip()
-    if text.startswith("Press "):
-        text = text[len("Press "):].strip()
-    if text.startswith("<"):
-        try:
-            return shortcuts.label(text)
-        except (KeyError, ValueError):
-            pass
-    return text
+    """A portal's description of a key, for people: the keys GNOME names in it, as the
+    rest of the app writes keys - "Drücken Sie <Shift><Control>1" reads "Ctrl+Shift+1",
+    and two keys "Ctrl+( or Ctrl+Shift+9". Only the English "Press " was taken off once,
+    and in any other language the menu showed GNOME's whole sentence, GTK's syntax and
+    all. A description with no such key in it, KDE's "Ctrl+(", is left as it is."""
+    keys = described_keys(text)
+    if not keys:
+        return (text or "").strip()
+    return " or ".join(_key_label(key) for key in keys)
 
 
-def shift_lost(accel, trigger):
+def _key_label(accel):
+    """`accel`, in any of GTK's spellings, as the app writes keys; as it is when it has
+    a modifier the app has no name for, "<Hyper>x"."""
+    try:
+        return shortcuts.label(shortcuts.canonical(accel) or accel)
+    except (KeyError, ValueError):
+        return accel
+
+
+def shift_lost(accel, description):
     """Whether GNOME holds `accel`, a key with Shift that makes a symbol of its own, as
     that symbol without Shift: what 3.4.0 sent every desktop's portal (Ctrl+! for
     Ctrl+Shift+1), which KDE matches and GNOME never does. GNOME keeps a shortcut it was
     once given, and is not asked again, so it stays until changed in its own Settings.
+    `description` is GNOME's own account of the keys it holds (described_keys).
 
     Only that very key, the symbol with the other modifiers in any order, is one: once
     any key without Shift in it counted, so a key the user had chosen in GNOME's own
     settings - perhaps through Change in system settings… - was reported as one that no
-    key press matches, kept out of the tray menu, and blamed on 3.4.0 at every start."""
+    key press matches, kept out of the tray menu, and blamed on 3.4.0 at every start.
+    It is compared as a key combination with each key the description names, wherever
+    the sentence has it: compared as text with the English "Press " taken off, it was
+    never found in German or Japanese, and the menu showed a key no press matches as
+    working. Where GNOME holds two keys, both must be that one: the other still works."""
     mods, key = shortcuts.parts(accel)
     symbol = shortcuts.shifted(key) if "shift" in mods else None
-    if symbol is None or not trigger:
+    if symbol is None:
         return False
-    lost = shortcuts.label("".join(f"<{mod}>" for mod in mods - {"shift"}) + symbol)
-
-    def keys(text):
-        return sorted(part.strip().lower() for part in text.split("+"))
-
-    return keys(trigger) == keys(lost)
+    lost = shortcuts.canonical("".join(f"<{mod}>" for mod in mods - {"shift"}) + symbol)
+    held = [shortcuts.canonical(found) for found in described_keys(description)]
+    return lost is not None and bool(held) and all(found == lost for found in held)
 
 
 class X11Hotkeys:
@@ -489,11 +523,12 @@ class PortalHotkeys:
         gnome = session.desktop() == "gnome"
         for name, props in listed:
             if name in self.wanted:
-                trigger = readable_trigger((props or {}).get("trigger_description"))
+                said = (props or {}).get("trigger_description")
+                trigger = readable_trigger(said)
                 self.triggers[name] = trigger
                 if not trigger:
                     self.failed[name] = "not assigned by the desktop"
-                elif gnome and shift_lost(self.wanted[name], trigger):
+                elif gnome and shift_lost(self.wanted[name], said):
                     self.failed[name] = (f"GNOME holds it as {trigger}, which no key press "
                                          f"matches; change it in GNOME's Settings > Apps > "
                                          f"DA Assistant")

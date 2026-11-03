@@ -136,18 +136,20 @@ class Spelling(unittest.TestCase):
                          "CTRL+parenleft")
 
     def test_a_gnome_shortcut_that_lost_its_shift_is_found(self):
-        self.assertTrue(hotkeys.shift_lost("<Control><Shift>1", "Ctrl+!"))
-        self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", "Shift+Ctrl+1"))
-        self.assertFalse(hotkeys.shift_lost("<Control><Shift>k", "Ctrl+K"))   # a letter
-        self.assertFalse(hotkeys.shift_lost("<Control>1", "Ctrl+1"))
-        self.assertTrue(hotkeys.shift_lost("<Control><Alt><Shift>5", "Alt+Ctrl+%"))
+        self.assertTrue(hotkeys.shift_lost("<Control><Shift>1", "Press <Control>exclam"))
+        self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", "Press <Shift><Control>1"))
+        self.assertFalse(hotkeys.shift_lost("<Control><Shift>k", "Press <Control>k"))
+        self.assertFalse(hotkeys.shift_lost("<Control>1", "Press <Control>1"))
+        self.assertTrue(hotkeys.shift_lost("<Control><Alt><Shift>5",
+                                           "Press <Alt><Control>percent"))
 
     def test_a_key_the_user_chose_in_gnome_is_not_a_lost_shift(self):
         # Changed in GNOME's own settings, perhaps through Change in system settings…:
         # it was said to be a key no press matches, kept out of the tray menu, and
         # blamed on 3.4.0 at every start.
-        for trigger in ("Ctrl+Alt+T", "Ctrl+@", "Super+F5", "Ctrl+1", "Shift+Ctrl+2"):
-            self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", trigger), trigger)
+        for said in ("Press <Control><Alt>t", "Press <Control>at", "Press <Super>F5",
+                     "Press <Control>1", "Press <Shift><Control>2"):
+            self.assertFalse(hotkeys.shift_lost("<Control><Shift>1", said), said)
         portal = hotkeys.PortalHotkeys(lambda name: None,
                                        {"translate_text": "<Control><Shift>1"})
         with mock.patch.object(session, "desktop", return_value="gnome"):
@@ -188,6 +190,78 @@ class Spelling(unittest.TestCase):
 
         self.assertEqual(shortcuts.portal_trigger("<Control><Shift>9", German()),
                          "CTRL+parenright")
+
+
+class GnomeInAnyLanguage(unittest.TestCase):
+    """GNOME's portal describes the key it holds for a shortcut in a sentence of the
+    session's language, the key in GTK's syntax. These are xdg-desktop-portal-gnome 50's
+    own translations of "Press %s" and "Press %s or %s". Only the English "Press " was
+    taken off, so in any other language the key 3.4.0 left behind - Ctrl+( for
+    Ctrl+Shift+9, which no key press matches - was never found: nothing was said, and
+    the menu showed the key as working. The layout is a US one, with no display."""
+
+    ONE = ("Press %s", "Drücken Sie %s", "Appuyer sur %s", "%s を押す", "按 %s",
+           "%s 키를 누르십시오")
+    TWO = ("Press %s or %s", "Drücken Sie %s oder %s", "Appuyer sur %s ou %s",
+           "Pulse %s o %s", "%s または %s を押す", "按 %s 或 %s")
+
+    def setUp(self):
+        us = {"1": "exclam", "5": "percent", "9": "parenleft"}
+        patcher = mock.patch.object(shortcuts, "shifted",
+                                    lambda key, keymap=None: us.get(key))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def take(self, said, wanted="<Control><Shift>9"):
+        """(key shown, problem) once GNOME has said `said` of ask_anything's key."""
+        portal = hotkeys.PortalHotkeys(lambda name: None, {"ask_anything": wanted})
+        with mock.patch.object(session, "desktop", return_value="gnome"):
+            portal._take([("ask_anything", {"trigger_description": said})])
+        return portal.triggers["ask_anything"], portal.failed.get("ask_anything")
+
+    def test_the_key_3_4_0_left_is_found_in_every_language(self):
+        for sentence in self.ONE:
+            with self.subTest(sentence=sentence):
+                shown, problem = self.take(sentence % "<Control>parenleft")
+                # What the app's notice about such keys looks for.
+                self.assertTrue((problem or "").startswith(
+                    "GNOME holds it as Ctrl+(, which no key press matches"), problem)
+                self.assertEqual(shown, "Ctrl+(")
+                shown, problem = self.take(sentence % "<Control><Alt>percent",
+                                           "<Control><Alt><Shift>5")
+                self.assertTrue((problem or "").startswith("GNOME holds it as Ctrl+Alt+%"),
+                                problem)
+
+    def test_any_other_key_is_the_one_gnome_bound_in_every_language(self):
+        for sentence in self.ONE:
+            for held, wanted in (("<Shift><Control>9", "Ctrl+Shift+9"),
+                                 ("<Control><Alt>t", "Ctrl+Alt+T"),
+                                 ("<Super>F5", "Super+F5"), ("F5", "F5"),
+                                 ("<Control>exclam", "Ctrl+!")):
+                with self.subTest(sentence=sentence, held=held):
+                    self.assertEqual(self.take(sentence % held), (wanted, None))
+
+    def test_of_two_keys_gnome_holds_one_that_works_is_enough(self):
+        for sentence in self.TWO:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(
+                    self.take(sentence % ("<Control>parenleft", "<Shift><Control>9")),
+                    ("Ctrl+( or Ctrl+Shift+9", None))
+                shown, problem = self.take(sentence % ("<Control>parenleft",
+                                                       "<Control>parenleft"))
+                self.assertTrue((problem or "").startswith(
+                    "GNOME holds it as Ctrl+( or Ctrl+(,"), problem)
+
+    def test_no_word_of_the_sentence_is_taken_for_a_key(self):
+        # Spanish's "o", for "or", is also the name of the O key; a key with no modifier
+        # is read only when it is a function key, the one kind the app binds alone.
+        self.assertEqual(hotkeys.readable_trigger("Pulse F5 o F6"), "F5 or F6")
+        self.assertEqual(hotkeys.readable_trigger("Pulse <Control>a o <Control>e"),
+                         "Ctrl+A or Ctrl+E")
+        # KDE's own descriptions, which have no key in GTK's syntax, stay as they are.
+        for kde in ("Ctrl+(", "Strg+Umschalt+F5", "Meta+F5, Ctrl+F6"):
+            self.assertEqual(hotkeys.readable_trigger(kde), kde)
+        self.assertEqual(hotkeys.readable_trigger(""), "")
 
 
 def xkb_keysym(name):

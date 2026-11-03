@@ -10,6 +10,7 @@ through XTEST.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1090,6 +1091,60 @@ class PortalAppEntry(TempDir):
                 except TypeError:           # PyGObject's "constructor returned NULL"
                     loaded = None
                 self.assertIsNotNone(loaded, f"GLib would not load Exec={exec_line}")
+
+
+class Autostart(TempDir):
+    """tools/install-autostart.sh, which the manual gives for starting at login from a
+    checkout. Its recipe before - sed putting $PWD into Exec - made R&D into
+    R@LAUNCHER@D, and left a path with a space unquoted."""
+
+    def install(self, name, *args):
+        """Run the script from a checkout under `name`: its own parts, linked."""
+        root = os.path.join(self.dir, name, "DAAssistant")
+        os.makedirs(root, exist_ok=True)
+        for part in ("tools", "assistant", "run-assistant"):
+            if not os.path.lexists(os.path.join(root, part)):
+                os.symlink(os.path.join(ROOT, part), os.path.join(root, part))
+        env = dict(os.environ, HOME=self.dir, XDG_CONFIG_HOME=os.path.join(self.dir, "cfg"))
+        done = subprocess.run(["bash", os.path.join(root, "tools", "install-autostart.sh"),
+                               *args], env=env, capture_output=True, text=True, timeout=60)
+        return root, done
+
+    def entry(self):
+        return os.path.join(self.dir, "cfg", "autostart", "da-assistant.desktop")
+
+    def test_a_checkout_anywhere_is_started_whole(self):
+        for name in ("R&D", "My Apps", 'say "hi"', "dol$lar `x`", "back\\slash", "Jason's",
+                     "a|b;c", "Téléchargements"):
+            with self.subTest(name=name):
+                root, done = self.install(name)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                keyfile = GLib.KeyFile()
+                keyfile.load_from_file(self.entry(), GLib.KeyFileFlags.NONE)
+                exec_line = keyfile.get_string("Desktop Entry", "Exec")
+                self.assertEqual(GLib.shell_parse_argv(exec_line)[1],
+                                 [os.path.join(root, "run-assistant")])
+                self.assertEqual(keyfile.get_string("Desktop Entry", "Icon"),
+                                 os.path.join(root, "assistant/data/icons/hicolor/256x256/"
+                                                    "apps/da-assistant.png"))
+                try:
+                    loaded = Gio.DesktopAppInfo.new_from_filename(self.entry())
+                except TypeError:           # PyGObject's "constructor returned NULL"
+                    loaded = None
+                self.assertIsNotNone(loaded, f"GLib would not load Exec={exec_line}")
+
+    def test_a_path_the_session_would_misread_is_refused_and_remove_removes(self):
+        for name in ("50%off", "two\nlines"):
+            with self.subTest(name=name):
+                _root, done = self.install(name)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("nothing was", done.stderr)
+                self.assertFalse(os.path.exists(self.entry()))
+        self.install("fine")
+        self.assertTrue(os.path.exists(self.entry()))
+        _root, done = self.install("fine", "--remove")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse(os.path.exists(self.entry()))
 
 
 # ---- the manager -------------------------------------------------------------------

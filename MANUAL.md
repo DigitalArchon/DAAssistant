@@ -843,15 +843,20 @@ and Explain this screen.
 ## Starting automatically
 
 ```bash
-cp tools/da-assistant.desktop ~/.config/autostart/
-sed -i "s|@LAUNCHER@|$PWD/run-assistant|;
-        s|@ICON@|$PWD/assistant/data/icons/hicolor/256x256/apps/da-assistant.png|" \
-    ~/.config/autostart/da-assistant.desktop
+tools/install-autostart.sh            # --remove takes it out again
 ```
 
-The icon path is spelled out because nothing has installed the icon into a system theme;
-the app finds its own copy at runtime, but a desktop entry cannot. With the AppImage,
-point `Exec` at the `.AppImage` file and drop the `Icon` line — it carries its own.
+It writes `~/.config/autostart/da-assistant.desktop` from `tools/da-assistant.desktop`,
+naming this checkout's `run-assistant` and icon, quoted and escaped as a desktop entry is
+read back: a checkout under `R&D` or `My Apps` starts as well as any other. One whose
+path has a `%` in it cannot be started this way, since the session would read that as a
+field code, and the script says so and writes nothing. Run it again after moving the
+checkout. The icon path is spelled out because nothing has installed the icon into a
+system theme; the app finds its own copy at runtime, but a desktop entry cannot.
+
+With the AppImage, make the same file from `tools/da-assistant.desktop` yourself: set
+`Exec` to the `.AppImage` file - in double quotes if its path has a space or a character
+such as `&` in it - and drop the `Icon` line, since it carries its own.
 
 ## What it uses from the system
 
@@ -1130,6 +1135,7 @@ assistant/
     shortcuts.py           Settings > Shortcuts, and its key-capture button
 tools/install-private-mode.sh  installs the end-to-end encryption client from the lock
 tools/install-ruffle.sh    installs Ruffle from packaging/ruffle.lock
+tools/install-autostart.sh starts the app at login, from tools/da-assistant.desktop
 packaging/                 the reproducible AppImage build (see packaging/README.md), the
                            icon source, and the hash-pinned locks for the Private Mode
                            client and Ruffle

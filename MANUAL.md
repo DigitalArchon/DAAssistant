@@ -682,7 +682,17 @@ Every quotation in an answer is then checked against the passage it cites, in wh
 quotation marks the answer's language uses: “…”, "…", „…“, «…» or »…«. Word for word
 means the same words in the same order, case, spacing, quotation marks and dashes aside
 ("Europe — and" is "Europe—and"), with an ellipsis ("…", "...", ". . .", "[…]") where
-words are left out. What is in quotation marks but not quoted from the passages is left
+words are left out, and each stretch between ellipses beginning and ending where a word
+of the passage does: "legal in Ireland" is not in "illegal in Ireland", nor "a
+population of 12" in "a population of 125,000". An ellipsis can leave out words within
+a sentence, or whole sentences, but not the end of one sentence with the start of the
+next - "Smith was … found guilty" is not word for word in "Smith was not guilty. Jones
+was found guilty", though each part of it is there - and at least two words must stand
+between one ellipsis and the next, or either end of the quotation, since a word on its
+own is found almost anywhere. A full stop after an initial or a title ("U.S.", "Mr.")
+ends no sentence; after any other abbreviation it is taken for the end of one, which
+can only mark a true quotation ⚠.
+What is in quotation marks but not quoted from the passages is left
 alone, and not counted among the quotations checked: a word or two, a passage's title or
 section heading, your question quoted back, and whatever is under *Not from the
 encyclopedia*. A quotation not found word for word is marked ⚠ where it stands, and

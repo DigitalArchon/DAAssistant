@@ -20,6 +20,8 @@ every later reading split articles with the same function, sections_of, so a sec
 row number in the index always points at the same text.
 """
 
+import bisect
+import functools
 import glob
 import html as html_module
 import os
@@ -108,20 +110,188 @@ def _plain(text):
     return _SPACED_DASH.sub("-", " ".join(text.split()))
 
 
-def _contains(passage, quote):
-    """Whether `quote` is in `passage` word for word - each part of it, in order, where
-    an ellipsis marks words left out."""
-    haystack = _plain(passage)
-    position = 0
-    for part in _ELLIPSIS.split(quote):
-        part = _plain(part).strip(" .,;:!?'\"")
-        if not part:
-            continue
-        found = haystack.find(part, position)
-        if found == -1:
-            return False
-        position = found + len(part)
-    return True
+def _mark(char):
+    """Whether `char` belongs to the character before it - an accent, a vowel sign, a
+    Hangul vowel or final consonant - and is normalized together with it."""
+    return (unicodedata.combining(char) or unicodedata.category(char)[0] == "M"
+            or "\u1160" <= char <= "\u11ff" or "\ud7b0" <= char <= "\ud7ff")
+
+
+def _mapped(text):
+    """_plain(text), and for each of its characters the stretch of `text` it came from:
+    (plain, starts, ends). What is found in the plain text can then be pointed at, and
+    what is either side of it looked at, in the text as it is written."""
+    chars, starts, ends = [], [], []
+    i, n = 0, len(text)
+    while i < n:
+        j = i + 1
+        while j < n and _mark(text[j]):
+            j += 1
+        piece = text[i:j]
+        if not piece.isascii():
+            piece = unicodedata.normalize("NFKC", piece)
+        for char in piece.casefold().translate(_PLAIN):
+            if char.isspace():
+                if not chars or chars[-1] in " -":
+                    continue                # leading, doubled, or beside a dash
+                char = " "
+            elif char == "-" and chars and chars[-1] == " ":
+                chars.pop()
+                starts.pop()
+                ends.pop()
+            chars.append(char)
+            starts.append(i)
+            ends.append(j)
+        i = j
+    if chars and chars[-1] == " ":
+        chars.pop()
+        starts.pop()
+        ends.pop()
+    return "".join(chars), starts, ends
+
+
+# What holds one word together between its letters: a hyphen or an apostrophe -
+# "non-violent", "emperor's" - and between digits, a number's separators and dashes:
+# "125,000", "3.14", "1914–18".
+_WORD_JOINS = "-‐‑'’"
+_NUMBER_JOINS = ",.:/-" + _DASHES
+
+
+def _letter(char):
+    """A letter or a digit, or a mark on one."""
+    return char.isalnum() or unicodedata.category(char)[0] == "M"
+
+
+def _joined(left, mark, right):
+    if left.isdigit() and right.isdigit():
+        return mark in _NUMBER_JOINS
+    return mark in _WORD_JOINS and _letter(left) and _letter(right)
+
+
+def _inside(text, i):
+    """Whether a word of `text` goes on across position `i` - whether it falls between
+    two of its letters, or beside what joins them."""
+    if i <= 0 or i >= len(text):
+        return False
+    before, after = text[i - 1], text[i]
+    return ((_letter(before) and _letter(after))
+            or (i > 1 and _joined(text[i - 2], before, after))
+            or (i + 1 < len(text) and _joined(before, after, text[i + 1])))
+
+
+# The fewest words the quotation can have between two ellipses that leave words out, or
+# between one and either end.
+PART_WORDS = 2
+_COUNTED = re.compile(r"[^\W_]+")
+# Where one sentence ends and the next begins: a full stop, a question or exclamation
+# mark, then a space and a capital - or a line's end; and the Chinese and Japanese
+# marks, which need neither. A full stop after an initial or an abbreviated title ends
+# none: "J. R. R. Tolkien", "U.S. Army", "St. Louis". Others are taken for the end of
+# a sentence - "Mass. The" - which can only make a quotation fail.
+_SENTENCE = re.compile(r"([.!?])[\"'”’»)\]]*\s+[\"'“‘«(\[]*(?=\w)"
+                       r"|\n[\s\"'“‘«(\[]*|[。！？][\s\"'“‘«(\[]*")
+_ABBREVIATIONS = set("""Mr Mrs Ms Dr St Mt Ft Jr Sr Gen Col Lt Capt Sgt Adm Gov Sen Rep
+                     Pres Prof Rev Hon Inc Corp Co Ltd Bros No Vol vs""".split())
+_CLOSERS = "\"'”’»)] \t"
+_OPENERS = "\"'“‘«([ \t\n"
+
+
+def _abbreviated(text, stop):
+    """Whether the full stop at `stop` follows an initial or an abbreviated title."""
+    start = stop
+    while start and text[start - 1].isalpha():
+        start -= 1
+    return stop - start == 1 or text[start:stop] in _ABBREVIATIONS
+
+
+class _Passage:
+    """A passage's text as quotations are looked for in it."""
+
+    def __init__(self, text):
+        self.text = text or ""
+        self.plain, self._starts, self._ends = _mapped(self.text)
+        self._breaks = self._begins = None  # where sentences end and begin, once asked
+
+    def find(self, quote):
+        """Where `quote` is word for word in the passage: (start, end) of the passage's
+        own words for it - from the first word quoted to the last, with any an ellipsis
+        left out - or None. See check_quotes for what word for word is.
+
+        An ellipsis in the passage's own text is word for word too, where a quotation
+        has it: it leaves out nothing, so it splits no part of the quotation in two."""
+        parts = [part for part in (_plain(p).strip(" .,;:!?'\"")
+                                   for p in _ELLIPSIS.split(quote or "")) if part]
+        if not parts:
+            return None
+        plain, counts = self.plain, [len(_COUNTED.findall(part)) for part in parts]
+
+        @functools.cache
+        def end(index, at, words, omitted):
+            """Where the quotation ends in the text, with part `index` at `at` in the
+            plain text and each part after it found in turn, or None. `words`: how many
+            it has had since an ellipsis last left words out, `omitted` whether one has.
+            """
+            span = self._span(at, at + len(parts[index]))
+            if span is None:
+                return None
+            words += counts[index]
+            if index + 1 == len(parts):
+                return span[1] if words >= PART_WORDS or not omitted else None
+            following = plain.find(parts[index + 1], at + len(parts[index]))
+            while following != -1:
+                start = self._starts[following]
+                if not _COUNTED.search(self.text, span[1], start):
+                    last = end(index + 1, following, words, omitted)
+                elif words >= PART_WORDS and self._joins(span[1], start):
+                    last = end(index + 1, following, 0, True)
+                else:
+                    last = None
+                if last is not None:
+                    return last
+                following = plain.find(parts[index + 1], following + 1)
+            return None
+
+        at = plain.find(parts[0])
+        while at != -1:
+            last = end(0, at, 0, False)
+            if last is not None:
+                return self._starts[at], last
+            at = plain.find(parts[0], at + 1)
+        return None
+
+    def _span(self, start, stop):
+        """Where plain[start:stop] is in the text, or None: when it begins or ends in a
+        word, or in the middle of a character - "1" is half of "½", which is "1⁄2"."""
+        starts = self._starts
+        if (start and starts[start] == starts[start - 1]) or \
+                (stop < len(starts) and starts[stop] == starts[stop - 1]):
+            return None
+        span = starts[start], self._ends[stop - 1]
+        if _inside(self.text, span[0]) or _inside(self.text, span[1]):
+            return None
+        return span
+
+    def _joins(self, end, start):
+        """Whether an ellipsis can stand for the text between `end` and `start`: words of
+        one sentence, or whole sentences, but not the end of one with the start of the
+        next - that joins what was said of one thing to another."""
+        if self._breaks is None:
+            text = self.text
+            self._breaks = [(m.start(), m.end()) for m in _SENTENCE.finditer(text)
+                            if not m.group(1) or (text[m.end()].isupper() and not (
+                                m.group(1) == "." and _abbreviated(text, m.start())))]
+            self._begins = {begin for _end, begin in self._breaks}
+        after = bisect.bisect_left(self._breaks, (end, -1))
+        if after == len(self._breaks) or self._breaks[after][1] > start:
+            return True                     # no sentence ends between them
+        ends = not self.text[end:self._breaks[after][0]].strip(_CLOSERS)
+        begins = start in self._begins or not self.text[:start].strip(_OPENERS)
+        return ends and begins
+
+
+def _contains(text, quote):
+    """Whether `quote` is word for word in `text` (see check_quotes)."""
+    return _Passage(text).find(quote) is not None
 
 
 # A quotation not word for word in its passage is shown where the passage comes closest
@@ -200,6 +370,17 @@ def check_quotes(answer, passages, question=None):
     {passage, text: the passage's own words} where it was found, or else came closest
     (see nearest), the passages it cites first; None if none came close.
 
+    Word for word is the same words in the same order - case, spacing, quotation marks
+    and dashes aside - where an ellipsis marks words left out, each stretch between
+    ellipses beginning and ending where a word of the passage does: "legal in Ireland"
+    is not in "illegal in Ireland", nor "of 12" in "of 125,000", nor "violent protest"
+    in "non-violent protest". An ellipsis can leave out words of one sentence, or whole
+    sentences, but not the end of one sentence with the start of the next, and at
+    least PART_WORDS words stand between it and the next ellipsis, or either end: a
+    word on its own is found almost anywhere, and words joined across sentences say
+    what the passage does not - "Smith was … found guilty" is not word for word in
+    "Smith was not guilty. Jones was found guilty", though each part of it is there.
+
     Not everything in quotation marks is quoted from the passages, and what is not is
     left alone - not checked, not marked, not counted among the quotations checked: a
     word or two, which is a term; a passage's title or section heading, or part of
@@ -209,21 +390,22 @@ def check_quotes(answer, passages, question=None):
     says what it adds of its own.
     """
     answer = answer or ""
-    names = [name for passage in passages
+    names = [_Passage(name) for passage in passages
              for name in (passage.get("title"), passage.get("heading")) if name]
+    texts = [_Passage(passage["text"]) for passage in passages]
     own = _OWN_KNOWLEDGE.search(answer)
     out = []
     for match in _QUOTED.finditer(answer):
         if own and match.start() >= own.start():
             break
         quote = next(part for part in match.groups()[:5] if part is not None).strip()
-        if (len(quote.split()) < 3 or any(_contains(name, quote) for name in names)
+        if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
                 or (question and _contains(question, quote))):
             continue
         numbers = [n for n in cited(match.group(6)) if 1 <= n <= len(passages)]
         found = None
         for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
-            if _contains(passages[n - 1]["text"], quote):
+            if texts[n - 1].find(quote):
                 found = n
                 break
         ok = found is not None and (not numbers or found in numbers)

@@ -551,6 +551,70 @@ class Quotes(unittest.TestCase):
             self.assertTrue(self.check(f'"Every winter {ellipsis} humming as they go" [1]')
                             [0][3], ellipsis)
 
+    def test_each_part_begins_and_ends_where_a_word_of_the_passage_does(self):
+        # Looked for as bare text, "legal" was found in "illegal", and an answer saying
+        # the opposite of its passage was found word for word.
+        passages = [{"text": "Divorce was illegal in Zorbland until 1996, and the campaign "
+                             "was unsuccessful in reducing its reach."},
+                    {"text": "The town had a population of 125,000 by 1900. Its non-violent "
+                             "protests lasted from 1914–18, the emperor's brother said."}]
+        for quote in ("legal in Zorbland until 1996", "successful in reducing its reach",
+                      "had a population of 12", "had a population of 125",
+                      "violent protests lasted", "protests lasted from 1914",
+                      "from 1914–18, the emperor", "Zorbland until 199"):
+            check, = check_quotes(f'They say "{quote}".', passages)
+            self.assertEqual((check["found"], check["ok"]), (None, False), quote)
+        for quote in ("illegal in Zorbland until 1996", "was unsuccessful in reducing",
+                      "a population of 125,000", "Its non-violent protests",
+                      "lasted from 1914–18", "the emperor's brother said"):
+            check, = check_quotes(f'They say "{quote}".', passages)
+            self.assertTrue(check["ok"], quote)
+
+    def test_nor_in_the_middle_of_a_character(self):
+        # "½" compares as "1⁄2": "is 1" was in it.
+        check, = check_quotes('"the share is 1" [1]', [{"text": "The share is ½ of it."}])
+        self.assertFalse(check["ok"])
+
+    SMITH = [{"text": "Smith was not present at the trial. Years later another court found "
+                      "him guilty of fraud. Mr. Jones, his partner, was cleared."}]
+
+    def test_an_ellipsis_joins_no_part_of_one_sentence_to_the_next(self):
+        # Each part was found anywhere after the one before, so words from two sentences
+        # made a third, which the passage does not say.
+        for quote in ("Smith was … found him guilty of fraud",
+                      "at the trial … another court found him guilty",
+                      "found him guilty of fraud. … his partner, was cleared"):
+            check, = check_quotes(f'"{quote}" [1]', self.SMITH)
+            self.assertFalse(check["ok"], quote)
+        # Words left out of one sentence, or whole sentences, are what an ellipsis is
+        # for; "Mr." ends no sentence.
+        for quote in ("Years later … found him guilty of fraud",
+                      "Smith was not present at the trial. … Mr. Jones, his partner, "
+                      "was cleared.",
+                      "the trial … Mr. Jones, his partner, was cleared",
+                      "Jones, his partner … was cleared"):
+            check, = check_quotes(f'"{quote}" [1]', self.SMITH)
+            self.assertTrue(check["ok"], quote)
+
+    def test_a_word_on_its_own_beside_an_ellipsis_is_not_enough(self):
+        # Found almost anywhere: "was … found … guilty of fraud" was word for word.
+        for quote in ("was … found … guilty of fraud", "Smith … not present at the trial",
+                      "another court found … guilty"):
+            check, = check_quotes(f'"{quote}" [1]', self.SMITH)
+            self.assertFalse(check["ok"], quote)
+        # An ellipsis that leaves nothing out - or is in the passage itself - splits
+        # nothing.
+        passages = [{"text": 'Zorblaxes hum, and their song goes "low… then lower" at dusk.'}]
+        for quote in ("Zorblaxes … hum, and their song", "goes low… then lower at dusk"):
+            check, = check_quotes(f'"{quote}" [1]', passages)
+            self.assertTrue(check["ok"], quote)
+
+    def test_a_part_found_where_the_next_cannot_follow_is_looked_for_again(self):
+        passages = [{"text": "They cross the sea. Every winter they cross the glimmer sea, "
+                             "humming as they go."}]
+        check, = check_quotes('"they cross … humming as they go" [1]', passages)
+        self.assertTrue(check["ok"])
+
     def test_german_and_french_quotation_marks_are_quotations_too(self):
         for answer in ("Sie „cross the glimmer sea“ [1].",
                        "Sie „cross the glimmer sea” [1].",
@@ -1093,7 +1157,7 @@ class AskWindow(EncyclopediaWindowCase):
     def test_a_citation_highlights_the_passages_own_words(self):
         # The page was searched for the answer's wording, ellipsis and all, which it
         # does not have: nothing was found, and nothing highlighted.
-        self.client.answer = 'They "cross the glimmer sea [...] the crossing" [1].'
+        self.client.answer = 'It says: "Every winter [...] cross the glimmer sea" [1].'
         window = self._window(question="Where do zorblaxes migrate?")
         try:
             window._send()
@@ -1101,7 +1165,7 @@ class AskWindow(EncyclopediaWindowCase):
             self.assertTrue(window.conversation[1]["checks"][0]["ok"])
             window._follow_encyclopedia("enc://cite/1/1")
             self.assertEqual(self.opened, [(("article", 1),
-                                            "cross the glimmer sea. Watch the crossing")])
+                                            "Every winter they cross the glimmer sea")])
         finally:
             window.destroy()
 

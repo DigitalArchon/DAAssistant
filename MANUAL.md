@@ -623,8 +623,10 @@ worth, to answer from and quote.
   edition copied over it, is read afresh at the next lookup. Nor is one that could not
   be indexed tried again before its files change: what went wrong is kept with the
   index, and its button in the bar says it on hover, as the error log does. A file cut
-  short is indexed as far as it goes. The first lookup after updating from 3.4 indexes
-  every dictionary once more, for the new matching.
+  short is indexed as far as it goes. The index is only a cache: one that cannot be read
+  is set aside as `dictionaries.sqlite.broken` and made again, and what it has of a
+  dictionary no longer in the folder goes. The first lookup after updating from 3.4
+  indexes every dictionary once more, for the new matching.
 - **Matching** ignores case, accents, punctuation and spacing, as GoldenDict's does:
   "e-mail" finds "email", "Łódź" finds "Lodz" and "encyclopædia" finds "encyclopaedia",
   and a word copied from a web page or a PDF with its curly apostrophe or long dash

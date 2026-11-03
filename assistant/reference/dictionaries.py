@@ -217,6 +217,7 @@ class Library:
         # nothing of them could be): what the index knows, for listing() to say
         # without waiting for it. Set and read whole, so without a lock.
         self._problems = {}
+        self._tidied = False            # of dictionaries no longer there, this run
 
     # ---- the index --------------------------------------------------------
 
@@ -225,22 +226,74 @@ class Library:
             os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
             db = sqlite3.connect(os.path.join(self.cache_dir, INDEX_FILE),
                                  check_same_thread=False)
-            db.executescript("""
-                PRAGMA journal_mode = WAL;
-                CREATE TABLE IF NOT EXISTS dictionaries (
-                    id INTEGER PRIMARY KEY, path TEXT UNIQUE, signature TEXT,
-                    name TEXT, headwords INTEGER, problem TEXT);
-                CREATE TABLE IF NOT EXISTS headwords (
-                    dictionary INTEGER, key TEXT, headword TEXT,
-                    offset INTEGER, size INTEGER);
-                CREATE INDEX IF NOT EXISTS headwords_key ON headwords (key, dictionary);
-            """)
-            # An index made before problems were kept has no column for them.
-            if "problem" not in {column[1] for column in
-                                 db.execute("PRAGMA table_info(dictionaries)")}:
-                db.execute("ALTER TABLE dictionaries ADD COLUMN problem TEXT")
+            try:
+                db.executescript("""
+                    PRAGMA journal_mode = WAL;
+                    CREATE TABLE IF NOT EXISTS dictionaries (
+                        id INTEGER PRIMARY KEY, path TEXT UNIQUE, signature TEXT,
+                        name TEXT, headwords INTEGER, problem TEXT);
+                    CREATE TABLE IF NOT EXISTS headwords (
+                        dictionary INTEGER, key TEXT, headword TEXT,
+                        offset INTEGER, size INTEGER);
+                    CREATE INDEX IF NOT EXISTS headwords_key
+                        ON headwords (key, dictionary);
+                """)
+                # An index made before problems were kept has no column for them.
+                if "problem" not in {column[1] for column in
+                                     db.execute("PRAGMA table_info(dictionaries)")}:
+                    db.execute("ALTER TABLE dictionaries ADD COLUMN problem TEXT")
+            except sqlite3.Error:
+                db.close()
+                raise
             self._db = db
         return self._db
+
+    def _set_aside(self, error):
+        """Move an index that cannot be read out of the way, and begin a new one.
+
+        It is only a cache, of what the dictionaries' own files hold. One that was not
+        a database at all, or a malformed one, was never rebuilt: every lookup said
+        "No dictionaries found - see Settings > Reference", with the dictionaries
+        listed there all the while. It is kept beside the new one, as
+        dictionaries.sqlite.broken, should anyone want to see what became of it."""
+        if self._db is not None:
+            try:
+                self._db.close()
+            except sqlite3.Error:
+                pass
+            self._db = None
+        path = os.path.join(self.cache_dir, INDEX_FILE)
+        for stale in (path + "-wal", path + "-shm"):
+            try:
+                os.unlink(stale)
+            except OSError:
+                pass
+        try:
+            os.replace(path, path + ".broken")
+        except OSError:
+            pass                        # then the next open says why, as it did
+        self._problems.clear()
+        line = (f"[dictionaries] the index {path} could not be read ({error}): set aside "
+                f"as {INDEX_FILE}.broken, and made again")
+        print(line)
+        errors.record(line)
+
+    def _forget_gone(self, db):
+        """Delete what the index has of dictionaries no longer there - removed, or
+        renamed, which made them new ones - once a run: nothing else ever did, and
+        their headwords stayed in it for good. Not while the dictionaries folder is
+        not there itself, on a drive not mounted, say: that says nothing of what is
+        in it."""
+        if self._tidied or not os.path.isdir(self.folder()):
+            return
+        self._tidied = True
+        gone = [ident for ident, path in db.execute("SELECT id, path FROM dictionaries")
+                if not os.path.exists(path)]
+        if gone:
+            marks = ",".join("?" * len(gone))
+            with db:
+                db.execute(f"DELETE FROM headwords WHERE dictionary IN ({marks})", gone)
+                db.execute(f"DELETE FROM dictionaries WHERE id IN ({marks})", gone)
 
     def folder(self):
         return os.path.expanduser(getattr(self.config, "dictionaries_dir", "") or "")
@@ -399,8 +452,10 @@ class Library:
         errors.record(line)
 
     def prepare(self, status=None):
-        """Index whatever needs it; [(dictionary, id)] of everything usable."""
+        """Index whatever needs it; [(dictionary, id)] of everything usable. An index
+        that cannot be read raises, for look_up() to begin a new one."""
         with self._index_lock:
+            self._forget_gone(self._connection())
             dictionaries = self._enabled()
             ready = []
             for number, (dictionary, opened_as) in enumerate(dictionaries, 1):
@@ -408,6 +463,8 @@ class Library:
                     ident = self._ensure(dictionary, opened_as, status,
                                          f" ({number} of {len(dictionaries)})")
                 except Exception as e:
+                    if _unreadable(e):
+                        raise
                     # Not the files' fault - the disk full, the file not readable just
                     # now: remembered until the app starts again, or the files change.
                     self._problem(dictionary, opened_as, f"{type(e).__name__}: {e}",
@@ -487,20 +544,37 @@ class Library:
         """
         word = " ".join((word or "").split())
         with self._index_lock:
-            ready = self.prepare(status)
-            if status:
-                status(f"Looking up “{word}”…")
-            results = self._gather(ready, [fold(word)], word)
-            found = word
-            if not results:
-                for stem in stems(word):
-                    results = self._gather(ready, [fold(stem)], stem)
-                    if results:
-                        found = stem
-                        break
-            suggestions = [] if results else self.suggestions(ready, word)
+            try:
+                return self._look_up(word, status)
+            except sqlite3.DatabaseError as e:
+                if not _unreadable(e):
+                    raise
+                self._set_aside(e)
+            return self._look_up(word, status)
+
+    def _look_up(self, word, status):
+        ready = self.prepare(status)
+        if status:
+            status(f"Looking up “{word}”…")
+        results = self._gather(ready, [fold(word)], word)
+        found = word
+        if not results:
+            for stem in stems(word):
+                results = self._gather(ready, [fold(stem)], stem)
+                if results:
+                    found = stem
+                    break
+        suggestions = [] if results else self.suggestions(ready, word)
         return {"word": word, "found": found, "results": results,
                 "suggestions": suggestions, "dictionaries": len(ready)}
+
+
+def _unreadable(error):
+    """Whether `error` says the index itself is broken - not a database, or a malformed
+    one - rather than that it is busy or the disk is full."""
+    return (isinstance(error, sqlite3.DatabaseError)
+            and (getattr(error, "sqlite_errorname", None) or "").startswith(
+                ("SQLITE_CORRUPT", "SQLITE_NOTADB")))
 
 
 def shown(lookup, hidden=()):

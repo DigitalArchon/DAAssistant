@@ -1216,6 +1216,74 @@ class IndexProblems(unittest.TestCase):
         self.assertEqual(len(found["results"]), 1)
 
 
+class TheIndexItself(unittest.TestCase):
+    """The index is only a cache, of what the dictionaries' files hold."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        write_dsl(os.path.join(self.folder, "made-up.dsl"))
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+        self.cache = os.path.join(self.dir, "cache")
+        self.index = os.path.join(self.cache, dictionaries.INDEX_FILE)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def look_up(self, word="glorp"):
+        """A lookup by a library of its own, as at a start of the app, closed after."""
+        statuses = []
+        library = Library(self.config, cache_dir=self.cache)
+        try:
+            found = library.look_up(word, statuses.append)
+        finally:
+            if library._db is not None:
+                library._db.close()     # all of it in the file, none in a -wal
+        return found, [s for s in statuses if s.startswith("Indexing")]
+
+    def test_one_that_is_no_database_is_set_aside_and_made_again(self):
+        # Every lookup said "No dictionaries found - see Settings > Reference".
+        os.makedirs(self.cache)
+        with open(self.index, "wb") as f:
+            f.write(bytes(range(256)) * 32)
+        found, indexing = self.look_up()
+        self.assertEqual([r["dictionary"] for r in found["results"]],
+                         ["Invented Dictionary"])
+        self.assertEqual(len(indexing), 1)
+        self.assertTrue(os.path.exists(self.index + ".broken"))
+        self.assertEqual(self.look_up()[1], [])
+
+    def test_and_so_is_a_malformed_one(self):
+        self.look_up()
+        size = os.path.getsize(self.index)
+        with open(self.index, "r+b") as f:     # its first page sound, the rest not
+            f.seek(4096)
+            f.write(bytes(range(256)) * ((size - 4096) // 256 + 1))
+        found, indexing = self.look_up()
+        self.assertEqual(len(found["results"]), 1)
+        self.assertEqual(len(indexing), 1)
+        self.assertEqual(self.look_up()[1], [])
+
+    def test_what_it_has_of_a_dictionary_no_longer_there_goes(self):
+        second = os.path.join(self.folder, "second.dsl")
+        write_dsl(second, '#NAME "Second"\n\nglorp\n\t[m1]a second account')
+        self.assertEqual(len(self.look_up()[0]["results"]), 2)
+        os.unlink(second)
+        self.assertEqual(len(self.look_up()[0]["results"]), 1)
+        import sqlite3
+        db = sqlite3.connect(self.index)
+        try:
+            self.assertEqual(db.execute("SELECT path FROM dictionaries").fetchall(),
+                             [(os.path.join(self.folder, "made-up.dsl"),)])
+            self.assertEqual(db.execute(
+                "SELECT COUNT(*) FROM headwords WHERE dictionary NOT IN "
+                "(SELECT id FROM dictionaries)").fetchone(), (0,))
+        finally:
+            db.close()
+
+
 class LinksOutOfTheFolder(unittest.TestCase):
     """A dictionary is downloaded, and an archive of one can carry links to the user's
     own files. None of them is read as any part of a dictionary."""

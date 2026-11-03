@@ -179,9 +179,11 @@ def _mapped(text):
 
 # What holds one word together between its letters: a hyphen or an apostrophe -
 # "non-violent", "emperor's" - and between digits, a number's separators and dashes:
-# "125,000", "3.14", "1914–18".
+# "125,000", "3.14", "1914–18". A sign is part of the number it comes before: "40 °C"
+# is not "−40 °C", nor "12" "±12" - unless a word comes before it, as in "war—1914".
 _WORD_JOINS = "-‐‑'’"
 _NUMBER_JOINS = ",.:/-" + _DASHES
+_SIGNS = "+-±" + _DASHES
 
 
 def _letter(char):
@@ -197,13 +199,15 @@ def _joined(left, mark, right):
 
 def _inside(text, i):
     """Whether a word of `text` goes on across position `i` - whether it falls between
-    two of its letters, or beside what joins them."""
+    two of its letters, or beside what joins them, or between a number and its sign."""
     if i <= 0 or i >= len(text):
         return False
     before, after = text[i - 1], text[i]
     return ((_letter(before) and _letter(after))
             or (i > 1 and _joined(text[i - 2], before, after))
-            or (i + 1 < len(text) and _joined(before, after, text[i + 1])))
+            or (i + 1 < len(text) and _joined(before, after, text[i + 1]))
+            or (after.isdigit() and before in _SIGNS
+                and not (i > 1 and _letter(text[i - 2]))))
 
 
 # The fewest words the quotation can have between two ellipses that leave words out, or
@@ -459,12 +463,13 @@ def check_quotes(answer, passages, question=None, strict=True):
     and dashes aside - where an ellipsis marks words left out, each stretch between
     ellipses beginning and ending where a word of the passage does: "legal in Ireland"
     is not in "illegal in Ireland", nor "of 12" in "of 125,000", nor "violent protest"
-    in "non-violent protest". An ellipsis can leave out words of one sentence, or whole
-    sentences, but not the end of one sentence with the start of the next, and at
-    least PART_WORDS words stand between it and the next ellipsis, or either end: a
-    word on its own is found almost anywhere, and words joined across sentences say
-    what the passage does not - "Smith was … found guilty" is not word for word in
-    "Smith was not guilty. Jones was found guilty", though each part of it is there.
+    in "non-violent protest", nor "40 °C" in "−40 °C". An ellipsis can leave out words
+    of one sentence, or whole sentences, but not the end of one sentence with the start
+    of the next, and at least PART_WORDS words stand between it and the next ellipsis,
+    or either end: a word on its own is found almost anywhere, and words joined across
+    sentences say what the passage does not - "Smith was … found guilty" is not word
+    for word in "Smith was not guilty. Jones was found guilty", though each part of it
+    is there.
 
     Not everything in quotation marks is quoted from the passages, and what is not is
     left alone - not checked, not marked, not counted among the quotations checked: a

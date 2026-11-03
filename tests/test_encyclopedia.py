@@ -658,6 +658,23 @@ class Quotes(unittest.TestCase):
             check, = check_quotes(f'They say "{quote}".', passages)
             self.assertTrue(check["ok"], quote)
 
+    def test_a_numbers_sign_is_part_of_it(self):
+        # "40" began where a word does, after "−": a quotation could drop the minus, or
+        # put an ellipsis in its place, which left out no word, so split nothing.
+        passages = [{"text": "Winters fall to −40 °C in the north of Zorbland. Its tides "
+                             "vary by -40 and ±12 units a year, and +3 more since the "
+                             "war—1914 to 1918."}]
+        for quote in ("40 °C in the north", "fall to … 40 °C in the north",
+                      "tides vary by … 40 and", "… 12 units a year",
+                      "… 3 more since the war"):
+            check, = check_quotes(f"“{quote}” [1]", passages)
+            self.assertFalse(check["ok"], quote)
+        for quote in ("fall to −40 °C in the north", "−40 °C in the north",
+                      "vary by -40 and ±12 units", "and +3 more since the war—1914",
+                      "… 1914 to 1918"):
+            check, = check_quotes(f"“{quote}” [1]", passages)
+            self.assertTrue(check["ok"], quote)
+
     def test_nor_in_the_middle_of_a_character(self):
         # "½" compares as "1⁄2": "is 1" was in it.
         check, = check_quotes('"the share is 1" [1]', [{"text": "The share is ½ of it."}])

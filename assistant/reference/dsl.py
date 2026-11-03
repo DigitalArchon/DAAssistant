@@ -175,6 +175,7 @@ class DSL:
 
     def __init__(self, path):
         self.path = path
+        self.problems = []              # what indexing could not read: see headwords
         # In any case: copied from Windows, a dictionary is as often X.DSL.DZ, whose
         # gzip bytes, read as text, were indexed as one garbage headword.
         self.compressed = path.lower().endswith(".dz")
@@ -247,9 +248,14 @@ class DSL:
 
     def headwords(self):
         """Every (headword, offset, size): one per spelling, the entry's bytes shared
-        by all the headword lines that introduce it."""
+        by all the headword lines that introduce it. What could not be read of the
+        file, where it is cut short, is in `problems` once they are all given."""
+        self.problems = []
         if self.compressed:
             data = self._dz.read_all()
+            if self._dz.cut_short:
+                self.problems.append(f"read as far as it goes, {len(data):,} bytes "
+                                     f"unpacked: {self._dz.cut_short}")
             yield from self._scan(data)
             return
         with open(self.path, "rb") as f:

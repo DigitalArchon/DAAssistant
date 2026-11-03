@@ -69,6 +69,7 @@ class StarDict:
         self.types = self.info.get("sametypesequence", "")
         self.icon = icon_beside(stem)
         self.res = os.path.join(os.path.dirname(ifo_path), "res")
+        self.problems = []              # what indexing could not read: see headwords
         self._dict = None
         self._pictures = OrderedDict()      # name -> data: URI or None, the latest last
         self._pictures_size = 0
@@ -99,20 +100,28 @@ class StarDict:
         claimed = self.info.get("idxfilesize", "")
         most = min(int(claimed), MAX_INDEX) if claimed.isdigit() else MAX_INDEX
         if self.idx_path.lower().endswith(".gz"):
-            return DictzipFile(self.idx_path).read_all(most)
+            packed = DictzipFile(self.idx_path)
+            data = packed.read_all(most)
+            if packed.cut_short:
+                self.problems.append(f"its .idx.gz is read as far as it goes: "
+                                     f"{packed.cut_short}")
+            return data
         with open(self.idx_path, "rb") as f:
             return f.read(most)
 
     def headwords(self):
         """Every (headword, offset, size): the .idx, then the .syn's alternatives -
         one at a time, from the .idx as read, and not a list of them all. Not one that
-        no headword is that long (dsl.MAX_HEADWORD), nor one at an offset no file has."""
+        no headword is that long (dsl.MAX_HEADWORD), nor one at an offset no file has:
+        how many of those there were is in `problems` once they are all given."""
+        self.problems = []
         data = self._index()
         wide = self.info.get("idxoffsetbits") == "64"
         record = struct.Struct(">QI" if wide else ">II")
         # Where each headword's offset and size are, for the .syn, which names the
         # headword it is another spelling of by its number.
         numbers = array("Q") if self.syn_path else None
+        left_out = 0
         position = 0
         while position < len(data):
             end = data.find(b"\x00", position)
@@ -123,7 +132,12 @@ class StarDict:
             offset, size = record.unpack_from(data, end + 1)
             if end - position <= 4 * MAX_HEADWORD and offset <= LARGEST_OFFSET:
                 yield data[position:end].decode("utf-8", "replace"), offset, size
+            else:
+                left_out += 1
             position = end + 1 + record.size
+        if left_out:
+            self.problems.append(f"{left_out} of its headwords are too long to be any, "
+                                 f"or point past the end of any file, and are left out")
 
         if self.syn_path:
             with open(self.syn_path, "rb") as f:

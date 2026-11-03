@@ -13,18 +13,28 @@ neither do punctuation and spacing, so "Cafe" finds "café", "email" finds "e-ma
 
 import os
 import sqlite3
+import struct
 import threading
 import unicodedata
+import zlib
 
-from .. import paths
+from .. import errors, paths
+from .dictzip import DictzipError
 from .dsl import DSL, inside, spellings
 from .stardict import StarDict
 
 CACHE_DIR = paths.CACHE_DIR
 INDEX_FILE = "dictionaries.sqlite"
+# What a dictionary's own files make go wrong in indexing them, as they will again
+# until they change: filed with them in the index, and not tried again before. Anything
+# else - a disk full, a file that cannot be read just now - is remembered only until
+# the app starts again.
+THE_FILES_FAULT = (ValueError, LookupError, EOFError, OverflowError, struct.error,
+                   zlib.error, DictzipError)
 # Part of every dictionary's signature, so raised whenever the index is made
 # differently - 3: keys without punctuation or spacing (fold) - and each dictionary is
-# then indexed again, once, at its next lookup.
+# then indexed again, once, at its next lookup. Raised too when a reader learns to read
+# what it could not, so that the dictionaries filed as failed are tried again.
 SCHEMA = 3
 
 # Entries shown per dictionary for one word. A homograph-rich word ("set", "run") has a
@@ -203,6 +213,10 @@ class Library:
         # path -> (the dictionary object, or the error opening it; the signature of
         # its files when it was opened)
         self._opened = {}
+        # path -> (the signature of its files, what was wrong indexing them, whether
+        # nothing of them could be): what the index knows, for listing() to say
+        # without waiting for it. Set and read whole, so without a lock.
+        self._problems = {}
 
     # ---- the index --------------------------------------------------------
 
@@ -215,12 +229,16 @@ class Library:
                 PRAGMA journal_mode = WAL;
                 CREATE TABLE IF NOT EXISTS dictionaries (
                     id INTEGER PRIMARY KEY, path TEXT UNIQUE, signature TEXT,
-                    name TEXT, headwords INTEGER);
+                    name TEXT, headwords INTEGER, problem TEXT);
                 CREATE TABLE IF NOT EXISTS headwords (
                     dictionary INTEGER, key TEXT, headword TEXT,
                     offset INTEGER, size INTEGER);
                 CREATE INDEX IF NOT EXISTS headwords_key ON headwords (key, dictionary);
             """)
+            # An index made before problems were kept has no column for them.
+            if "problem" not in {column[1] for column in
+                                 db.execute("PRAGMA table_info(dictionaries)")}:
+                db.execute("ALTER TABLE dictionaries ADD COLUMN problem TEXT")
             self._db = db
         return self._db
 
@@ -248,8 +266,17 @@ class Library:
 
     def listing(self):
         """[(path, name, icon path or None, about)] of the enabled dictionaries, in
-        order - the dictionary window's bar, which shows `about` on hover."""
-        return [(d.path, d.name, d.icon, d.about()) for d in self.enabled()]
+        order - the dictionary window's bar, which shows `about` on hover: what the
+        dictionary says of itself, and what went wrong indexing it, if anything did."""
+        out = []
+        for d, opened_as in self._enabled():
+            about = d.about()
+            known = self._problems.get(d.path)
+            if known and known[0] == opened_as:
+                note = ("Not indexed: " if known[2] else "Indexed in part: ") + known[1]
+                about = f"{about}\n\n{note}" if about else note
+            out.append((d.path, d.name, d.icon, about))
+        return out
 
     def _open(self, kind, path):
         """(the dictionary at `path`, or the error opening it; the signature of its
@@ -291,44 +318,85 @@ class Library:
         return [(d, opened_as) for d, opened_as in self._all() if d.path not in disabled]
 
     def _ensure(self, dictionary, sig, status=None, position=None):
-        """The dictionary's id in the index, building its rows if they are stale.
+        """The dictionary's id in the index, building its rows if they are stale - or
+        None if they could not be built from its files as they are.
 
         `sig` is the signature its files had when it was opened: its rows are read
         through what it read then, so they are filed under that. Should its files
         change even as it is indexed, the next lookup opens it again (see _open), finds
-        its rows filed under a signature not its own, and builds them again."""
+        its rows filed under a signature not its own, and builds them again.
+
+        What went wrong is filed with them: what a reader left out of a dictionary it
+        could read only in part (its `problems`), or why nothing of it could be read.
+        A dictionary whose files are at fault is not tried again until they change -
+        it was rebuilt from scratch at every lookup, each time "(once only)"."""
         db = self._connection()
-        row = db.execute("SELECT id, signature FROM dictionaries WHERE path = ?",
-                         (dictionary.path,)).fetchone()
+        row = db.execute("SELECT id, signature, headwords, problem FROM dictionaries "
+                         "WHERE path = ?", (dictionary.path,)).fetchone()
         if row and row[1] == sig:
-            return row[0]
+            ident, _sig, count, problem = row
+            failed = problem is not None and not count
+            if problem is not None:
+                self._problems[dictionary.path] = (sig, problem, failed)
+            return None if failed else ident
+        known = self._problems.get(dictionary.path)
+        if known and known[0] == sig and known[2]:
+            return None                 # failed this run, for a reason not its files'
         if status:
             status(f"Indexing {dictionary.name}{position or ''}… (once only)")
-        with db:
-            if row:
-                db.execute("DELETE FROM headwords WHERE dictionary = ?", (row[0],))
-                db.execute("DELETE FROM dictionaries WHERE id = ?", (row[0],))
-            cursor = db.execute(
-                "INSERT INTO dictionaries (path, signature, name, headwords) "
-                "VALUES (?, '', ?, 0)", (dictionary.path, dictionary.name))
-            ident = cursor.lastrowid
-            count = 0
-            batch = []
-            for headword, offset, size in dictionary.headwords():
-                for spelling in (spellings(headword) if dictionary.kind == "dsl"
-                                 else [headword]):
-                    batch.append((ident, fold(spelling), spelling, offset, size))
-                if len(batch) >= 20000:
-                    db.executemany("INSERT INTO headwords VALUES (?, ?, ?, ?, ?)", batch)
-                    count += len(batch)
-                    batch = []
-            db.executemany("INSERT INTO headwords VALUES (?, ?, ?, ?, ?)", batch)
-            count += len(batch)
-            # Written last: an index cut short by a crash has no signature, and is
-            # rebuilt rather than trusted.
-            db.execute("UPDATE dictionaries SET signature = ?, headwords = ? WHERE id = ?",
-                       (sig, count, ident))
+        try:
+            with db:
+                if row:
+                    db.execute("DELETE FROM headwords WHERE dictionary = ?", (row[0],))
+                    db.execute("DELETE FROM dictionaries WHERE id = ?", (row[0],))
+                cursor = db.execute(
+                    "INSERT INTO dictionaries (path, signature, name, headwords) "
+                    "VALUES (?, '', ?, 0)", (dictionary.path, dictionary.name))
+                ident = cursor.lastrowid
+                count = 0
+                batch = []
+                for headword, offset, size in dictionary.headwords():
+                    for spelling in (spellings(headword) if dictionary.kind == "dsl"
+                                     else [headword]):
+                        batch.append((ident, fold(spelling), spelling, offset, size))
+                    if len(batch) >= 20000:
+                        db.executemany("INSERT INTO headwords VALUES (?, ?, ?, ?, ?)",
+                                       batch)
+                        count += len(batch)
+                        batch = []
+                db.executemany("INSERT INTO headwords VALUES (?, ?, ?, ?, ?)", batch)
+                count += len(batch)
+                problem = "; ".join(getattr(dictionary, "problems", None) or ()) or None
+                # Written last: an index cut short by a crash has no signature, and is
+                # rebuilt rather than trusted.
+                db.execute("UPDATE dictionaries SET signature = ?, headwords = ?, "
+                           "problem = ? WHERE id = ?", (sig, count, problem, ident))
+        except THE_FILES_FAULT as e:
+            reason = str(e) or type(e).__name__
+            with db:                    # filed as failed, for these files
+                db.execute("DELETE FROM headwords WHERE dictionary IN "
+                           "(SELECT id FROM dictionaries WHERE path = ?)",
+                           (dictionary.path,))
+                db.execute("DELETE FROM dictionaries WHERE path = ?", (dictionary.path,))
+                db.execute("INSERT INTO dictionaries (path, signature, name, headwords, "
+                           "problem) VALUES (?, ?, ?, 0, ?)",
+                           (dictionary.path, sig, dictionary.name, reason))
+            self._problem(dictionary, sig, reason, failed=True)
+            return None
+        if problem is not None:
+            self._problem(dictionary, sig, problem, failed=False)
+        else:
+            self._problems.pop(dictionary.path, None)
         return ident
+
+    def _problem(self, dictionary, sig, what, failed):
+        """Remember what went wrong indexing `dictionary`, and say so in the error log -
+        the window's bar says so too, on its button."""
+        self._problems[dictionary.path] = (sig, what, failed)
+        line = (f"[dictionaries] {dictionary.path}: "
+                f"{'not indexed' if failed else 'indexed in part'}: {what}")
+        print(line)
+        errors.record(line)
 
     def prepare(self, status=None):
         """Index whatever needs it; [(dictionary, id)] of everything usable."""
@@ -340,9 +408,13 @@ class Library:
                     ident = self._ensure(dictionary, opened_as, status,
                                          f" ({number} of {len(dictionaries)})")
                 except Exception as e:
-                    print(f"[dictionaries] {dictionary.path}: {e}")
+                    # Not the files' fault - the disk full, the file not readable just
+                    # now: remembered until the app starts again, or the files change.
+                    self._problem(dictionary, opened_as, f"{type(e).__name__}: {e}",
+                                  failed=True)
                     continue
-                ready.append((dictionary, ident))
+                if ident is not None:
+                    ready.append((dictionary, ident))
             return ready
 
     # ---- lookups ----------------------------------------------------------

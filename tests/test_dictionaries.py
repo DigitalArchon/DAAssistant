@@ -219,6 +219,9 @@ class Dictzip(unittest.TestCase):
         self.assertEqual(bytes(got), data[:len(got)])
         self.assertIn("of 11", dz.cut_short)
         self.assertEqual(dz.read(1500, 100), data[1500:1600])
+        # A read that runs into what is missing stops there; one that starts there has
+        # nothing to give.
+        self.assertEqual(dz.read(len(got) - 10, 50), data[len(got) - 10:len(got)])
         with self.assertRaises(dzmodule.DictzipError):
             dz.read(9500, 50)
 
@@ -1113,6 +1116,104 @@ class ReplacedFiles(unittest.TestCase):
         os.utime(self.folder, (2, 2))
         self.assertEqual([name for _path, name in self.library.available()],
                          ["Made-up StarDict"])
+
+
+class IndexProblems(unittest.TestCase):
+    """What went wrong indexing a dictionary is filed with it in the index and said, and
+    it is not tried again until its files change - not at every lookup, "(once only)"
+    each time."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        write_dsl(os.path.join(self.folder, "good.dsl"))
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+        self.cache = os.path.join(self.dir, "cache")
+        self.library = Library(self.config, cache_dir=self.cache)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def look_up(self, library, word="glorp"):
+        statuses = []
+        found = library.look_up(word, statuses.append)
+        return found, [s for s in statuses if s.startswith("Indexing")]
+
+    def about(self, library):
+        return {name: about for _path, name, _icon, about in library.listing()}
+
+    def test_one_that_cannot_be_indexed_is_not_tried_again_until_it_changes(self):
+        bomb = os.path.join(self.folder, "bomb.dsl.dz")
+        with open(bomb, "wb") as f:
+            f.write(gzip.compress(dsl_bytes('#NAME "Bomb"\n\nglorp\n\t[m1]boom\n')
+                                  + b"\x00" * 2_000_000, 9))
+        with mock.patch.object(dzmodule, "FLOOR", 300_000):
+            found, indexing = self.look_up(self.library)
+            self.assertEqual([r["dictionary"] for r in found["results"]],
+                             ["Invented Dictionary"])
+            self.assertEqual(found["dictionaries"], 1)
+            self.assertEqual(len(indexing), 2)
+            self.assertEqual(self.look_up(self.library)[1], [])
+            self.assertTrue(self.about(self.library)["Bomb"].startswith(
+                "Not indexed: it would unpack to more than"), self.about(self.library))
+            # Filed with the index, it is not tried again when the app starts again...
+            again = Library(self.config, cache_dir=self.cache)
+            self.assertEqual(self.look_up(again)[1], [])
+            self.assertIn("Not indexed", self.about(again)["Bomb"])
+            # ...until it changes.
+            os.utime(bomb, (5, 5))
+            self.assertEqual(self.look_up(again)[1], ["Indexing Bomb (1 of 2)… (once only)"])
+
+    def test_one_cut_short_is_indexed_as_far_as_it_goes(self):
+        import random
+        rng = random.Random(3)
+        text = '#NAME "Cut Short"\n\n' + "\n".join(
+            f"word{i}\n\t[m1]sense {i}: " + "".join(rng.choice("abcdefghij") for _ in range(30))
+            for i in range(300))
+        path = os.path.join(self.folder, "short.dsl.dz")
+        write_dictzip(path, dsl_bytes(text), chunk=1000)
+        with open(path, "r+b") as f:          # missing its last two kilobytes
+            f.truncate(os.path.getsize(path) - 2000)
+        found, indexing = self.look_up(self.library, "word200")
+        self.assertTrue(found["results"][0]["entries"][0]["text"].startswith("sense 200:"))
+        self.assertEqual(len(indexing), 2)
+        self.assertEqual(self.library.look_up("word299")["results"], [])
+        self.assertEqual(self.look_up(self.library, "word3")[1], [])
+        self.assertRegex(self.about(self.library)["Cut Short"],
+                         r"^Indexed in part: read as far as it goes, [\d,]+ bytes unpacked: "
+                         r"chunk \d+ unpacks to \d+ of its 1000 bytes, of \d+$")
+
+    def test_a_headword_no_file_has_leaves_the_others_indexed(self):
+        base = os.path.join(self.folder, "wide")
+        idx = (b"glorp\x00" + struct.pack(">QI", 0, 4)
+               + b"bogus\x00" + struct.pack(">QI", 1 << 63, 4))
+        with open(base + ".dict", "wb") as f:
+            f.write(b"wide")
+        with open(base + ".idx", "wb") as f:
+            f.write(idx)
+        with open(base + ".ifo", "w") as f:
+            f.write("StarDict's dict ifo file\nversion=3.0.0\nbookname=Wide\n"
+                    f"idxfilesize={len(idx)}\nidxoffsetbits=64\nsametypesequence=m\n")
+        found, _indexing = self.look_up(self.library)
+        self.assertEqual([r["dictionary"] for r in found["results"]],
+                         ["Invented Dictionary", "Wide"])
+        self.assertEqual(self.look_up(self.library)[1], [])
+        self.assertEqual(self.about(self.library)["Wide"],
+                         "Indexed in part: 1 of its headwords are too long to be any, or "
+                         "point past the end of any file, and are left out")
+
+    def test_a_failure_not_of_the_files_is_tried_again_when_the_app_starts(self):
+        with mock.patch.object(dsl.DSL, "headwords", side_effect=OSError("not just now")):
+            found, indexing = self.look_up(self.library)
+            self.assertEqual((found["results"], len(indexing)), ([], 1))
+            self.assertEqual(self.look_up(self.library)[1], [])
+            self.assertEqual(self.about(self.library)["Invented Dictionary"],
+                             "Not indexed: OSError: not just now")
+        found, indexing = self.look_up(Library(self.config, cache_dir=self.cache))
+        self.assertEqual(len(indexing), 1)
+        self.assertEqual(len(found["results"]), 1)
 
 
 class LinksOutOfTheFolder(unittest.TestCase):

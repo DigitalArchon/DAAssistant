@@ -122,8 +122,10 @@ class DictzipFile:
             self._offsets.append(self._offsets[-1] + size)
 
     def _too_large(self):
-        return TooLarge(f"it would unpack to more than {self.limit >> 20} MB, more "
-                        f"than a dictionary of its size holds")
+        most = (f"{self.limit >> 20} MB" if self.limit >= 1 << 20
+                else f"{self.limit >> 10} KB")
+        return TooLarge(f"it would unpack to more than {most}, more than a dictionary "
+                        f"of its size holds")
 
     # ---- with the RA field --------------------------------------------------
 
@@ -216,6 +218,11 @@ class DictzipFile:
                     out.append(data[max(0, offset - start):offset + size - start])
                 if end >= offset + size:
                     break
+        except TooLarge:
+            raise
+        except DictzipError:
+            if not out:
+                raise
         finally:
             pieces.close()
         return b"".join(out)
@@ -223,16 +230,26 @@ class DictzipFile:
     # ---- both ---------------------------------------------------------------
 
     def read(self, offset, size):
+        """Up to `size` bytes from `offset`: fewer where the file ends, or where it
+        will not inflate from there on - as for a DSL's head, read as it is opened,
+        of a file cut short. Nothing at all to be read there raises DictzipError."""
         with self._lock:
             if self._offsets is None:
                 return self._read_stream(offset, size)
             first = offset // self.chunk_length
             last = min((offset + max(size, 1) - 1) // self.chunk_length,
                        len(self._offsets) - 2)
+            chunks = []
             with open(self.path, "rb") as f:
-                data = b"".join(self._chunk(f, i) for i in range(first, last + 1))
+                for index in range(first, last + 1):
+                    try:
+                        chunks.append(self._chunk(f, index))
+                    except DictzipError:
+                        if not chunks:
+                            raise
+                        break
             start = offset - first * self.chunk_length
-            return data[start:start + size]
+            return b"".join(chunks)[start:start + size]
 
     def read_all(self, most=None):
         """Everything, or the first `most` bytes, for building an index: in one pass,

@@ -151,6 +151,24 @@ class InTheTranscript(Configured):
         ours[0].get_gaction().activate(None)
         self.assertEqual(app.looked_up, [("dictionary", "A quince is a fruit")])
 
+    def test_a_long_selection_is_told_no_further_than_a_lookup_could_take(self):
+        # Told at every change of a drag, a selection through a long article was posted
+        # whole every time: megabytes, to be thrown away as too long.
+        long_answer = " ".join(f"word{i}" for i in range(20000))
+        window = chat.ChatWindow(StubApp(self.config), "Ask anything", [
+            {"role": "user", "content": "q", "display": "Tell me everything."},
+            {"role": "assistant", "content": long_answer, "model": "m"}])
+        self.addCleanup(window.destroy)
+        window.show_all()
+        self.assertTrue(self.run_until(lambda: window._loaded))
+        window._js("var range = document.createRange();"
+                   "range.selectNodeContents(document.body);"
+                   "window.getSelection().removeAllRanges();"
+                   "window.getSelection().addRange(range);")
+        self.assertTrue(self.run_until(lambda: "word0" in window._selection))
+        self.assertLessEqual(len(window._selection), lookups.SELECTION_LIMIT)
+        self.assertEqual(lookups.offers(self.config, window._selection), [])
+
     def test_right_clicking_where_nothing_is_selected_offers_no_lookup(self):
         window = chat.ChatWindow(StubApp(self.config), "Ask anything", [])
         self.addCleanup(window.destroy)

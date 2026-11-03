@@ -20,11 +20,19 @@ ENCYCLOPEDIA_LIMIT = 120
 LABEL_LIMIT = 28
 STRIP = " \t\r\n.,;:!?\"'()[]{}«»“”‘’„‚<>*_`#|"
 
+# The most of a selection the page tells. The selection is told at every change, and a
+# drag through a long article changes it at every movement: each time, all of it was
+# posted to Python - megabytes - to be thrown away there as too long to look up. Told
+# no more than this, with its runs of space made one as clean() makes them, what is too
+# long is too long all the same.
+SELECTION_LIMIT = 4 * max(DICTIONARY_LIMIT, ENCYCLOPEDIA_LIMIT)
+
 SELECTION_JS = """
 (function () {
   var last = null;
   function report() {
     var text = String(window.getSelection() || '');
+    if (text.length > %(limit)d) text = text.replace(/\\s+/g, ' ').slice(0, %(limit)d);
     if (text === last) return;
     last = text;
     window.webkit.messageHandlers.selection.postMessage(text);
@@ -32,7 +40,7 @@ SELECTION_JS = """
   document.addEventListener('selectionchange', report);
   document.addEventListener('mouseup', report);
 })();
-"""
+""" % {"limit": SELECTION_LIMIT}
 
 
 def clean(text, limit):

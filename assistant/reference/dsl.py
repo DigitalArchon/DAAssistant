@@ -488,12 +488,33 @@ def _closing(tag):
     return "</font>" if tag == "c" else TAGS[tag][1]
 
 
+def _unclosed(tokens):
+    """The numbers of the [s], [ref] and [url] tags among `tokens` that nothing on their
+    line closes - [/s] for [s], [/ref] or [/url] for either of the others, each closing
+    the last one still open."""
+    still_open = {"s": [], "link": []}
+    for number, (_start, _end, kind, what) in enumerate(tokens):
+        if kind != "tag" or what[1] not in ("s", "ref", "url"):
+            continue
+        opened = still_open["s" if what[1] == "s" else "link"]
+        if not what[0]:
+            opened.append(number)
+        elif opened:
+            opened.pop()
+    return set(still_open["s"] + still_open["link"])
+
+
 def render_line(line, tilde, stack):
     """One body line -> (html, text, indent, tags still open).
 
     Tags may span lines. Each line is its own <div>, so whatever is open at the end of
     one is closed there and opened again at the start of the next: `stack` holds each
     one open as (tag, the HTML that opened it).
+
+    A sound's [s], a cross-reference's [ref] and a link's [url] are closed on their own
+    line, or they are no tags at all: what follows one left open is text. Taken for a
+    sound's file name or a link's address, it went - the rest of the line with it -
+    and "see [ref]house and the rest" was shown as "see ".
     """
     indent = 1
     html, text = [opening for _t, opening in stack], []
@@ -515,9 +536,13 @@ def render_line(line, tilde, stack):
         word = line[1:].strip()
         return (f'<b class="sub">{markup.escape(word)}</b>', word, 1, stack)
 
-    for start, end, kind, what in _tokens(line):
+    tokens = list(_tokens(line))
+    unclosed = _unclosed(tokens)
+    for number, (start, end, kind, what) in enumerate(tokens):
         emit(line[position:start])
         position = end
+        if number in unclosed:
+            continue
         if kind == "escaped":
             emit(what)
         elif kind == "comment":
@@ -543,6 +568,12 @@ def render_line(line, tilde, stack):
                 skipping = max(skipping, 0)
             elif tag in ("ref", "url"):
                 if not closing:
+                    if linking is not None:
+                        # One opened inside another: what the outer one has so far is
+                        # text, not to be lost to the inner one.
+                        collected = "".join(linking[1])
+                        html.append(markup.escape(collected))
+                        text.append(collected)
                     linking = (tag, [])
                 elif linking is not None:
                     link, collected = linking
@@ -575,5 +606,11 @@ def render_line(line, tilde, stack):
                     html.append(opening)
             # Anything else ([trn], [lang id=1], [!trs]...) changes nothing shown.
     emit(line[position:])
+    if linking is not None:
+        # _unclosed() leaves none open by the end of the line; were one to be, what it
+        # holds would be text all the same.
+        collected = "".join(linking[1])
+        html.append(markup.escape(collected))
+        text.append(collected)
     html.extend(_closing(t) for t, _opening in reversed(stack))
     return "".join(html), "".join(text), indent, stack

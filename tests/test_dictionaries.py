@@ -242,6 +242,26 @@ class DslFiles(unittest.TestCase):
         self.assertEqual(html.count('<font color="green"'), 2)
         self.assertNotIn("red;x", html)
 
+    def test_a_sound_or_a_link_never_closed_leaves_its_text_shown(self):
+        def shown(line):
+            html, text, _indent, _stack = dsl.render_line(line, "w", [])
+            return html, text
+
+        self.assertEqual(shown("see [ref]house and the rest…"),
+                         ("see house and the rest…", "see house and the rest…"))
+        self.assertEqual(shown("[url]http://example.com and more"),
+                         ("http://example.com and more", "http://example.com and more"))
+        self.assertEqual(shown("[s]a.wav kept?"), ("a.wav kept?", "a.wav kept?"))
+        # Closed, they are what they were; one opened inside another keeps the text the
+        # outer one had so far.
+        html, text = shown("[s]a.wav[/s]said [ref]zib[/ref], [ref]a [ref]b[/ref] c")
+        self.assertEqual(text, "said zib, a b c")
+        self.assertIn(f'<a href="{markup.lookup_href("zib")}">zib</a>', html)
+        self.assertIn(f'a <a href="{markup.lookup_href("b")}">b</a> c', html)
+        self.assertNotIn("a.wav", html)
+        _html, text = shown("[s]one.wav [s]two.wav[/s] three")
+        self.assertEqual(text, "one.wav  three")
+
     def test_markup_never_closed_is_read_in_one_pass(self):
         # Each took seconds to show, under the lock every lookup in every window waits
         # on: twenty thousand "<<" six of them.

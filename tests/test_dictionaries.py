@@ -1045,6 +1045,16 @@ class Lookups(unittest.TestCase):
                 looking.join(30)
         self.assertEqual(len(self.library.look_up("glorp")["results"]), 2)
 
+    def test_one_lookup_gathers_only_so_much_of_one_dictionary(self):
+        write_dsl(os.path.join(self.folder, "many.dsl"), '#NAME "Many"\n\n' + "\n".join(
+            f"zork\n\t[m1]sense {i} " + "x" * 60 for i in range(30)))
+        entries = lambda: self.library.look_up("zork")["results"][0]["entries"]  # noqa: E731
+        self.assertEqual(len(entries()), dictionaries.MAX_ENTRIES)
+        with mock.patch.object(markup, "MAX_HTML", 300):
+            self.assertEqual(len(entries()), 3)
+        with mock.patch.object(dictionaries, "MAX_ROWS", 2):
+            self.assertEqual([e["text"][:7] for e in entries()], ["sense 0", "sense 1"])
+
     def test_context_shares_its_budget_and_names_each_dictionary(self):
         found = self.library.look_up("glorp")
         context = dictionaries.as_context(found, 60)

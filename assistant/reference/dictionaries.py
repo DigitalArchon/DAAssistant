@@ -22,6 +22,7 @@ import unicodedata
 import zlib
 
 from .. import errors, paths
+from . import markup
 from .dictzip import DictzipError
 from .dsl import DSL, inside, spellings
 from .stardict import StarDict
@@ -45,6 +46,9 @@ SCHEMA = 4
 # dozen in some dictionaries; past this many they are rarely the one wanted.
 MAX_ENTRIES = 12
 MAX_SUGGESTIONS = 24
+# The most rows one key is read from in one dictionary, to choose those entries from: a
+# real one files a few dozen under a key at most, a made one a million, each looked up.
+MAX_ROWS = 100 * MAX_ENTRIES
 
 # What text copied from a web page or a PDF has where a dictionary has the plain
 # character: typographic apostrophes, quotation marks and dashes.
@@ -530,8 +534,8 @@ class Library:
         marks = ",".join("?" * len(keys))
         rows = self._connection().execute(
             f"SELECT headword, offset, size FROM headwords "
-            f"WHERE dictionary = ? AND key IN ({marks}) ORDER BY rowid",
-            (ident, *keys)).fetchall()
+            f"WHERE dictionary = ? AND key IN ({marks}) ORDER BY rowid LIMIT ?",
+            (ident, *keys, MAX_ROWS)).fetchall()
         if word is not None:
             wanted = plain(word)
             rows.sort(key=lambda row: plain(row[0]) != wanted)     # stable
@@ -544,16 +548,22 @@ class Library:
         return out[:MAX_ENTRIES]
 
     def _gather(self, ready, keys, word=None):
+        """Each dictionary's entries filed under `keys`, rendered - as many as fit in
+        markup.MAX_HTML of HTML, the most one entry may make: twelve entries of that
+        each, all shown on the page, would hold up the window that shows them."""
         results = []
         for dictionary, ident in ready:
-            entries = []
+            entries, made = [], 0
             for headword, offset, size in self._entries(ident, keys, word):
+                if made > markup.MAX_HTML:
+                    break
                 try:
                     html, text = dictionary.render(headword,
                                                    dictionary.read(offset, size))
                 except Exception as e:
                     print(f"[dictionaries] {dictionary.name}, {headword!r}: {e}")
                     continue
+                made += len(html)
                 entries.append({"headword": headword, "html": html, "text": text})
             if entries:
                 results.append({"dictionary": dictionary.name, "path": dictionary.path,

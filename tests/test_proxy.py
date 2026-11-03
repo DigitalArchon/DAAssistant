@@ -128,7 +128,7 @@ class LocalServersAreReachedDirectly(Environment):
 
 class AProxyThatCannotBeUsed(Environment):
     """A SOCKS proxy saved while PySocks was installed, or in a config from another
-    machine: up to 3.4.0 it was not applied, and everything went direct."""
+    machine: when the setting came in, it was not applied, and everything went direct."""
 
     def setUp(self):
         super().setUp()

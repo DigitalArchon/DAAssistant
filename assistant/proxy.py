@@ -150,9 +150,9 @@ def refusal():
     """Why nothing may be sent but to this machine and its network: a proxy is set in
     Settings that this process cannot use - or None.
 
-    Up to 3.4.0 such a proxy was simply not applied, and every request went direct: a
-    SOCKS proxy saved while PySocks was installed, or in a config copied from another
-    machine, sent everything from this machine's own address, Tor or no Tor, and said
+    When the setting came in, such a proxy was simply not applied, and every request
+    went direct: a SOCKS proxy saved while PySocks was installed, or in a config copied
+    from another machine, sent everything from this machine's own address, and said
     nothing. Now nothing goes until the proxy can be used, or is taken out of Settings
     (netguard.session(), sealed.py)."""
     return _refused

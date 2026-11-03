@@ -773,7 +773,6 @@ class InTheWindows(Case):
         self.assertEqual(window._where(choices["text"]), "")
 
     def test_a_model_picked_from_another_provider_goes_to_that_provider(self):
-        from assistant.ui import chat
         window = self.window()
         picked = []
         browser = mock.Mock(selected_id="qwen3:1.7b", provider="ollama")

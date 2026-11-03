@@ -16,7 +16,6 @@ import queue
 import shutil
 import sys
 import tempfile
-import threading
 import unittest
 from unittest import mock
 

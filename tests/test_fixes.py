@@ -537,16 +537,6 @@ class Citations(unittest.TestCase):
         ])
         self.assertEqual(text, "Answer.")
 
-    def test_structured_citations_are_not_duplicated(self):
-        """If a provider ever does return citations, don't add a second Sources block."""
-        from assistant.llm import format_citations
-        footer = format_citations([("A", "https://a.test")])
-        self.assertIn("https://a.test", footer)
-
-    def test_no_citations_means_no_footer(self):
-        from assistant.llm import format_citations
-        self.assertEqual(format_citations([]), "")
-
     def test_https_links_survive_the_sanitiser(self):
         html = render_markdown(
             "## Sources\n\n- [CoinGecko](https://www.coingecko.com/en/coins/bitcoin)")

@@ -27,8 +27,8 @@ import requests
 from PIL import Image
 
 from assistant import gtkcompat  # noqa: F401
-from assistant import (clipboard, errors, gtkcompat, imaging, models, session,
-                       theming, webkitguard)
+from assistant import (clipboard, errors, imaging, models, session, theming,
+                       webkitguard)
 from assistant.capture import cli
 from assistant.config import Config
 from assistant.llm import LLMClient, LLMError

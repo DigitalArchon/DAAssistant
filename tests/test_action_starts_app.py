@@ -57,7 +57,8 @@ class WithNothingRunning(unittest.TestCase):
 
 class TheAppDoesItOnceItIsUp(unittest.TestCase):
     def test_the_action_waits_for_the_main_loop(self):
-        source = open(app_module.__file__, encoding="utf-8").read()
+        with open(app_module.__file__, encoding="utf-8") as f:
+            source = f.read()
         self.assertIn("GLib.idle_add(self.dispatch, initial_action)", source)
 
 

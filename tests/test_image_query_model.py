@@ -365,7 +365,6 @@ class ATextModelThatCannotSeeImages(ImageQueryCase):
         self.assertFalse(opened["image_first"])
 
     def test_the_answer_goes_to_the_text_model_through_the_real_window(self):
-        from assistant.ui import chat
         opened = self._confirm()
         window = ChatWindow(self.app, opened["title"],
                             [{"role": "user", "content": opened["prompt"],

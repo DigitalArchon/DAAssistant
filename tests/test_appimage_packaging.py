@@ -164,7 +164,6 @@ class TheSuitesOwnCache(unittest.TestCase):
     point that somewhere of their own (tests/support.py)."""
 
     def test_every_cache_path_is_under_the_suites_cache(self):
-        import support
         from assistant import errors, imaging, models, paths, webkitguard
         from assistant.reference import dictionaries
         self.assertTrue(paths.CACHE_DIR.startswith(support.CACHE))
@@ -318,9 +317,9 @@ class AppRunStashesWhatItOverrides(unittest.TestCase):
         self.addCleanup(shutil.rmtree, os.path.dirname(here), True)
         private = os.path.join(here, "usr/lib/da-assistant/private-mode/certifi/cacert.pem")
         site = os.path.join(here, "usr/python/lib/python3.12/site-packages/certifi/cacert.pem")
-        for bundle in (private, site):
-            os.makedirs(os.path.dirname(bundle))
-            open(bundle, "w").close()
+        for certifi in (private, site):
+            os.makedirs(os.path.dirname(certifi))
+            open(certifi, "w").close()
         env = {"PATH": os.environ.get("PATH", "")}
         self.assertEqual(self._certificates(env, here, hosts), (private, private))
         os.remove(private)

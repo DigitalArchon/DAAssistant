@@ -13,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import gtkcompat  # noqa: F401,E402
-from gi.repository import Gtk  # noqa: E402
 
 from assistant import app as app_module, hotkeys, prompts  # noqa: E402
 from assistant.app import Assistant  # noqa: E402

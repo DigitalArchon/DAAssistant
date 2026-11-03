@@ -230,7 +230,6 @@ class TheCraftedQuery(unittest.TestCase):
             return answer
 
         client.complete = complete
-        client_search = []
         client.session = None
         return client
 

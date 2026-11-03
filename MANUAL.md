@@ -799,8 +799,10 @@ names it as written, `Shift+Ctrl+9`. Up to 3.4.0 GNOME was sent the symbol too, 
 already holds, so such a key stays until it is changed in GNOME's Settings > Apps > DA
 Assistant. The app says so when it finds one, and Settings > Shortcuts marks it.
 
-Only the app's own entries are ever touched - those named `da-assistant-…`, or the block
-between the markers - and the rest of your shortcuts stay as they are. A binding names
+Only the app's own entries are ever touched - those named `da-assistant-…` (on Cinnamon
+`custom-` and a number, the only names its own keyboard settings can read beside
+theirs), or the block between the markers - and the rest of your shortcuts stay as they
+are. A binding names
 the `.AppImage` file itself when you run the AppImage, so move the file and the next
 start rewrites them; so it does when you rename one of your own actions, or start using
 a `hyprland.lua`, which gets the block while the one in `hyprland.conf` is taken out.
@@ -814,7 +816,12 @@ Upgrading from 3.0: the keys you had working stay, and anything `install-hotkeys
 wrote is taken over or, on KDE, removed in favour of the portal. The script itself is
 gone, and so is `--install-hotkeys`. Up to 3.4.0 a Hyprland or Sway config that was a
 link was replaced by a file of its own, and the file it pointed to was left as it was:
-put the link back, and the next start writes the block through it.
+put the link back, and the next start writes the block through it. Up to 3.4.0 a change
+reached Cinnamon only at the next login - a key changed or cleared, or the AppImage
+moved - and while the app's shortcuts were listed there, Cinnamon's own Add custom
+shortcut added nothing. Now each change reaches it at once. The shortcuts written before
+are taken over in two starts: at the first, Cinnamon lets go of them and binds the new
+ones; at the next, their emptied entries leave its list.
 
 Run `--probe` any time to see which mechanism is in use.
 

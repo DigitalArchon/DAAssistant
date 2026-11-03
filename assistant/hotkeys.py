@@ -575,6 +575,7 @@ class HotkeyManager:
         self.wanted = {}
         self.problems = {}                  # action -> why it is not bound as asked
         self.error = None                   # the desktop could not be written
+        self._settled = False               # see _start
         # capture(action, accel) -> bool, while Settings > Shortcuts waits for a key:
         # see captured().
         self.capture = None
@@ -641,6 +642,10 @@ class HotkeyManager:
             except OSError as e:
                 print(f"[hotkeys] old KDE launchers not removed: {e}")
         target = f"desktop:{desktop}" if self.mode == "desktop" else None
+        # Cinnamon names from before 4.0 left in its list at an earlier start, for its
+        # rebuild then, which can go now: see keybindings.GSettingsKeybindings.apply.
+        installed = getattr(self.config, "hotkeys_installed", None) or {}
+        self._settled = bool(installed.get("unfinished"))
         self._tidy(target, desktop)
 
         if self.mode == "x11" and self.wanted:
@@ -684,9 +689,12 @@ class HotkeyManager:
             found = keybindings.writer(previous.split(":", 1)[1], self.run)
         try:
             if found is not None:
-                found.remove(names)
+                found.remove(names, self._settled)
         except (OSError, ValueError) as e:
             print(f"[hotkeys] earlier shortcuts not removed: {e}")
+            return
+        if getattr(found, "unfinished", False):
+            self._record(dict(installed, unfinished=True))  # done at the next start
             return
         self._record({})
 
@@ -706,11 +714,13 @@ class HotkeyManager:
         if (getattr(self.config, "hotkeys_installed", None) or {}) == record:
             return
         try:
-            found.apply(self.wanted, named, action_names())
+            found.apply(self.wanted, named, action_names(), self._settled)
         except (OSError, ValueError) as e:
             self.error = str(e)
             return
-        self._record(record)
+        # Left unfinished, the record differs from the next start's, which finishes.
+        self._record(dict(record, unfinished=True) if getattr(found, "unfinished", False)
+                     else record)
 
     def _portal_changed(self):
         """From the portal's signals, which arrive on the main loop."""

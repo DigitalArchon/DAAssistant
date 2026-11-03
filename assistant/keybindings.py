@@ -10,11 +10,12 @@ set of keys:
   GNOME, Cinnamon   custom keybindings, through the host's gsettings
   Hyprland, Sway    a marked block in the compositor's config file, a backup kept
 
-Every entry is ours by name - da-assistant-<action>, or the block between the marker
-lines - and nothing else is touched. Cinnamon and GNOME each keep one list naming every
-custom shortcut, which is the user's list: ours are added to it and taken out of it,
-and the rest stays as it was. The names and markers are the ones the old script used,
-so the bindings it installed are taken over, not duplicated.
+Every entry is ours by name - da-assistant-<action>, on Cinnamon custom-<number> (see
+GSettingsKeybindings), or the block between the marker lines - and nothing else is
+touched. Cinnamon and GNOME each keep one list naming every custom shortcut, which is
+the user's list: ours are added to it and taken out of it, and the rest stays as it
+was. The names and markers are the ones the old script used, or on Cinnamon followed
+from them, so the bindings it installed are taken over, not duplicated.
 
 KDE Plasma 6 has the portal. What the old script wrote there - a .desktop file per
 action and its kglobalshortcutsrc entry - would fire beside the portal's, so it is
@@ -24,10 +25,12 @@ removed when found (remove_kde_legacy).
 import ast
 import glob
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import unicodedata
+import zlib
 
 from gi.repository import GLib
 
@@ -139,7 +142,21 @@ def app_entry(data_home=None):
 # ---- GNOME and Cinnamon ------------------------------------------------------------
 
 class GSettingsKeybindings:
-    """Custom keybindings in GNOME or Cinnamon, through the host's gsettings."""
+    """Custom keybindings in GNOME or Cinnamon, through the host's gsettings.
+
+    Cinnamon takes a change in only one way (js/ui/keybindings.js, Cinnamon 6.6). It
+    reads the shortcuts again when custom-list changes, and only then; on that rebuild
+    it lets go only of the shortcuts whose names have "custom" in them; and a shortcut
+    whose keys are the same as before keeps the command it was bound with. Ours were
+    named da-assistant-<action> and the list written only when which were in it
+    changed, so a key changed, a key cleared and an AppImage moved all reached Cinnamon
+    only at the next login. Cinnamon's own settings make every change reach it by
+    putting a "__dummy__" entry into the list, or taking it out; so does apply, and
+    ours are named custom-<number>. Its settings read every name in the list as
+    "custom" and a number, and failed on any other: its Add custom shortcut added
+    nothing while one of the old names was in the list. Theirs are custom0, custom1 and
+    on; ours have a dash, which reads as a minus, so neither is ever the other's.
+    """
 
     SCHEMAS = {
         # list schema, list key, item schema, item base path, list holds paths, binding
@@ -157,23 +174,41 @@ class GSettingsKeybindings:
                      False, True),
     }
 
+    # What Cinnamon's settings put into its list to change it, and take out again.
+    DUMMY = "__dummy__"
+
     def __init__(self, desktop, run=run_host):
         self.desktop = desktop
         (self.list_schema, self.list_key, self.item_schema, self.base, self.paths,
          self.binding_list) = self.SCHEMAS[desktop]
         self.run = run
+        # Cinnamon names from before kept in its list for one more rebuild: see apply.
+        self.unfinished = False
 
     def describe(self):
         return (f"{'GNOME' if self.desktop == 'gnome' else 'Cinnamon'}'s custom "
                 f"keyboard shortcuts")
 
     def _entry(self, action):
+        """`action`'s entry in the list: GNOME's a path, Cinnamon's a name. Cinnamon's
+        number is the CRC-32 of da-assistant-<action>, the name GNOME's path ends in, so
+        an action keeps its entry whatever actions there are."""
         name = f"{PREFIX}-{action}"
+        if self.desktop == "cinnamon":
+            return f"custom-{zlib.crc32(name.encode())}"
         return f"{self.base}/{name}/" if self.paths else name
 
-    @staticmethod
-    def _ours(entry):
-        return f"{PREFIX}-" in entry
+    def _item(self, entry):
+        """gsettings' PATH for an entry of the list."""
+        return f"{self.item_schema}:{entry if self.paths else f'{self.base}/{entry}/'}"
+
+    def _ours(self, entry):
+        return f"{PREFIX}-" in entry or (self.desktop == "cinnamon"
+                                         and re.fullmatch(r"custom-\d+", entry) is not None)
+
+    def _legacy(self, entry):
+        """A Cinnamon entry under the name used before 4.0, which no rebuild lets go of."""
+        return self.desktop == "cinnamon" and entry.startswith(f"{PREFIX}-")
 
     def _current(self):
         code, out = self.run(["gsettings", "get", self.list_schema, self.list_key])
@@ -215,29 +250,45 @@ class GSettingsKeybindings:
             raise OSError(f"gsettings set {args[0]} {args[1]} failed"
                           + (f": {said}" if said else ""))
 
-    def apply(self, bindings, labels, actions):
+    def apply(self, bindings, labels, actions, settled=False):
         """Make ours exactly `bindings` ({action: accel}). `actions` is every action
-        there is, so that one no longer bound is taken out too."""
+        there is, so that one no longer bound is taken out too.
+
+        An entry Cinnamon holds under a name from before 4.0 it lets go of only when a
+        rebuild finds it in the list with its keys gone. So it is emptied and stays
+        listed, ahead of ours - Cinnamon would not bind a key the old name still held -
+        and `unfinished` is set: it leaves the list only on a later call made with
+        `settled`, the rebuild long done by then. Taken out at once, as before, the old
+        shortcut stayed bound, and fired its old command, until the next login."""
         current = self._current()
+        ours = [entry for entry in current if self._ours(entry)]
+        written = [self._entry(action) for action in actions if bindings.get(action)]
         for action in actions:
-            path = f"{self.item_schema}:{self.base}/{PREFIX}-{action}/"
             accel = bindings.get(action)
             if accel:
+                path = self._item(self._entry(action))
                 self._set(path, "name", self._string(f"{NAME}: {labels[action]}"))
                 self._set(path, "command", self._string(command(action)))
                 self._set(path, "binding", self._gvariant([accel]) if self.binding_list
                           else self._string(accel))
-            elif self._entry(action) in current:
-                self.run(["gsettings", "reset-recursively", path])
-        wanted = [e for e in current if not self._ours(e)] + [
-            self._entry(action) for action in actions if bindings.get(action)]
+        for entry in ours:
+            if entry not in written:
+                self.run(["gsettings", "reset-recursively", self._item(entry)])
+        kept = [] if settled else [entry for entry in ours if self._legacy(entry)]
+        self.unfinished = bool(kept)
+        wanted = [entry for entry in current if not self._ours(entry)] + kept + written
+        if self.desktop == "cinnamon" and (ours or written):
+            if self.DUMMY in wanted:
+                wanted.remove(self.DUMMY)
+            else:
+                wanted.append(self.DUMMY)
         if wanted != current:
             self._set(self.list_schema, self.list_key, self._gvariant(wanted))
 
-    def remove(self, actions):
+    def remove(self, actions, settled=False):
         """Take ours out, leaving the user's own. Nothing is written if none is there."""
         if any(self._ours(e) for e in self._current()):
-            self.apply({}, {}, actions)
+            self.apply({}, {}, actions, settled)
 
 
 # ---- Hyprland and Sway -------------------------------------------------------------
@@ -435,7 +486,10 @@ class ConfigFileKeybindings:
             except OSError:
                 pass
 
-    def apply(self, bindings, labels, actions):
+    def apply(self, bindings, labels, actions, settled=False):
+        """Make the block exactly `bindings`, and reload the compositor if that changed
+        the file. `settled` is for GSettingsKeybindings, and means nothing here: a
+        reload reads the file as it is."""
         written = self._rewrite(bindings, labels, actions)
         if self.lua:
             written = self._leave_conf(actions) or written
@@ -480,10 +534,10 @@ class ConfigFileKeybindings:
             print(f"[hotkeys] the shortcuts in {conf.describe()} were left there: {e}")
             return False
 
-    def remove(self, actions):
+    def remove(self, actions, settled=False):
         """Take the block out, and from beside a hyprland.lua the hyprland.conf one;
         nothing is written where there is none."""
-        self.apply({}, {}, actions)
+        self.apply({}, {}, actions, settled)
 
 
 def writer(desktop, run=run_host):

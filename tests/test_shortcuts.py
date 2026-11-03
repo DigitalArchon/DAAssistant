@@ -364,14 +364,87 @@ def gvariant_string(text):
     return GLib.Variant.parse(GLib.VariantType("s"), text, None, None).get_string()
 
 
+CINNAMON_BASE = "/org/cinnamon/desktop/keybindings/custom-keybindings"
+
+
+def cinnamon_name(action):
+    """Ours in Cinnamon's list: custom-, and the CRC-32 of the name used before."""
+    import zlib
+    return f"custom-{zlib.crc32(f'da-assistant-{action}'.encode())}"
+
+
+class FakeCinnamon(FakeHost):
+    """gsettings, with Cinnamon watching: what is set is kept, and the shortcuts Cinnamon
+    has bound are kept as Cinnamon keeps them (js/ui/keybindings.js, Cinnamon 6.6.9).
+    It reads them again when custom-list changes, and only then: it lets go of those
+    whose names have "custom" in them, and binds each one in the list again, in order -
+    one whose keys are unchanged keeping the command it was bound with, and one whose
+    keys another still holds not bound at all."""
+
+    def __init__(self, listed="@as []", items=None, bound=None):
+        super().__init__(listed)
+        self.items = dict(items or {})      # item path -> {key: GVariant text}
+        self.bound = dict(bound or {})      # name -> (keys, command)
+
+    def __call__(self, args):
+        self.calls.append(list(args))
+        if args[:2] == ["gsettings", "get"]:
+            if args[3] == "custom-list":
+                return 0, self.listed + "\n"
+            return 0, self.items.get(args[2], {}).get(args[3], "@as []") + "\n"
+        if args[:2] == ["gsettings", "set"]:
+            if args[3] == "custom-list":
+                changed, self.listed = args[4] != self.listed, args[4]
+                if changed:
+                    self.rebuild()
+            else:
+                self.items.setdefault(args[2], {})[args[3]] = args[4]
+        if args[:2] == ["gsettings", "reset-recursively"]:
+            self.items.pop(args[2], None)
+        return 0, ""
+
+    def listing(self):
+        return GLib.Variant.parse(None, self.listed, None, None).unpack()
+
+    def rebuild(self):
+        for name in [name for name in self.bound if "custom" in name]:
+            del self.bound[name]
+        for name in self.listing():
+            if name == "__dummy__":
+                continue
+            item = self.items.get(f"{CINNAMON_ITEM}:{CINNAMON_BASE}/{name}/", {})
+            keys = GLib.Variant.parse(None, item.get("binding", "@as []"), None,
+                                      None).unpack()
+            if name in self.bound:
+                if self.bound[name][0] == keys:
+                    continue
+                del self.bound[name]
+            held = {key for other, _command in self.bound.values() for key in other}
+            if keys and not held & set(keys):
+                self.bound[name] = (keys, gvariant_string(item.get("command", "''")))
+
+    def ours(self):
+        return {name: bound for name, bound in self.bound.items() if name != "custom0"}
+
+    @classmethod
+    def with_the_users(cls, *more, items=None, bound=None):
+        """Cinnamon with a shortcut of the user's own, custom0, bound at login."""
+        listed = ["custom0", *more]
+        return cls(str(listed),
+                   items={f"{CINNAMON_ITEM}:{CINNAMON_BASE}/custom0/":
+                          {"binding": "['<Super>t']", "command": "'xterm'"},
+                          **(items or {})},
+                   bound={"custom0": (["<Super>t"], "xterm"), **(bound or {})})
+
+
 class GSettingsWriter(unittest.TestCase):
     def test_cinnamon_adds_names_to_the_users_list(self):
         host = FakeHost("['custom0', '__dummy__']")
         writer = keybindings.GSettingsKeybindings("cinnamon", host)
         writer.apply({"ocr_only": "<Control><Shift>5"}, LABELS, NAMES)
-        self.assertEqual(host.listed, "['custom0', '__dummy__', 'da-assistant-ocr_only']")
-        path = f"{CINNAMON_ITEM}:/org/cinnamon/desktop/keybindings/custom-keybindings/" \
-               "da-assistant-ocr_only/"
+        # And takes __dummy__ out again, as Cinnamon's own settings would.
+        self.assertEqual(host.listed, f"['custom0', '{cinnamon_name('ocr_only')}']")
+        path = f"{CINNAMON_ITEM}:{CINNAMON_BASE}/{cinnamon_name('ocr_only')}/"
         self.assertIn(["gsettings", "set", path, "binding", "['<Control><Shift>5']"],
                       host.calls)
         self.assertIn(["gsettings", "set", path, "name", "'DA Assistant: OCR only'"],
@@ -416,21 +489,24 @@ class GSettingsWriter(unittest.TestCase):
         self.assertNotIn("^", str(raised.exception))
 
     def test_twice_is_once_and_an_unbound_one_is_taken_out(self):
-        host = FakeHost("['da-assistant-ocr_only', 'custom0', 'da-assistant-query_text']")
-        writer = keybindings.GSettingsKeybindings("cinnamon", host)
+        base = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
+        host = FakeHost(f"['{base}/da-assistant-ocr_only/', '{base}/custom0/', "
+                        f"'{base}/da-assistant-query_text/']")
+        writer = keybindings.GSettingsKeybindings("gnome", host)
         writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
-        self.assertEqual(host.listed, "['custom0', 'da-assistant-ocr_only']")
+        self.assertEqual(host.listed, f"['{base}/custom0/', '{base}/da-assistant-ocr_only/']")
         self.assertTrue(any(c[1] == "reset-recursively" and "query_text" in c[2]
                             for c in host.calls))
-        before = len(host.sets("custom-list"))
+        before = len(host.sets("custom-keybindings"))
         writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
-        self.assertEqual(len(host.sets("custom-list")), before)     # unchanged: not set
+        self.assertEqual(len(host.sets("custom-keybindings")), before)  # unchanged: not set
 
     def test_remove_keeps_the_users_own_and_writes_nothing_if_none_are_ours(self):
-        host = FakeHost("['custom0', 'da-assistant-ocr_only']")
+        host = FakeHost(f"['custom0', '{cinnamon_name('ocr_only')}']")
         writer = keybindings.GSettingsKeybindings("cinnamon", host)
         writer.remove(NAMES)
-        self.assertEqual(host.listed, "['custom0']")
+        self.assertEqual(host.listed, "['custom0', '__dummy__']")
+        self.assertFalse(writer.unfinished)
         host = FakeHost("@as []")
         keybindings.GSettingsKeybindings("cinnamon", host).remove(NAMES)
         self.assertEqual([c for c in host.calls if c[1] != "get"], [])
@@ -439,7 +515,72 @@ class GSettingsWriter(unittest.TestCase):
         host = FakeHost("['it\\'s mine']")
         keybindings.GSettingsKeybindings("cinnamon", host).apply(
             {"ocr_only": "F5"}, LABELS, NAMES)
-        self.assertEqual(host.listed, "['it\\'s mine', 'da-assistant-ocr_only']")
+        self.assertEqual(host.listed,
+                         f"['it\\'s mine', '{cinnamon_name('ocr_only')}', '__dummy__']")
+
+
+class CinnamonTakesEveryChange(unittest.TestCase):
+    """Cinnamon reads its shortcuts again only when custom-list changes, lets go of only
+    those named "custom…", and keeps the command one was bound with while its keys stay
+    the same. Ours were named da-assistant-…, and the list written only when what was in
+    it changed: a changed key, a cleared one and a moved AppImage all waited for the next
+    login."""
+
+    def writer(self, host):
+        return keybindings.GSettingsKeybindings("cinnamon", host)
+
+    def test_a_changed_key_a_cleared_one_and_a_moved_launcher_reach_it_at_once(self):
+        host = FakeCinnamon.with_the_users()
+        name = cinnamon_name("ocr_only")
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/DA.AppImage"}):
+            self.writer(host).apply({"ocr_only": "<Control><Shift>5"}, LABELS, NAMES)
+            self.assertEqual(host.ours(), {name: (["<Control><Shift>5"],
+                                                  "/home/u/DA.AppImage --action=ocr_only")})
+            self.writer(host).apply({"ocr_only": "<Control><Shift>6"}, LABELS, NAMES)
+            self.assertEqual(host.ours()[name][0], ["<Control><Shift>6"])
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/opt/DA.AppImage"}):
+            self.writer(host).apply({"ocr_only": "<Control><Shift>6"}, LABELS, NAMES)
+            self.assertEqual(host.ours()[name][1], "/opt/DA.AppImage --action=ocr_only")
+            self.writer(host).apply({}, LABELS, NAMES)
+        self.assertEqual(host.ours(), {})
+        self.assertEqual(host.bound["custom0"], (["<Super>t"], "xterm"))   # the user's
+
+    def test_its_own_settings_can_read_every_name_in_the_list(self):
+        # cinnamon-settings numbers a new shortcut from int(name.replace("custom", ""))
+        # of every name but __dummy__: with da-assistant-… in the list, its Add custom
+        # shortcut raised ValueError and added nothing. Its own are custom0 and on.
+        host = FakeCinnamon("['custom0', 'custom1']")
+        self.writer(host).apply({name: f"<Control><Shift>{n}"
+                                 for n, name in enumerate(NAMES[:6])}, LABELS, NAMES)
+        numbers = [int(entry.replace("custom", "")) for entry in host.listing()
+                   if entry != "__dummy__"]
+        self.assertEqual(numbers[:2], [0, 1])
+        self.assertTrue(all(number < 0 for number in numbers[2:]), numbers)
+        self.assertEqual(len(set(numbers)), len(numbers))
+
+    def test_entries_from_before_are_let_go_of_and_then_taken_out(self):
+        # As 3.4.0 left them: bound by Cinnamon at login under names no rebuild touches.
+        old = "da-assistant-ocr_only"
+        item = f"{CINNAMON_ITEM}:{CINNAMON_BASE}/{old}/"
+        host = FakeCinnamon.with_the_users(
+            old, items={item: {"binding": "['<Control><Shift>5']",
+                               "command": "'/old/run-assistant --action=ocr_only'"}},
+            bound={old: (["<Control><Shift>5"], "/old/run-assistant --action=ocr_only")})
+        writer = self.writer(host)
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/DA.AppImage"}):
+            writer.apply({"ocr_only": "<Control><Shift>5"}, LABELS, NAMES)
+        new = cinnamon_name("ocr_only")
+        self.assertEqual(host.ours(), {new: (["<Control><Shift>5"],
+                                             "/home/u/DA.AppImage --action=ocr_only")})
+        # Listed, empty and ahead of ours, for that rebuild; taken out at a later one.
+        self.assertEqual(host.listing(), ["custom0", old, new, "__dummy__"])
+        self.assertNotIn(item, host.items)
+        self.assertTrue(writer.unfinished)
+        with mock.patch.dict(os.environ, {"APPIMAGE": "/home/u/DA.AppImage"}):
+            writer.apply({"ocr_only": "<Control><Shift>5"}, LABELS, NAMES, settled=True)
+        self.assertEqual(host.listing(), ["custom0", new])
+        self.assertFalse(writer.unfinished)
+        self.assertEqual(set(host.bound), {"custom0", new})
 
 
 def memory_gsettings(args):
@@ -930,7 +1071,8 @@ class Manager(TempDir):
             manager.start()
             self.assertEqual(manager.mode, "desktop")
             self.assertEqual(manager.trigger_label("ocr_only"), "Ctrl+Shift+5")
-            self.assertEqual(host.listed, "['custom0', 'da-assistant-ocr_only']")
+            self.assertEqual(host.listed,
+                             f"['custom0', '{cinnamon_name('ocr_only')}', '__dummy__']")
             self.assertEqual(self.config().hotkeys_installed["mechanism"],
                              "desktop:cinnamon")
             writes = len(host.calls)
@@ -979,10 +1121,47 @@ class Manager(TempDir):
         config = self.config()
         config.hotkeys = {"ocr_only": "<Control><Shift>5"}
         config.hotkeys_installed = {"mechanism": "legacy"}
-        host = FakeHost("['custom0', 'da-assistant-ocr_only', 'da-assistant-query_text']")
+        old = {action: f"{CINNAMON_ITEM}:{CINNAMON_BASE}/da-assistant-{action}/"
+               for action in ("ocr_only", "query_text")}
+        host = FakeCinnamon.with_the_users(
+            "da-assistant-ocr_only", "da-assistant-query_text",
+            items={old["ocr_only"]: {"binding": "['<Control><Shift>5']"},
+                   old["query_text"]: {"binding": "['<Control><Shift>3']"}},
+            bound={"da-assistant-ocr_only": (["<Control><Shift>5"], "old"),
+                   "da-assistant-query_text": (["<Control><Shift>3"], "old")})
+        new = cinnamon_name("ocr_only")
         with Patched(session_of(desktop="cinnamon")):
             self.manager(config, host).start()
-        self.assertEqual(host.listed, "['custom0', 'da-assistant-ocr_only']")
+            # Let go of by Cinnamon at once, and still listed for that.
+            self.assertEqual(set(host.ours()), {new})
+            self.assertEqual(host.listing(), ["custom0", "da-assistant-ocr_only",
+                                              "da-assistant-query_text", new])
+            self.assertTrue(self.config().hotkeys_installed["unfinished"])
+            self.manager(config, host).start()                  # the next start
+            self.assertEqual(host.listing(), ["custom0", new, "__dummy__"])
+            self.assertNotIn("unfinished", self.config().hotkeys_installed)
+            self.assertEqual(set(host.ours()), {new})
+            calls = len(host.calls)
+            self.manager(config, host).start()
+            self.assertEqual(len(host.calls), calls)             # done: nothing more
+
+    def test_switched_off_with_entries_from_before_they_go_over_two_starts(self):
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        config.hotkeys_installed = {"mechanism": "desktop:cinnamon"}
+        config.hotkey_mode = "off"
+        old = "da-assistant-ocr_only"
+        host = FakeCinnamon.with_the_users(
+            old, items={f"{CINNAMON_ITEM}:{CINNAMON_BASE}/{old}/":
+                        {"binding": "['<Control><Shift>5']"}},
+            bound={old: (["<Control><Shift>5"], "old")})
+        with Patched(session_of(desktop="cinnamon")):
+            self.manager(config, host).start()
+            self.assertEqual(host.ours(), {})
+            self.assertEqual(host.listing(), ["custom0", old, "__dummy__"])
+            self.manager(config, host).start()
+        self.assertEqual(host.listing(), ["custom0"])
+        self.assertEqual(self.config().hotkeys_installed, {})
 
     def test_a_desktop_that_cannot_be_written_says_so(self):
         config = self.config()

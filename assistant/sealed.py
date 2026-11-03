@@ -225,7 +225,7 @@ def attestation_for(model, verified):
     return Attestation(model=model, kind=E2EE, level="full", detail=detail,
                        enclave=verified.enclave, hardware=verified.hardware,
                        release=release, latest_release=verified.latest_release,
-                       release_checked=verified.latest_checked)
+                       release_checked=verified.latest_checked, proof=verified)
 
 
 class Enclave:
@@ -301,9 +301,9 @@ class PrivateModeClient:
         self._preflight_client = preflight_client
         self._client = None
         self._client_key = None
-        # The proof the session last saw - attest() hands it over - and what to tell of
-        # one made here, in request(): PrivacySession._reattested, which raises to
-        # refuse it.
+        # The proof the session last accepted - accept() hands it over - and what to
+        # tell of any other before anything is sealed to it, in request():
+        # PrivacySession._reattested, which raises to refuse it.
         self._attested = None
         self.reattested = None
 
@@ -312,8 +312,19 @@ class PrivateModeClient:
         return self.enclave.relay + "/v1/chat/completions"
 
     def attest(self, model):
-        self._attested = self.enclave.current()
-        return attestation_for(model, self._attested)
+        """What the enclave proved, attesting it first if it has not been lately. Not
+        yet a proof to seal to: the session holds it to Strict, then accept()s it."""
+        return attestation_for(model, self.enclave.current())
+
+    def accept(self, attestation):
+        """The session has taken `attestation`, Strict and all: requests may be sealed
+        to the proof it was made from without asking the session again.
+
+        Only once it has. attest() used to take the proof itself, before Strict had
+        seen it, and a request already past its own check - on another thread, or for
+        another private/ model of the conversation - went out sealed to an enclave
+        Strict refused a moment later."""
+        self._attested = attestation.proof
 
     def private_ids(self):
         """nano-gpt's list of Private Mode models - public, no key is sent - read on the
@@ -417,9 +428,11 @@ class PrivateModeClient:
         for attempt in (0, 1):
             verified = self.enclave.current()
             if verified is not self._attested:
-                # Attested here, not by the session: the key rotated (the retry below),
-                # or the proof aged since. It is held to Strict as any other is, and the
-                # banner names the enclave that is sealed to, before anything is sent.
+                # Not the proof the session accepted: attested here - the key rotated
+                # (the retry below), or the proof aged since - or for another request,
+                # and perhaps refused there. It is held to Strict as any other is, and
+                # the banner names the enclave that is sealed to, before anything is
+                # sent.
                 if self.reattested is not None:
                     self.reattested(model, attestation_for(model, verified))
                 self._attested = verified

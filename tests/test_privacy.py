@@ -2199,6 +2199,45 @@ class Sealed(unittest.TestCase):
         with self.assertRaisesRegex(PrivacyError, "its release not checked"):
             session.ensure(self.MODEL)
 
+    def test_a_proof_strict_refused_is_not_sealed_to_by_a_request_made_meanwhile(self):
+        """attest() took a proof as the one to seal to before the session had held it
+        to Strict. A request already past its own check - on another thread, or for
+        another private/ model of the conversation - then went out sealed to an enclave
+        that Strict refused a moment later."""
+        import dataclasses
+
+        import httpx
+        clock = [0.0]
+        unchecked = dataclasses.replace(self.verified("cd" * 32), latest_checked=False)
+        proofs = iter([self.verified(), unchecked])
+        posts = []
+
+        def handler(request):
+            posts.append(request)
+            return httpx.Response(200, headers={"x-nanogpt-private-mode": "tinfoil"},
+                                  content=self.stream_body())
+
+        relay = httpx.MockTransport(lambda request: httpx.Response(
+            200, json={"cacheScope": "c" * 64, "upstreamModel": "glm-5.3"}))
+        client = sealed.PrivateModeClient(
+            API_URL, "k",
+            enclave=sealed.Enclave(sealed.relay_url(API_URL),
+                                   verifier=lambda relay_url, secret: next(proofs),
+                                   clock=lambda: clock[0]),
+            transport_factory=lambda key, route: httpx.MockTransport(handler),
+            preflight_client=httpx.Client(transport=relay))
+        session = PrivacySession(API_URL, "k", self.MODEL, self.MODEL,
+                                 sealed_factory=lambda *a: client, strict=True)
+        session.ensure(self.MODEL)                  # one request's check, passed
+        clock[0] = sealed.MAX_AGE_SECONDS + 1       # its proof ages meanwhile
+        with self.assertRaisesRegex(PrivacyError, "its release not checked"):
+            session.ensure(self.MODEL)              # another's: attested again, refused
+        with self.assertRaisesRegex(PrivacyError, "its release not checked.*nothing "
+                                                  "was sent"):
+            with client.request(self.MODEL, {"messages": []}):     # the first one's
+                pass
+        self.assertEqual(posts, [])
+
     def test_a_good_attestation_after_a_refusal_clears_the_red_banner(self):
         """The banner turns green only on "attested", which came only when the proof
         said something new: one refusal left it red over messages that went."""

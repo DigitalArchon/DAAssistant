@@ -226,6 +226,9 @@ class Attestation:
     release: str = ""
     latest_release: str = ""        # set when the enclave runs an older release
     release_checked: bool = True    # False when the latest release could not be read
+    # What the sealed client attested (sealed.Verified). Nothing is sealed to it until
+    # the session has accepted this attestation and handed it back (_accept).
+    proof: object = field(default=None, repr=False, compare=False)
 
     @property
     def headline(self):
@@ -1059,22 +1062,28 @@ class PrivacySession:
     def _accept(self, model, attestation, started, changed):
         """Keep `attestation` as `model`'s, and tell the window when it says something
         new - or when the model was refused since it last attested well, whose banner
-        would otherwise stay red over messages that went."""
+        would otherwise stay red over messages that went. One the sealed client made
+        goes back to it: only now, Strict and all, may anything be sealed to its proof
+        (PrivateModeClient.accept)."""
         with self._lock:
             self.attestations[model] = attestation
             self._attested_at[model] = started
             self._doubted.discard(model)
             recovered = model in self._refused
             self._refused.discard(model)
+        if attestation.proof is not None:
+            self._sealed.accept(attestation)
         if changed or recovered:
             self._emit("attested", model, attestation)
 
     def _reattested(self, model, attestation):
-        """sealed.py attested the enclave again in the middle of a request - its key
-        had rotated, or its proof aged between ensure() and the send - and that is held
-        to what every attestation of this session is held to, and shown as one is.
-        Before, it was neither: Strict did not see it, and the banner went on naming
-        the enclave attested before. Raises PrivacyError to refuse it."""
+        """sealed.py is about to seal to a proof this session has not accepted: one it
+        attested in the middle of a request - its key had rotated, or its proof aged
+        between ensure() and the send - or one attested for another request, which
+        Strict may have refused. That is held to what every attestation of this session
+        is held to, and shown as one is. Before, it was neither: Strict did not see it,
+        and the banner went on naming the enclave attested before. Raises PrivacyError
+        to refuse it."""
         lacking = attestation.fell_short if self.strict else []
         if lacking:
             message = (f"{model}'s enclave, attested again, proved less than it could "

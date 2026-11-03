@@ -24,9 +24,11 @@ windows had been focused, the text copied after it closed came back as the text 
 (measured on KDE, GNOME 50 and Hyprland, Nov 2026): Translate clipboard text translated
 the wrong text. wl-paste and Klipper ask the compositor afresh each time. And GTK is
 asked at all only while one of the app's windows has focus, when what it heard is
-current. Asked at any other time, with neither tool to read it, it gave back the app's
-own Copy from an hour before as the clipboard - text, picture or file - with nothing
-to say it was not; now the read comes back empty, and unreadable_hint says why.
+current, or while what it holds is the app's own, which it lets go of as soon as
+another app copies. Asked at any other time, with neither tool to read it, it gave
+back the app's own Copy from an hour before as the clipboard - text, picture or file -
+with nothing to say it was not; now the read comes back empty, and unreadable_hint
+says why.
 """
 
 import shutil
@@ -172,9 +174,22 @@ def _wayland():
 
 
 def _focused():
-    """Whether one of the app's windows has the keyboard now: on Wayland, the only time
+    """Whether one of the app's windows has the keyboard now: on Wayland, a time when
     what GTK says of the clipboard is current (see the module docstring)."""
     return any(window.is_active() for window in Gtk.Window.list_toplevels())
+
+
+def _ours(selection):
+    """Whether what `selection` holds is this app's own - an answer's Copy, text
+    highlighted in one of its windows - which GTK answers for itself, focused or not.
+    It is told the moment another app copies, focused or not, and lets go of it then
+    (seen on GNOME 50, KDE and Hyprland, Nov 2026), so it is current too."""
+    return Gdk.selection_owner_get(selection) is not None
+
+
+def _current(selection):
+    """On Wayland, whether what GTK says of `selection` is current."""
+    return _focused() or _ours(selection)
 
 
 def _gtk_text(board):
@@ -230,8 +245,9 @@ def _get_text():
         return text, "text"
 
     # On Wayland GTK last, and only while it is current: with no window of ours focused
-    # it is whatever was copied when one last was, and the read is "empty" instead.
-    current = not wayland or _focused()
+    # it is whatever was copied when one last was - unless that is still ours - and the
+    # read is "empty" instead.
+    current = not wayland or _current(Gdk.SELECTION_CLIPBOARD)
     if wayland and current:
         text = _gtk_text(clipboard)
         if text:
@@ -267,7 +283,7 @@ def _get_selection():
         if result is not None and result.returncode == 0 and result.stdout \
                 and result.stdout.strip():
             return result.stdout
-    return _gtk_text(primary) if wayland and _focused() else None
+    return _gtk_text(primary) if wayland and _current(Gdk.SELECTION_PRIMARY) else None
 
 
 def read_too_much(selection=False):
@@ -346,7 +362,7 @@ def _get_image():
                     return img.copy()
             except Exception:
                 pass
-    return from_gtk() if wayland and _focused() else None
+    return from_gtk() if wayland and _current(Gdk.SELECTION_CLIPBOARD) else None
 
 
 def set_text(text):

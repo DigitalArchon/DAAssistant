@@ -60,7 +60,7 @@ class NothingStaleOnWayland(unittest.TestCase):
     hour before, as often as not. With no wl-paste and no Klipper to ask, that came back
     as the clipboard, and nothing said otherwise; GTK is asked now only while current."""
 
-    def read(self, focused, text="copied an hour ago"):
+    def read(self, focused, text="copied an hour ago", ours=False):
         board = mock.Mock()
         board.wait_for_text.return_value = text
         board.wait_is_image_available.return_value = False
@@ -71,7 +71,9 @@ class NothingStaleOnWayland(unittest.TestCase):
                                   return_value="wayland"), \
                 mock.patch.object(clipboard.shutil, "which", lambda name: None), \
                 mock.patch.object(clipboard, "_klipper_text", return_value=None), \
-                mock.patch.object(clipboard, "_focused", return_value=focused):
+                mock.patch.object(clipboard, "_focused", return_value=focused), \
+                mock.patch.object(clipboard.Gdk, "selection_owner_get",
+                                  return_value=object() if ours else None):
             return (clipboard.get_text(), clipboard.get_selection(), clipboard.get_image(),
                     clipboard.unreadable_hint(), board)
 
@@ -89,6 +91,14 @@ class NothingStaleOnWayland(unittest.TestCase):
         self.assertEqual(text, ("just now", "text"))
         self.assertEqual(selection, "just now")
 
+
+    def test_what_is_still_the_apps_own_is_current_focused_or_not(self):
+        # Its Copy, the window it was copied from closed since: until another app
+        # copies, GTK holds it as its own, and is told when that changes.
+        text, selection, _image, _hint, _board = self.read(focused=False, text="ours",
+                                                           ours=True)
+        self.assertEqual(text, ("ours", "text"))
+        self.assertEqual(selection, "ours")
 
 ENDLESS = [sys.executable, "-c", "import sys\nwhile True: sys.stdout.buffer.write(b'x' * 65536)"]
 

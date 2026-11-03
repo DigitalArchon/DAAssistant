@@ -5,7 +5,7 @@
 #   packaging/build-appimage.sh lock    lock what the *.in files add (UPGRADE=1: re-resolve
 #                                       everything); review, then commit
 # DIST=dir puts the results somewhere other than dist/.
-# Only committed files are built (git archive HEAD); SOURCE_DATE_EPOCH is HEAD's commit time.
+# Only committed files are built (HEAD's, as committed); SOURCE_DATE_EPOCH is HEAD's commit time.
 # lock reads the *.in files as they are in the working tree.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -20,17 +20,41 @@ for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /e
     [ -f "$ca" ] && break
 done
 
-TAG="da-assistant-appimage-builder:$(cat packaging/appimage/Containerfile packaging/appimage/pins.sh | sha256sum | cut -c1-12)"
-if ! podman image exists "$TAG"; then
-    podman build -t "$TAG" -v "$ca:/hostca.crt:ro,Z" \
-        --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg APT_SNAPSHOT="$APT_SNAPSHOT" \
-        -f packaging/appimage/Containerfile packaging/appimage
-fi
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-git archive --format=tar HEAD > "$WORK/src.tar"
+
+TAG="da-assistant-appimage-builder:$(cat packaging/appimage/Containerfile packaging/appimage/pins.sh | sha256sum | cut -c1-12)"
+if ! podman image exists "$TAG"; then
+    # The host's CA bundle, for apt to reach the snapshot over https, goes in as a copy in
+    # the build context rather than a mount: on an SELinux host (Fedora, RHEL) a mount needs
+    # :Z, and rootless Podman may not relabel a file root owns - nor should anything
+    # relabel a file the host's own programs read.
+    mkdir "$WORK/context"
+    cp "$ca" "$WORK/context/hostca.crt"
+    podman build -t "$TAG" \
+        --build-arg BASE_IMAGE="$BASE_IMAGE" --build-arg APT_SNAPSHOT="$APT_SNAPSHOT" \
+        -f packaging/appimage/Containerfile "$WORK/context"
+fi
+
 EPOCH="$(git log -1 --format=%ct HEAD)"
+# HEAD's files exactly as committed, from git's object store. git archive would pass each
+# through this machine's git settings first - core.autocrlf, core.eol, the filters and
+# ident its attributes name, tar.umask - and a verifier's own settings would change the
+# AppImage. Only plain files are taken; the tree has nothing else.
+mkdir "$WORK/tree"
+git ls-tree -r -z HEAD | while IFS= read -r -d '' entry; do
+    read -r mode type oid <<< "${entry%%$'\t'*}"
+    path="${entry#*$'\t'}"
+    case "$mode" in
+        100644|100755) ;;
+        *) echo "$path is a $type of mode $mode, which the build does not take" >&2; exit 1 ;;
+    esac
+    mkdir -p "$WORK/tree/$(dirname "$path")"
+    git cat-file blob "$oid" > "$WORK/tree/$path"
+    chmod "${mode#100}" "$WORK/tree/$path"
+done
+(cd "$WORK/tree" && shopt -s dotglob && tar -cf "$WORK/src.tar" --sort=name --owner=0 \
+    --group=0 --numeric-owner --mode=u+rwX,go+rX,go-w --mtime="@$EPOCH" -- *)
 VERSION="$(git show HEAD:assistant/__init__.py | sed -n 's/^__version__ = "\(.*\)"/\1/p')"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/da-assistant-appimage"
 DIST="$(mkdir -p "${DIST:-dist}" && cd "${DIST:-dist}" && pwd)"

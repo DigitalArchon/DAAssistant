@@ -1,6 +1,6 @@
 #!/bin/bash
 # Runs inside the build container (see Containerfile); started by packaging/build-appimage.sh.
-#   build.sh build   /src.tar (git archive of the commit) -> /out/DA_Assistant-<version>-x86_64.AppImage
+#   build.sh build   /src.tar (the commit's files) -> /out/DA_Assistant-<version>-x86_64.AppImage
 #   build.sh lock    re-resolve the *.lock files into /out (review, then commit them)
 # Inputs are pinned (pins.sh, *.lock with hashes, packaging/private-mode.lock, packaging/ruffle.lock)
 # and every timestamp is SOURCE_DATE_EPOCH, so the same commit gives the same AppImage, byte for byte.

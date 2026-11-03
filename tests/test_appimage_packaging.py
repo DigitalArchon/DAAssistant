@@ -389,9 +389,89 @@ class ReproducibleBuild(unittest.TestCase):
         self.wrapper = (ROOT / "packaging" / "build-appimage.sh").read_text()
 
     def test_it_builds_the_commit_with_the_commits_time(self):
-        self.assertIn("git archive --format=tar HEAD", self.wrapper)
+        self.assertIn('git ls-tree -r -z HEAD', self.wrapper)
         self.assertIn('EPOCH="$(git log -1 --format=%ct HEAD)"', self.wrapper)
         self.assertIn('find "$W/AppDir" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +', self.build)
+
+    def test_the_commit_is_built_as_committed_whatever_gits_settings(self):
+        """A verifier's core.autocrlf, a smudge filter their attributes name: git archive
+        hands each file through them, so the same commit made a different AppImage. The
+        wrapper reads the files from git's objects instead, and sets their modes itself
+        whatever the umask."""
+        import shutil
+        import tempfile
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        start = self.wrapper.index('EPOCH="$(git log -1 --format=%ct HEAD)"')
+        end = self.wrapper.index("-- *)\n", start) + 5
+        export = self.wrapper[start:end]
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        repo = os.path.join(tmp, "repo")
+        with open(os.path.join(tmp, "attributes"), "w", encoding="utf-8") as f:
+            f.write("*.txt filter=pear\n")
+        with open(os.path.join(tmp, "gitconfig"), "w", encoding="utf-8") as f:
+            f.write(f"[core]\n\tautocrlf = true\n\tattributesFile = {tmp}/attributes\n"
+                    "[filter \"pear\"]\n\tsmudge = sed s/apple/pear/\n\tclean = cat\n"
+                    "[user]\n\tname = T\n\temail = t@example.org\n")
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp, "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": os.path.join(tmp, "gitconfig")}
+        committed = {"notes.txt": b"apple\nbanana\n", "tools/run.sh": b"#!/bin/sh\necho a\n"}
+
+        def git(*args, cwd=repo):
+            return subprocess.run(["git", *args], cwd=cwd, env=env, check=True,
+                                  capture_output=True).stdout
+
+        git("init", "-q", repo, cwd=tmp)
+        for name, data in committed.items():
+            os.makedirs(os.path.dirname(os.path.join(repo, name)), exist_ok=True)
+            with open(os.path.join(repo, name), "wb") as f:
+                f.write(data)
+        os.chmod(os.path.join(repo, "tools/run.sh"), 0o755)
+        git("add", "-A")
+        git("commit", "-q", "-m", "files")
+
+        def unpack(tar):
+            out = os.path.join(tmp, "out-" + os.path.basename(tar))
+            os.makedirs(out)
+            subprocess.run(["tar", "-xf", tar, "-C", out], check=True)
+            files, modes = {}, {}
+            for name in committed:
+                with open(os.path.join(out, name), "rb") as f:
+                    files[name] = f.read()
+                modes[name] = os.stat(os.path.join(out, name)).st_mode & 0o777
+            return files, modes
+
+        with open(os.path.join(tmp, "archive.tar"), "wb") as f:
+            f.write(git("archive", "--format=tar", "HEAD"))
+        self.assertNotEqual(unpack(os.path.join(tmp, "archive.tar"))[0], committed)
+
+        work = os.path.join(tmp, "work")
+        os.makedirs(work)
+        run_export = ["bash", "-c", f"set -euo pipefail\numask 077\nWORK={shlex.quote(work)}\n"
+                      f"{export}"]
+        subprocess.run(run_export, cwd=repo, env=env, check=True, capture_output=True)
+        files, modes = unpack(os.path.join(work, "src.tar"))
+        self.assertEqual(files, committed)
+        self.assertEqual(modes, {"notes.txt": 0o644, "tools/run.sh": 0o755})
+
+        os.symlink("notes.txt", os.path.join(repo, "link"))
+        git("add", "-A")
+        git("commit", "-q", "-m", "a link")
+        shutil.rmtree(work)
+        os.makedirs(work)
+        refused = subprocess.run(run_export, cwd=repo, env=env, capture_output=True, text=True)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("link is a blob of mode 120000", refused.stderr)
+
+    def test_the_builder_image_takes_no_mount_that_needs_relabelling(self):
+        # :Z on the host's root-owned CA bundle: rootless Podman on an SELinux host (Fedora,
+        # RHEL) cannot relabel it, so nobody there could rebuild a release.
+        self.assertNotRegex(self.wrapper, r"podman build[^\n]*-v ")
+        self.assertIn('cp "$ca" "$WORK/context/hostca.crt"', self.wrapper)
+        containerfile = (PACKAGING / "Containerfile").read_text()
+        self.assertIn("COPY hostca.crt /hostca.crt", containerfile)
+        self.assertRegex(containerfile, r"rm [^\n]*/hostca\.crt")
 
     def test_the_base_image_and_downloads_are_pinned(self):
         pins = (PACKAGING / "pins.sh").read_text()

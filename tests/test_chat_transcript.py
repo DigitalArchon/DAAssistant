@@ -300,5 +300,24 @@ class TheButtonNamesItsOwnAnswer(WindowCase):
         self.assertEqual(clipboard_text(), "first answer")
 
 
+@unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+class ACodeBlocksCopyCopiesTheCode(WindowCase):
+    def _copy_block(self, window, index):
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("untouched", -1)
+        settle()                            # the buttons are added as the page settles
+        self.page(window, f"(function () {{ document.querySelectorAll('pre')[{index}]"
+                          ".querySelector('button').click(); return 1; })()")
+        self.assertTrue(run_until(lambda: clipboard_text() != "untouched"))
+        return clipboard_text()
+
+    def test_a_pre_without_code_copies_its_text_and_not_the_buttons_label(self):
+        window = self.window([{"role": "user", "content": "q"},
+                              {"role": "assistant",
+                               "content": "<pre>raw pre text</pre>\n\n```\nfenced\n```"}])
+        self.assertEqual(self._copy_block(window, 0), "raw pre text")
+        # Highlighted code ends in the newline Pygments gives it.
+        self.assertEqual(self._copy_block(window, 1).rstrip("\n"), "fenced")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,9 +61,19 @@ COPY_BUTTON_JS = """
         'padding:2px 8px;border-radius:6px;border:1px solid rgba(128,128,128,.4);' +
         'background:rgba(128,128,128,.14);color:inherit;cursor:pointer;opacity:.75';
       b.addEventListener('click', function () {
-        var code = pre.querySelector('code');
-        window.webkit.messageHandlers.copyText.postMessage(
-          code ? code.innerText : pre.innerText);
+        var code = pre.querySelector('code'), text;
+        if (code) {
+          text = code.innerText;
+        } else {
+          // A <pre> of its own, with the button inside it: taken out while the text
+          // is read, or its label goes on the clipboard with the code. (Hidden, it
+          // still leaves WebKit's innerText a newline.)
+          var next = b.nextSibling;
+          b.remove();
+          text = pre.innerText;
+          pre.insertBefore(b, next);
+        }
+        window.webkit.messageHandlers.copyText.postMessage(text);
         b.textContent = 'Copied';
         setTimeout(function () { b.textContent = 'Copy'; }, 1200);
       });

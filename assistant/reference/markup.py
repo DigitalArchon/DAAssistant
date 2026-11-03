@@ -44,10 +44,20 @@ def attr(text):
     return html.escape(text or "", quote=True)
 
 
+# Elements whose content an entry does not show, and which are kept neither in its
+# HTML nor in its text for the model: what is not text (a script, a style), what is no
+# part of an entry (a form's fields), and what a browser does not show. WebKit shows
+# nothing of a <noembed> or a <noframes>, but what they held, which the parser hands
+# over as it stands, went to the model and to Copy with the entities it had been
+# escaped to - "&lt;b&gt;".
+NOT_SHOWN = {"script", "style", "head", "title", "template", "iframe", "object",
+             "noscript", "noembed", "noframes", "textarea", "select"}
+
+
 class _Text(HTMLParser):
     BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
              "blockquote", "dt", "dd", "table", "ul", "ol", "hr"}
-    DROP = {"script", "style", "head", "title"}
+    DROP = NOT_SHOWN
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -181,27 +191,97 @@ def coloured(colour, style=""):
 
 _STYLE_COLOUR = re.compile(r"(?:^|;)\s*color\s*:\s*([^;!]+)", re.I)
 
+# The attributes a dictionary's HTML keeps, by element, and on any element: where its
+# links go and which of its own pictures it shows (both looked at again: see _Balancer),
+# how its text is set, and what a table or a list needs to be read.
+KEPT_ATTRIBUTES = {
+    "a": {"href"}, "img": {"src", "alt", "width", "height"},
+    "font": {"color", "size", "face"}, "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan"}, "ol": {"start", "type"}, "li": {"value", "type"},
+}
+KEPT_ANYWHERE = {"style", "class", "title", "lang", "dir", "align"}
+# What those may say, where it is not text: a picture no bigger than a page, a font
+# size HTML has, a font's names.
+_ATTRIBUTE_VALUES = {
+    "width": r"\d{1,3}%?", "height": r"\d{1,3}%?", "size": r"[+-]?[1-7]",
+    "face": r"[\w ,'\"-]{1,200}", "colspan": r"\d{1,3}", "rowspan": r"\d{1,3}",
+    "start": r"-?\d{1,6}", "value": r"-?\d{1,6}", "type": r"[1aAiI]|disc|circle|square",
+    "lang": r"[A-Za-z]{1,8}(?:-[A-Za-z0-9]{1,8})*", "dir": r"ltr|rtl|auto",
+    "align": r"left|right|center|justify",
+}
+_ATTRIBUTE_VALUES = {name: re.compile(pattern, re.I)
+                     for name, pattern in _ATTRIBUTE_VALUES.items()}
+# The classes an entry may have: those the page styles entries by, which the readers
+# give them - XDXF's <abr> is a dsl-p. Any other is the dictionary's own, which nothing
+# styles, or the window's: "privacy ok" drew a Privacy badge, "turn user" a question
+# nobody asked.
+ENTRY_CLASSES = frozenset({"hw", "sub", "dsl-p", "dsl-ex", "dsl-com", "dsl-t", "dsl-sec"}
+                          | {f"m{level}" for level in range(10)})
+# What a style keeps: colours, and how the text is set. Nothing that places, sizes or
+# layers a box - an entry styled position:fixed over the whole window had every click
+# anywhere open its link - and nothing that fetches, whatever the page's policy.
+_STYLE_KEPT = {"color", "background-color", "font-family", "font-size", "font-style",
+               "font-variant", "font-weight", "text-decoration", "text-decoration-color",
+               "text-decoration-line", "text-decoration-style", "text-transform",
+               "text-align", "vertical-align"}
+# Their values: words, numbers, #colours, quoted font names, and colours as functions -
+# no url(), var(), attr() or expression(), and no escapes.
+_STYLE_VALUE = re.compile(r"(?:[\w\s#%.,'\"+-]|(?:rgba?|hsla?)\([\d\s.,%/+-]*\))*")
+_FONT_SIZE = re.compile(r"(\d*\.?\d+)(px|pt|em|rem|%|ex|ch)", re.I)
+# The largest font-size kept, in each unit: three times the text's own, or so.
+_LARGEST = {"px": 48, "pt": 36, "em": 3, "rem": 3, "%": 300, "ex": 6, "ch": 6}
+_STYLE_WORDS = {
+    "font-size": {"xx-small", "x-small", "small", "medium", "large", "x-large",
+                  "xx-large", "xxx-large", "smaller", "larger"},
+    "vertical-align": {"baseline", "sub", "super", "text-top", "text-bottom", "middle",
+                       "top", "bottom"},
+    "text-align": {"left", "right", "center", "justify", "start", "end"},
+}
+
+
+def _style(style):
+    """As much of a style attribute as an entry keeps (see _STYLE_KEPT), as name:value
+    declarations, without !important - which would have outdone the dark theme's own
+    colours too."""
+    kept = []
+    for declaration in style.split(";"):
+        name, colon, value = declaration.partition(":")
+        name = name.strip().lower()
+        value = re.sub(r"\s*!\s*important\s*$", "", value.strip(), flags=re.I)
+        if not colon or name not in _STYLE_KEPT or not value \
+                or not _STYLE_VALUE.fullmatch(value) \
+                or value.count('"') % 2 or value.count("'") % 2:
+            continue
+        if name in _STYLE_WORDS and value.lower() not in _STYLE_WORDS[name]:
+            size = _FONT_SIZE.fullmatch(value) if name == "font-size" else None
+            if size is None or float(size.group(1)) > _LARGEST[size.group(2).lower()]:
+                continue
+        kept.append(f"{name}:{value}")
+    return ";".join(kept)
+
 
 class _Balancer(HTMLParser):
-    """A dictionary's HTML, kept as it is but closed off: every tag it opens is closed
-    by its end, and the ones it closes out of order are closed and reopened, as a
-    browser would. Not an allowlist - these are the user's own dictionary files, and
-    the page's Content-Security-Policy runs no script and fetches nothing remote.
+    """A dictionary's HTML, closed off and kept to what an entry needs. Every tag it
+    opens is closed by its end, and the ones it closes out of order are closed and
+    reopened, as a browser would. Its elements are kept, but of their attributes only
+    those that say how its text looks, where its links go and which of its own pictures
+    to show (KEPT_ATTRIBUTES): a dictionary is a file from anywhere, and the page's
+    Content-Security-Policy, which runs no script and fetches nothing remote, cannot
+    stop an entry covering the window or drawing the window's own badges.
 
     What balancing guards against is one entry's markup running on into the next: a
     <b> left open in one, or a stray </div>, would carry into the next dictionary and
-    the conversation under it. Besides that, only what reaches past the entry goes:
-    <style> (it would restyle the whole window), <meta> (a refresh would navigate it
-    away), ids (the window's own elements have some), and links the window could not
-    follow anyway.
+    the conversation under it. Besides that, what reaches past the entry goes: <style>
+    (it would restyle the whole window), <meta> (a refresh would navigate it away), a
+    style that places or sizes a box, the window's own classes and ids, and links the
+    window could not follow anyway.
     """
 
     VOID = {"area", "br", "col", "embed", "hr", "img", "input", "source", "track", "wbr"}
     # Formatting that a misplaced closing tag ends and the browser picks up again.
     REOPEN = {"b", "big", "cite", "em", "font", "i", "s", "small", "span", "strike",
               "strong", "sub", "sup", "tt", "u", "var", "abbr", "dfn", "q", "mark"}
-    DROP_CONTENT = {"script", "style", "head", "title", "template", "iframe", "object",
-                    "noscript", "textarea", "select"}
+    DROP_CONTENT = NOT_SHOWN
     SKIP = {"html", "body", "meta", "link", "base", "form", "frame", "frameset"}
     # Preformatted text, written as the <pre> it looks like. A browser never closes a
     # <plaintext>: let through, it took everything after it on the page - the entries
@@ -236,18 +316,29 @@ class _Balancer(HTMLParser):
         self._picture = picture
 
     def _attrs(self, tag, attrs):
-        """The attributes as written out, or None for a picture that cannot be shown."""
+        """The attributes kept, as written out, or None for a picture that cannot be
+        shown."""
+        allowed = KEPT_ATTRIBUTES.get(tag, ())
         kept = {}
         for name, value in attrs:
-            if name.startswith("on") or name in ("id", "name") or value is None:
+            if value is None or name in kept \
+                    or not (name in allowed or name in KEPT_ANYWHERE):
                 continue
-            if name == "href" and not value.strip().lower().startswith(self._links):
-                continue
-            if name == "src":
-                value = self._source(value)
-                if value is None:
+            if name == "href":
+                if not value.strip().lower().startswith(self._links):
                     continue
-            kept.setdefault(name, value)
+            elif name == "src":
+                value = self._source(value)
+            elif name == "class":
+                value = " ".join(c for c in value.split() if c in ENTRY_CLASSES)
+            elif name == "style":
+                value = _style(value)
+            elif name in _ATTRIBUTE_VALUES:
+                value = value.strip()
+                if not _ATTRIBUTE_VALUES[name].fullmatch(value):
+                    continue
+            if value:
+                kept[name] = value
         if tag == "img" and "src" not in kept:
             return None
         style = kept.pop("style", "")

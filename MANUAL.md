@@ -595,9 +595,11 @@ worth, to answer from and quote.
   shown.
 - **Entries look as GoldenDict shows them**: each dictionary's own colours, type sizes
   and the small pictures a StarDict dictionary keeps in its `res` folder (the Shorter
-  Oxford's boxed sense numbers, its daggers and bullets). A dictionary's HTML is not
-  filtered as a model's answer is - these are your own files - only closed off, so one
-  entry cannot run into the next. In the dark theme each colour is lifted to a shade of
+  Oxford's boxed sense numbers, its daggers and bullets). Of a dictionary's own HTML
+  that much is kept - how its text is set, its links to the web and to other words, its
+  pictures - and no more: nothing in an entry can place or size a box over the window,
+  borrow the window's own badges, or fetch anything. It is closed off too, so one entry
+  cannot run into the next. In the dark theme each colour is lifted to a shade of
   itself that reads on the dark background.
 - **Each word gets a page of its own**: looking up another - typed, or a
   cross-reference clicked - shows its entries in place of the last word's, and the

@@ -1163,14 +1163,57 @@ class DictionaryHTML(unittest.TestCase):
         self.assertEqual(self.balance("<p>one<p>two<ul><li>a<li>b</ul>"),
                          "<p>one</p><p>two</p><ul><li>a</li><li>b</li></ul>")
 
-    def test_only_what_reaches_past_the_entry_goes(self):
+    def test_what_reaches_past_the_entry_goes(self):
         html = self.balance(
             '<style>body{display:none}</style><meta http-equiv="refresh" content="0">'
             '<span id="end" class="x" onclick="f()">kept</span>'
             '<a href="file:///etc">file</a> <a href="https://a.test/">web</a>'
             '<img src="pic.png">&lt;tag&gt;')
-        self.assertEqual(html, '<span class="x">kept</span><a>file</a> '
+        self.assertEqual(html, '<span>kept</span><a>file</a> '
                                '<a href="https://a.test/">web</a>&lt;tag&gt;')
+
+    def test_only_how_its_text_looks_is_kept_of_an_entrys_attributes(self):
+        # Over the whole window, this had every click anywhere open the link.
+        html = self.balance(
+            '<a href="https://phish.test/" style="position:fixed;top:0;left:0;'
+            'width:100vw;height:100vh;z-index:99;color:navy !important;'
+            'font-weight:bold">x</a>')
+        self.assertEqual(html, '<a href="https://phish.test/" data-dk style="color:navy;'
+                               f'font-weight:bold;--dk:{markup.dark_variant("navy")}">x</a>')
+        # The window's own classes drew its badges and turns; the readers' own stay.
+        self.assertEqual(self.balance('<span class="privacy ok">signed</span>'
+                                      '<div class="turn user">asked</div>'
+                                      '<span class="dsl-p x">n</span>'),
+                         '<span>signed</span><div>asked</div><span class="dsl-p">n</span>')
+        # Nothing that would fetch, whatever the page's policy lets through.
+        html = self.balance(
+            '<img src="data:image/png;base64,AA==" srcset="https://t.test/a 2x" '
+            'width="15" height="99999" ping="https://t.test/" data-dk="1">'
+            '<video poster="https://t.test/p.png"></video>'
+            '<table background="https://t.test/b.png"><tr><td colspan="2">c</td></tr>'
+            '</table><svg><a xlink:href="https://t.test/">s</a></svg>'
+            '<span style="background:url(https://t.test/c.png);color:url(x);'
+            'font-size:99em;font-family:\'Charis SIL\', serif;text-align:center;'
+            'vertical-align:-999px;font-size:larger">t</span>')
+        self.assertNotIn("t.test", html)
+        self.assertIn('<img src="data:image/png;base64,AA==" width="15">', html)
+        self.assertIn('<td colspan="2">c</td>', html)
+        self.assertIn('<span style="font-family:&#x27;Charis SIL&#x27;, serif;'
+                      'text-align:center;font-size:larger">t</span>', html)
+        # What sets type stays as written.
+        self.assertEqual(self.balance('<font size="-1" face="Doulos SIL" color="red">a'
+                                      '</font><ol start="3" type="a"><li>b</ol>'
+                                      '<p dir="rtl" lang="he" title="t" align="right">c'),
+                         f'<font size="-1" face="Doulos SIL"{markup.coloured("red")}>a'
+                         '</font><ol start="3" type="a"><li>b</li></ol>'
+                         '<p dir="rtl" lang="he" title="t" align="right">c</p>')
+
+    def test_what_a_browser_does_not_show_is_not_kept_or_told(self):
+        # WebKit shows nothing of these; the text of them went to the model escaped.
+        raw = ("a<noembed>&lt;b&gt;x</noembed> b<noframes><i>y</i></noframes> c"
+               "<noscript>z</noscript>")
+        self.assertEqual(self.balance(raw), "a b c")
+        self.assertEqual(markup.html_to_text(raw), "a b c")
 
     def test_plaintext_xmp_and_listing_are_written_as_pre(self):
         # A browser never closes <plaintext>: let through, it took the rest of the page

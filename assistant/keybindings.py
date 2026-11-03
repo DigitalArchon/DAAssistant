@@ -44,6 +44,10 @@ END = "# --- end DA Assistant hotkeys ---"
 LUA_BEGIN = "-- --- DA Assistant hotkeys"
 LUA_END = "-- --- end DA Assistant hotkeys ---"
 
+# A line of a compositor's config, with the "\n" that ends it: see
+# ConfigFileKeybindings.strip.
+_LINE = re.compile(r"[^\n]*\n|[^\n]+")
+
 
 def run_host(args):
     """Run a host program - gsettings, kwriteconfig6, hyprctl - as the desktop would:
@@ -304,15 +308,20 @@ class GSettingsKeybindings:
 # ---- Hyprland and Sway -------------------------------------------------------------
 
 def _lua(text):
-    """`text` as a Lua string literal."""
+    r"""`text` as a Lua string literal, in Lua's own escapes: a backslash and a quote
+    each behind a backslash, a line break as \n, and any other control character, and
+    the line and paragraph separators U+2028 and U+2029, as the decimal escapes of its
+    UTF-8 bytes - the same string to Lua. Written as they were, U+0085, U+2028 and
+    U+2029 were characters like any other to Lua and to Hyprland, but line breaks to
+    the str.splitlines that read the file back: see ConfigFileKeybindings.strip."""
     out = []
     for char in text:
         if char in '\\"':
             out.append("\\" + char)
         elif char == "\n":
             out.append("\\n")
-        elif ord(char) < 32 or char == "\x7f":
-            out.append(f"\\{ord(char):03d}")
+        elif unicodedata.category(char) in ("Cc", "Zl", "Zp"):
+            out.append("".join(f"\\{byte:03d}" for byte in char.encode("utf-8")))
         else:
             out.append(char)
     return '"' + "".join(out) + '"'
@@ -422,7 +431,7 @@ class ConfigFileKeybindings:
 
     @staticmethod
     def strip(text, where="the config", begin=BEGIN, end=END):
-        """`text` without our block - or blocks, should an old script have left two.
+        r"""`text` without our block - or blocks, should an old script have left two.
 
         Only a whole block is taken out: a BEGIN line and the END line after it, END
         known whatever space an editor has left around it. A BEGIN with no END after it
@@ -435,9 +444,18 @@ class ConfigFileKeybindings:
         shortcuts chosen rewrote any config that did not end in exactly one newline -
         its backup overwritten, the compositor reloaded - with nothing of the app's in
         it before or after.
+
+        A line ends at a "\n" and nowhere else, as Hyprland's config language and Sway
+        end one, and Lua too, but for a "\r" on its own, which nothing the app writes
+        holds unescaped. str.splitlines also ends one at U+0085, U+2028, U+2029 and a
+        few control characters, which to the compositor are characters like any other:
+        an end marker after one, in an action's name in hyprland.lua or the launcher's
+        path in Sway's config, ended the block there at the next rewrite, and the rest
+        of that line was kept as one of the user's own, for the compositor to run at
+        every reload. A begin marker so hidden made the block one that never ended.
         """
         out, begun, found = [], None, False
-        for number, line in enumerate(text.splitlines(keepends=True), 1):
+        for number, line in enumerate(_LINE.findall(text), 1):
             if line.lstrip().startswith(begin):
                 if begun is not None:
                     break                   # a second BEGIN before the first one's END

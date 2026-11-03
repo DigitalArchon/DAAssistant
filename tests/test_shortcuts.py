@@ -995,6 +995,28 @@ class ConfigFileWriter(TempDir):
         with open(lua) as f:
             self.assertIn("--action=ocr_only", f.read())
 
+    def test_a_path_never_ends_the_block_or_puts_a_line_outside_it(self):
+        # Hyprland and Sway read a line as far as "\n", and a path with U+2028 in it is
+        # one more they can run. The next rewrite read the line as str.splitlines does,
+        # broken there, and an end marker in the path ended the block: in Sway's config
+        # the rest of it was kept as a line of the user's own, a command of its own.
+        for sep in ("\u2028", "\u2029"):
+            for desktop in ("hyprland", "sway"):
+                with self.subTest(sep=hex(ord(sep)), desktop=desktop):
+                    writer, path = self.writer("bind = SUPER, Q, exec, kitty\n", desktop)
+                    launcher = (f"/home/u/x{sep}{keybindings.END}{sep}"
+                                f"exec_always notify-send injected/DA.AppImage")
+                    with mock.patch.dict(os.environ, {"APPIMAGE": launcher}):
+                        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+                        writer.apply({"ocr_only": "F6"}, LABELS, NAMES)
+                        lines = self.read(path).split("\n")
+                        self.assertFalse([line for line in lines
+                                          if line.startswith("exec_always")], lines)
+                        self.assertEqual(len([line for line in lines
+                                              if line.startswith("bind")]), 2, lines)
+                        writer.remove(NAMES)
+                    self.assertEqual(self.read(path), "bind = SUPER, Q, exec, kitty\n")
+
     def test_a_missing_config_is_not_created(self):
         writer = keybindings.ConfigFileKeybindings(
             "hyprland", FakeHost(), os.path.join(self.dir, "none.conf"))
@@ -1840,27 +1862,28 @@ class TrayMenu(TempDir):
 
 
 def lua_strings(line):
-    """The double-quoted Lua string literals in `line`, decoded."""
+    """The double-quoted Lua string literals in `line`, decoded as Lua does: a decimal
+    escape is one byte, and the bytes are the UTF-8 that Hyprland reads."""
     found, i = [], 0
     while True:
         i = line.find('"', i)
         if i < 0:
             return found
         i += 1
-        out = []
+        out = bytearray()
         while line[i] != '"':
             if line[i] == "\\":
                 nxt = line[i + 1]
                 if nxt.isdigit():
-                    out.append(chr(int(line[i + 1:i + 4])))
+                    out.append(int(line[i + 1:i + 4]))
                     i += 4
                     continue
-                out.append({"n": "\n"}.get(nxt, nxt))
+                out += {"n": "\n"}.get(nxt, nxt).encode()
                 i += 2
                 continue
-            out.append(line[i])
+            out += line[i].encode()
             i += 1
-        found.append("".join(out))
+        found.append(out.decode())
         i += 1
 
 
@@ -1881,12 +1904,12 @@ class HyprlandLuaConfig(TempDir):
         self.addCleanup(patcher.stop)
 
     def put(self, name, text):
-        with open(os.path.join(self.hypr, name), "w") as f:
+        with open(os.path.join(self.hypr, name), "w", encoding="utf-8") as f:
             f.write(text)
         return os.path.join(self.hypr, name)
 
     def read(self, path):
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return f.read()
 
     def test_the_lua_config_is_the_one_written_where_there_is_one(self):
@@ -1962,6 +1985,62 @@ class HyprlandLuaConfig(TempDir):
         with self.assertRaisesRegex(OSError, "line 4 has no"):
             writer.apply({"ocr_only": "F6"}, LABELS, NAMES)
         self.assertEqual(self.read(path), broken)
+
+    # Characters that Lua and Hyprland read like any other, and str.splitlines, which
+    # read the file back, took for line breaks.
+    SEPARATORS = ("\x85", "\u2028", "\u2029")
+
+    def test_a_name_never_ends_the_block_or_puts_a_line_outside_it(self):
+        # Harmless as first written; the next rewrite ended the block at the marker the
+        # name hid, and left the rest of it among the user's own lines, where Lua runs
+        # it at every reload. Omarchy's hyprland.lua calls os.getenv: Lua's os library,
+        # os.execute and all, is there.
+        for sep in self.SEPARATORS:
+            with self.subTest(sep=hex(ord(sep))):
+                path = self.put("hyprland.lua", self.OMARCHY)
+                name = (f"Explain -- {sep}{keybindings.LUA_END}{sep}"
+                        f"os.execute('notify-send injected') --")
+                named = dict(LABELS, custom_1=name)
+                writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost())
+                writer.apply({"custom_1": "<Control><Shift>1"}, named, NAMES)
+                text = self.read(path)
+                self.assertNotIn(sep, text)
+                bind = next(line for line in text.split("\n") if "custom_1" in line)
+                self.assertEqual(lua_strings(bind)[2], f"DA Assistant: {name}")
+                # Any later change rewrites the block: another key, here.
+                writer.apply({"custom_1": "<Control><Shift>1",
+                              "ocr_only": "<Control><Shift>5"}, named, NAMES)
+                lines = self.read(path).split("\n")
+                self.assertFalse([line for line in lines if line.startswith("os.")], lines)
+                writer.remove(NAMES)
+                self.assertEqual(self.read(path), self.OMARCHY)
+
+    def test_a_name_cannot_keep_the_block_from_being_taken_out(self):
+        # A begin marker hidden the same way read as a second block begun inside the
+        # first, with no end of its own: nothing could be changed or taken out again.
+        for sep in self.SEPARATORS:
+            with self.subTest(sep=hex(ord(sep))):
+                path = self.put("hyprland.lua", self.OMARCHY)
+                named = dict(LABELS, custom_1=f"x{sep}{keybindings.LUA_BEGIN}")
+                writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost())
+                writer.apply({"custom_1": "F5"}, named, NAMES)
+                writer.apply({"custom_1": "F6"}, named, NAMES)
+                writer.remove(NAMES)
+                self.assertEqual(self.read(path), self.OMARCHY)
+
+    def test_a_block_written_with_such_a_name_in_it_comes_out_whole(self):
+        # As 4.0.0 wrote the name, unescaped: a line ends at "\n", for Lua as for the
+        # app, and the marker inside it is no marker.
+        for sep in self.SEPARATORS:
+            with self.subTest(sep=hex(ord(sep))):
+                name = f"x{sep}{keybindings.LUA_END}{sep}os.execute('notify-send injected')"
+                path = self.put("hyprland.lua", "\n".join([
+                    self.OMARCHY, keybindings.LUA_BEGIN + " (managed by DA Assistant) ---",
+                    'hl.bind("F5", hl.dsp.exec_cmd("/x --action=custom_1"), '
+                    '{ description = "DA Assistant: ' + name + '" })',
+                    keybindings.LUA_END, ""]))
+                keybindings.ConfigFileKeybindings("hyprland", FakeHost()).remove(NAMES)
+                self.assertEqual(self.read(path), self.OMARCHY)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -32,5 +32,20 @@ class WithoutADisplay(unittest.TestCase):
         self.assertIn("Privacy Mode   :", done.stdout)
 
 
+class TrayHost(unittest.TestCase):
+    """With no StatusNotifierWatcher, an indicator on X11 goes to the XEmbed tray, and
+    its icon shows there: --probe said it would not show at all."""
+
+    def test_only_wayland_is_told_the_icon_will_not_show(self):
+        from assistant.__main__ import tray_host
+        self.assertEqual(tray_host(True, wayland=True), "yes")
+        self.assertEqual(tray_host(True, wayland=False), "yes")
+        self.assertIn("will not show", tray_host(False, wayland=True))
+        self.assertIn("AppIndicator extension", tray_host(False, wayland=True))
+        x11 = tray_host(False, wayland=False)
+        self.assertNotIn("will not show", x11)
+        self.assertIn("XEmbed system tray", x11)
+
+
 if __name__ == "__main__":
     unittest.main()

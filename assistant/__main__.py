@@ -29,6 +29,20 @@ def build_parser():
     return parser
 
 
+def tray_host(shown, wayland):
+    """What --probe says shows the tray icon, `shown` being whether a
+    StatusNotifierWatcher is on the session bus. Without one, an icon cannot show on
+    Wayland; on X11 it goes to the older XEmbed tray instead, as Tray.unseen knows, and
+    "will not show" was said there of icons that showed."""
+    if shown:
+        return "yes"
+    if wayland:
+        return ("none - the icon will not show; on GNOME, turn on the AppIndicator "
+                "extension")
+    return ("no StatusNotifierWatcher - on X11 the icon goes to the XEmbed system tray "
+            "instead")
+
+
 def probe():
     from . import session
     from .capture import CaptureManager
@@ -52,9 +66,8 @@ def probe():
         from .ui import tray
         shown = tray.watcher_present()
         if shown is not None:
-            print(f"Tray host      : {'yes' if shown else 'none - the icon will not show'}"
-                  + ("" if shown or session.session_type() != "wayland" else
-                     "; on GNOME, turn on the AppIndicator extension"))
+            print(f"Tray host      : "
+                  f"{tray_host(shown, session.session_type() == 'wayland')}")
         # WebKit is tried for real, and without a display GTK aborts the process.
         print(f"WebKit view    : {gtkcompat.webkit_status()}")
     from . import bundle

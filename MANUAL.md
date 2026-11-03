@@ -914,7 +914,13 @@ and names with a trailing dot included, which `NO_PROXY` cannot name. A proxy se
 that cannot be used - a SOCKS proxy whose packages are missing, in a config copied from
 another machine, say - is not gone around: nothing but those local requests is sent
 until it can be used or is taken out, and the app says so when it starts. (Up to 3.4.0
-everything then went direct.)
+everything then went direct.) A proxy elsewhere that takes a password must be
+`https://`: over `http://` or SOCKS the password would cross the network as typed. An
+onion address is judged by the proxy its requests would take - `HTTP_PROXY` before
+`ALL_PROXY`, for plain http - or by the one typed beside it in Settings, so the two can
+be saved together. While a proxy typed in Settings is not yet saved, **Test connection**,
+**Check attestation** and **Browse…** wait for it: until then everything goes the way
+the saved settings say.
 
 Through a proxy, [Privacy Mode](#privacy-mode) can attest only if the services it checks
 against answer the proxy's address. Sigstore's, which a `private/` model's attestation

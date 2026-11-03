@@ -173,13 +173,16 @@ def chat_url(kind, url):
 class Provider:
     """A provider as these settings have it: where it is, and with what key."""
 
-    def __init__(self, kind, url, api_key):
+    def __init__(self, kind, url, api_key, proxy=None):
         self.kind = kind
         self.id, self.name, self.gzip, self.listing = (kind.id, kind.name, kind.gzip,
                                                        kind.listing)
         self.address = (url or "").strip()          # as typed
         self.chat_url = chat_url(kind, url)
         self.api_key = (api_key or "").strip()
+        # The proxy these settings name, which an onion address is judged by: one typed
+        # in Settings beside it, not yet in force, counts.
+        self.proxy = (proxy or "").strip()
 
     @property
     def models_url(self):
@@ -196,7 +199,7 @@ class Provider:
         found = netguard.problem(self.chat_url)
         if found is None and netguard.is_onion(urlparse(self.chat_url).hostname or ""):
             from . import proxy
-            if not proxy.reaches_onion():
+            if not proxy.reaches_onion(self.chat_url, self.proxy):
                 return (f"{self.address} is a Tor onion service, reached only through "
                         f"Tor: set Settings > Advanced > Proxy to its SOCKS port, "
                         f"socks5h://127.0.0.1:9050 as a rule.")
@@ -235,7 +238,8 @@ def get(config, provider):
     kind = KINDS.get(provider) or KINDS[NANOGPT]
     return Provider(kind,
                     getattr(config, kind.url_key, "") if kind.url_key else "",
-                    getattr(config, kind.key_key, "") if kind.key_key else "")
+                    getattr(config, kind.key_key, "") if kind.key_key else "",
+                    getattr(config, "proxy", ""))
 
 
 def role_provider(config, role):

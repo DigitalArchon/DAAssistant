@@ -64,14 +64,26 @@ def problem(url):
         missing = _missing_for_socks()
         if missing:
             return f"A SOCKS proxy needs {' and '.join(missing)}, not installed here."
+    if parsed.password and scheme in ("http", "socks5", "socks5h", "socks4", "socks4a") \
+            and not netguard.is_local(host):
+        # The tunnel inside is encrypted end to end; the password that opens it is not,
+        # and would cross the network as it was typed.
+        return (f"A proxy elsewhere with a password must be https://: over {scheme}:// "
+                f"the password would cross the network unencrypted.")
     return None
 
 
-def reaches_onion():
-    """Whether this process's requests go through a proxy that looks names up itself,
-    which an onion's must: socks5h:// or socks4a://."""
-    return any((os.environ.get(name) or "").lower().startswith(("socks5h://", "socks4a://"))
-               for name in VARIABLES)
+def reaches_onion(url, setting=None):
+    """Whether a request to `url`, an onion service's address, goes through a proxy
+    that looks names up itself, as an onion's must: socks5h:// or socks4a://.
+
+    Judged by the proxy that request would take - for plain http, HTTP_PROXY before
+    ALL_PROXY, as requests chooses - not by whether any variable names such a proxy:
+    with Tor as ALL_PROXY and a web proxy as HTTP_PROXY, an onion endpoint passed, and
+    its requests went to the web proxy, key and all, in the clear. `setting`, a proxy
+    typed in Settings and not yet in force, is judged in place of the environment."""
+    route = (setting or "").strip() or for_url(url) or ""
+    return route.lower().startswith(("socks5h://", "socks4a://"))
 
 
 def in_use():

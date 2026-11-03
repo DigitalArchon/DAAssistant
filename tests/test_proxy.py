@@ -175,6 +175,58 @@ class AnOnionNeedsTor(Environment):
         proxy.apply(self.config)
         self.assertIsNone(self.onion().url_problem())
 
+    def test_it_is_judged_by_the_proxy_its_requests_would_take(self):
+        """Tor as ALL_PROXY passed the check, while requests sent plain http to the web
+        proxy that HTTP_PROXY named: the onion's key and conversation, in the clear."""
+        os.environ["ALL_PROXY"] = "socks5h://127.0.0.1:9050"
+        os.environ["HTTP_PROXY"] = "http://web-proxy.example:3128"
+        self.assertIn("socks5h://", self.onion().url_problem())
+        del os.environ["HTTP_PROXY"]
+        self.assertIsNone(self.onion().url_problem())
+
+    def test_an_onion_and_tor_typed_together_may_be_saved(self):
+        self.config.custom_url = "http://" + "a" * 56 + ".onion/v1"
+        staged = self.config.detached(text_provider="custom",
+                                      proxy="socks5h://127.0.0.1:9050")
+        self.assertIsNone(providers.refused(staged))
+        self.assertIsNotNone(providers.refused(self.config.detached(text_provider="custom")))
+
+
+class APasswordForAProxyElsewhere(Environment):
+    def test_goes_only_over_https(self):
+        for url in ("http://alice:secret@proxy.example:3128",
+                    "socks5h://alice:secret@proxy.example:1080"):
+            self.assertIn("unencrypted", proxy.problem(url), url)
+        for url in ("https://alice:secret@proxy.example:3128",
+                    "http://alice:secret@127.0.0.1:3128", "http://proxy.example:3128",
+                    "socks5h://127.0.0.1:9050"):
+            self.assertIsNone(proxy.problem(url), url)
+
+
+class TheSettingsDialogWaitsForAProxyToBeSaved(unittest.TestCase):
+    """Every request reads the proxy in force, so Test connection, Check attestation
+    and Browse went the saved way - direct, with Tor typed and not yet saved."""
+
+    def test_until_it_is_saved(self):
+        from assistant.ui.dialogs import SettingsDialog
+
+        class Typed:
+            def __init__(self, text):
+                self.text = text
+
+            def get_text(self):
+                return self.text
+
+        class Stub:
+            _proxy_unsaved = SettingsDialog._proxy_unsaved
+            config = mock.Mock(proxy="")
+
+        stub = Stub()
+        stub.proxy_entry = Typed("socks5h://127.0.0.1:9050")
+        self.assertIn("save first", stub._proxy_unsaved())
+        stub.config.proxy = "socks5h://127.0.0.1:9050"
+        self.assertIsNone(stub._proxy_unsaved())
+
 
 if __name__ == "__main__":
     unittest.main()

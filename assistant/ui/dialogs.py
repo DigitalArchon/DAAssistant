@@ -773,6 +773,14 @@ class SettingsDialog(Gtk.Dialog):
             self._sync_privacy()
 
     def _on_browse(self, _widget, key, vision_only, private_only=False):
+        waiting = self._proxy_unsaved()
+        if waiting:                     # the model lists would be fetched the other way
+            note = Gtk.MessageDialog(transient_for=self, modal=True, text=waiting,
+                                     message_type=Gtk.MessageType.INFO,
+                                     buttons=Gtk.ButtonsType.OK)
+            note.run()
+            note.destroy()
+            return
         kind = "TEE " if private_only else ""
         combo = self.provider_combos.get(key, (None, None))[0]
         # The settings as typed, so that an address or a key entered a moment ago can
@@ -1073,6 +1081,10 @@ class SettingsDialog(Gtk.Dialog):
 
     def _on_check_attestation(self, _widget):
         import threading
+        waiting = self._proxy_unsaved()
+        if waiting:
+            self.attest_result.set_text(waiting)
+            return
         self.attest_button.set_sensitive(False)
         self.attest_result.set_text("Attesting…")
         staged = self.config.detached(**dict(self.values(), privacy_mode=True))
@@ -1630,6 +1642,18 @@ class SettingsDialog(Gtk.Dialog):
         entry = getattr(self, "proxy_entry", None)
         return proxy_module.problem(entry.get_text()) if entry is not None else None
 
+    def _proxy_unsaved(self):
+        """Why a request from this dialog must wait: the proxy typed here is not the one
+        in force. That one is set for the whole process, and every request reads it
+        (proxy.py), so a test made now went the way the saved settings say - direct,
+        from this machine's own address, with Tor typed and not yet saved."""
+        entry = getattr(self, "proxy_entry", None)
+        typed = entry.get_text().strip() if entry is not None else ""
+        if typed != (getattr(self.config, "proxy", "") or "").strip():
+            return ("The proxy was changed here and is not saved yet: save first, so that "
+                    "this goes the way everything else will.")
+        return None
+
     def _sync_proxy(self):
         problem = self.proxy_problem()
         self.proxy_warning.set_markup(
@@ -1643,6 +1667,10 @@ class SettingsDialog(Gtk.Dialog):
 
     def _on_test(self, _widget):
         import threading
+        waiting = self._proxy_unsaved()
+        if waiting:
+            self.test_result.set_text(waiting)
+            return
         self.test_button.set_sensitive(False)
         self.test_result.set_text("Contacting the provider…")
         # Tried out on a copy, with a client of its own. This used to write the staged

@@ -10,6 +10,7 @@ Two regressions this guards:
    performed on text already supplied, so a search only adds cost and latency.
 """
 
+import json
 import os
 import sys
 import threading
@@ -158,6 +159,46 @@ class TwoStageTranslate(unittest.TestCase):
             window._start_stream()
             self.assertTrue(self._run_until(lambda: len(self.client.calls) >= 2))
             self.assertEqual(self.client.calls[1]["model"], "premium/text-model")
+        finally:
+            window.destroy()
+
+    def test_half_a_character_in_the_transcription_breaks_nothing(self):
+        from assistant import prompts
+        # The transcription is a reply too, and JSON can spell half a character.
+        half = json.loads('"broken \\ud83d emoji"')
+        window = ChatWindow(StubApp(self.config, self.client), "OCR + Translate",
+                            [{"role": "user", "content": "", "display": "…"}],
+                            autostart=True, web_search=False,
+                            preflight=lambda cancel, status: {
+                                "content": prompts.translate_text(half), "display": half},
+                            system=prompts.translate_system("German"))
+        try:
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) == 2))
+            question = window.conversation[0]
+            self.assertEqual(question["display"], "broken \ufffd emoji")
+            self.assertIn("broken \ufffd emoji", question["content"])
+            [translate] = self.client.calls
+            self.assertIn("broken \ufffd emoji", translate["messages"][-1]["content"])
+            self.assertEqual(window.conversation[-1]["content"], "die Übersetzung")
+        finally:
+            window.destroy()
+
+    def test_a_page_that_would_not_load_holds_up_no_redraw_after_it(self):
+        from unittest import mock
+        window = self._window(autostart=False)
+        try:
+            if window.webview is None:
+                self.skipTest("no WebKit view here")
+            self.assertTrue(self._run_until(lambda: not window._page_loading))
+            refused = UnicodeEncodeError("utf-8", "\ud83d", 0, 1, "surrogates not allowed")
+            with mock.patch.object(window.webview, "load_html", side_effect=refused):
+                with self.assertRaises(UnicodeEncodeError):
+                    window._render(new_page=True)
+            self.assertFalse(window._page_loading)
+            window._render(new_page=True)
+            self.assertTrue(window._page_loading)
+            self.assertTrue(self._run_until(lambda: window._loaded))
         finally:
             window.destroy()
 

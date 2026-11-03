@@ -1455,8 +1455,9 @@ class ChatWindow(Gtk.Window):
             body = self._screenshot_html + "".join(self._turn_html(t, i)
                                                    for i, t in enumerate(turns))
             self._loaded = False
-            self._page_loading = True
             self.webview.load_html(markdown_html.document(body, self.dark), None)
+            # Once it is loading: had it raised, every redraw after waited for it.
+            self._page_loading = True
             return
 
         if full:
@@ -1961,6 +1962,9 @@ class ChatWindow(Gtk.Window):
                 if preflight is not None:
                     stage = "read"
                     update = preflight(cancel, say)
+                    # A model's reply, and JSON can spell half a character: sound_text.
+                    update = {key: sound_text(value) if isinstance(value, str) else value
+                              for key, value in (update or {}).items()}
                     if cancel.is_set():
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return
@@ -1978,7 +1982,7 @@ class ChatWindow(Gtk.Window):
                             turns[at]["search_query"] = update["search_query"]
                         history = history_for(turns)
                     # Done, whatever it found: not made again.
-                    GLib.idle_add(self._apply_preflight, update or {}, target)
+                    GLib.idle_add(self._apply_preflight, update, target)
                     say("Searching the web…" if web_search else "Thinking…")
                 if need_reading:
                     # A model that cannot see, in a conversation about an image: the
@@ -1988,10 +1992,10 @@ class ChatWindow(Gtk.Window):
                     say(f"Reading the image for {model.rsplit('/', 1)[-1]}…")
                     if privacy is not None:
                         privacy.enlist(reader)
-                    reading = (self.app.client.complete(
+                    reading = sound_text((self.app.client.complete(
                         reader, [{"role": "user", "content": prompts.IMAGE_BRIEF}],
                         image_base64=self.image_base64, cancel=cancel,
-                        **private_kwargs) or "").strip()
+                        **private_kwargs) or "").strip())
                     if cancel.is_set():
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return
@@ -2009,9 +2013,9 @@ class ChatWindow(Gtk.Window):
                     readings = {}
                     for picture in unread:
                         say(f"Reading {picture['name']} for {model.rsplit('/', 1)[-1]}…")
-                        text = (self.app.client.complete(
+                        text = sound_text((self.app.client.complete(
                             reader, attachments.reading_request(picture),
-                            cancel=cancel, **private_kwargs) or "").strip()
+                            cancel=cancel, **private_kwargs) or "").strip())
                         if cancel.is_set():
                             GLib.idle_add(self._on_stream_done, None, cancel)
                             return

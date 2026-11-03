@@ -547,7 +547,7 @@ class AskEncyclopediaWindow(ChatWindow):
             display = display[:end] + " " + mark + display[end:]
 
         def link(match):
-            numbers = [n for n in cited(match.group(0)) if 1 <= n <= len(passages)]
+            numbers = cited(match.group(0), len(passages))
             if not numbers:
                 return match.group(0)
             return "".join(f"[\\[{n}\\]](enc://cite/{index}/{n})" for n in numbers)
@@ -561,7 +561,7 @@ class AskEncyclopediaWindow(ChatWindow):
         if not passages:
             return
         index = self.conversation.index(turn)
-        numbers = [n for n in cited(turn["content"]) if 1 <= n <= len(passages)]
+        numbers = cited(turn["content"], len(passages))
         checks = turn.get("checks") or []
         failed = sum(1 for c in checks if not c["ok"])
         limited = (payload or {}).get("limited")

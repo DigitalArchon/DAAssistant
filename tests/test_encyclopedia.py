@@ -459,6 +459,24 @@ class Gather(DvdCase):
                          [3, 1, 2, 4, 5, 6])
         self.assertEqual(cited("no citations, just [brackets]"), [])
 
+    def test_only_numbers_of_passages_there_are_count(self):
+        # A range was made in full, and each number looked for among those before it:
+        # "[1-20000000]" took a second and a gigabyte, on the main loop.
+        import tracemalloc
+        tracemalloc.start()
+        try:
+            self.assertEqual(cited("[1-20000000]", 14), list(range(1, 15)))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 100_000)
+        self.assertEqual(cited("[" + "1, " * 100000 + "2]", 14), [1, 2])
+        self.assertEqual(cited("[3, 99, 0, 2] and [12-16]", 14), [3, 2, 12, 13, 14])
+        # Longer than any number can be turned into, and still not a passage.
+        self.assertEqual(cited("[" + "9" * 5000 + "] and [2-" + "9" * 5000 + "]", 4),
+                         [2, 3, 4])
+        self.assertEqual(cited("[1]", 0), [])
+
 
 class Quotes(unittest.TestCase):
     PASSAGES = [{"text": "Every winter they cross the glimmer sea, humming as they go."},

@@ -468,7 +468,7 @@ def check_quotes(answer, passages, question=None, strict=True):
         if (len(quote.split()) < 3 or any(name.find(quote) for name in names)
                 or (question and not citations and _contains(question, quote))):
             continue
-        numbers = [n for n in cited(citations) if 1 <= n <= len(passages)]
+        numbers = cited(citations, len(passages))
         found = span = None
         for n in numbers + [n for n in range(1, len(passages) + 1) if n not in numbers]:
             span = texts[n - 1].find(quote)
@@ -501,14 +501,21 @@ def _near(quote, numbers, found, span, passages):
     return best
 
 
-def cited(answer):
-    """The passage numbers an answer cites - [2], [1, 3], [4-6] - in order, once each."""
-    out = []
+def cited(answer, most=99):
+    """The passage numbers an answer cites - [2], [1, 3], [4-6] - in order, once each,
+    of 1 to `most`: the passages there are, past which a number means nothing. A range
+    stops there - "[1-20000000]" was twenty million numbers made on the main loop, each
+    looked for among the others - and a number too long to be one is none."""
+    out, seen = [], set()
     for group in re.findall(r"\[(\d+(?:\s*[,–-]\s*\d+)*)\]", answer or ""):
-        numbers = [int(n) for n in re.findall(r"\d+", group)]
+        numbers = [int(n) if len(n) <= len(str(most)) else most + 1
+                   for n in re.findall(r"\d+", group)]
         if re.search(r"[–-]", group) and len(numbers) == 2 and numbers[0] < numbers[1]:
-            numbers = list(range(numbers[0], numbers[1] + 1))
-        out += [n for n in numbers if n not in out]
+            numbers = range(numbers[0], min(numbers[1], most) + 1)
+        for n in numbers:
+            if 1 <= n <= most and n not in seen:
+                seen.add(n)
+                out.append(n)
     return out
 
 LIBRARIES = [

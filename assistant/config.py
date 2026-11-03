@@ -165,6 +165,15 @@ class ConfigError(Exception):
     pass
 
 
+# Settings that keep something from being sent, read as on when the file cannot say.
+# A value of the wrong type falls back to the default, and a file that cannot be read
+# at all to the defaults - which for these is off: a stray comma or "privacy_mode":
+# "enabled" sent the next capture to the ordinary models. Read as on, the worst is a
+# request held back, and a notice that says why.
+FAIL_SAFE = {"privacy_mode": True, "privacy_strict": True}
+_SAYS_ON = r'"%s"\s*:\s*(?:true|1|"\s*(?:true|yes|on|1)\s*")'
+
+
 _KINDS = {bool: "true or false", int: "a whole number", float: "a number", str: "text",
           list: "a list", dict: "an object"}
 
@@ -267,12 +276,26 @@ class Config:
             try:
                 values[key] = _coerce(DEFAULTS[key], value)
             except (TypeError, ValueError):
+                instead = FAIL_SAFE.get(key, DEFAULTS[key])
+                if key in FAIL_SAFE:
+                    values[key] = instead
                 if warnings is not None:
                     warnings.append(f"{key} in {os.path.basename(self.config_file)} is "
                                     f"{json.dumps(value)[:40]}, which is not "
                                     f"{_KINDS.get(type(DEFAULTS[key]), 'valid')}; using "
-                                    f"{json.dumps(DEFAULTS[key])}.")
+                                    f"{json.dumps(instead)}.")
         return values, None
+
+    def _fail_safe_from_damaged(self):
+        """FAIL_SAFE's settings that a file too damaged to read plainly turns on."""
+        import re
+        try:
+            with open(self.config_file, "r", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return {}
+        return {key: value for key, value in FAIL_SAFE.items()
+                if re.search(_SAYS_ON % key, text, re.I)}
 
     def load(self):
         values = dict(DEFAULTS)
@@ -289,8 +312,14 @@ class Config:
             # keeps, from what worked in this session. Until then it is undecided, and
             # stays out of the file.
             values["hotkeys"] = None
-        # Surfaced in the UI; we still start with defaults rather than dying.
+        # Surfaced in the UI; we still start with defaults rather than dying - except for
+        # what keeps a capture from going to the ordinary models (FAIL_SAFE).
         self.load_error = error
+        if error:
+            kept_on = self._fail_safe_from_damaged()
+            values.update(kept_on)
+            self.load_warnings += [f"{key} stays on, as the file that could not be read "
+                                   f"has it." for key in kept_on]
 
         moved = False
         self.keychain_error = None
@@ -370,6 +399,12 @@ class Config:
                 os.replace(self.config_file, self.config_file + ".corrupt")
             except OSError:
                 pass
+            # And what this instance holds is written in its place, not the defaults:
+            # those were adopted below as well, so a file broken by hand while the app
+            # ran - then a zoom or a tray click - turned Privacy Mode off and sent every
+            # model back to NanoGPT's, there and then, without a word.
+            on_disk = {key: value for key, value in self.as_dict().items()
+                       if key not in SECRETS and value is not None}
         merged.update(on_disk)
         for key in dirty:
             merged[key] = getattr(self, key)

@@ -323,8 +323,10 @@ def ask_encyclopedia_rules(strict, audience):
         "the number of the passage it comes from, in square brackets straight after "
         "it, like [2]. Quote the passages' own words for the key facts, in quotation "
         "marks: word for word, since the app checks every quotation against the "
-        "passage it cites. Mark words left out with an ellipsis. Cite only these "
-        "numbers. The encyclopedia is the 2015 edition; say so where the date matters. "
+        "passage it cites. Mark words left out with an ellipsis, leaving out only words "
+        "within one sentence, or whole sentences, and quoting at least two words "
+        "either side of it. Cite only these numbers. The encyclopedia is the 2015 "
+        "edition; say so where the date matters. "
         "Do not list the sources at the end: the app shows them, with the pictures and "
         "films.\n\n"
     )

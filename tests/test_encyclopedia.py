@@ -1295,6 +1295,9 @@ class AskWindow(EncyclopediaWindowCase):
             system = self.client.calls[2]["system"]
             self.assertIn("Strict: these passages are your only source", system)
             self.assertIn("Write for an adult general reader", system)
+            # What an ellipsis may leave out, as the check reads it.
+            self.assertIn("leaving out only words within one sentence, or whole "
+                          "sentences, and quoting at least two words either side", system)
             self.assertIn('[1] "Zorblax" (Encyclopedia), section "Migration"',
                           system)
 

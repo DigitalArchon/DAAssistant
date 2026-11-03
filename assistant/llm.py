@@ -515,7 +515,9 @@ class LLMClient:
                     stream=stream,
                     timeout=(CONNECT_TIMEOUT, self.config.request_timeout),
                 )
-            except netguard.RedirectRefused as e:
+            except (netguard.RedirectRefused, netguard.ProxyRefused) as e:
+                # Refused by netguard's rules, not by the network: every attempt would
+                # be, so it is said at once.
                 raise LLMError(str(e), model=payload.get("model"))
             except requests.exceptions.ConnectTimeout:
                 last_error = "Connection timed out"

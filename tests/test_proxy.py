@@ -145,6 +145,19 @@ class AProxyThatCannotBeUsed(Environment):
         self.assertEqual(self.sent("http://localhost:11434/api/tags"),
                          [("http://localhost:11434/api/tags", {})])
 
+    def test_a_chat_request_is_held_back_at_once_not_tried_three_times(self):
+        """ProxyRefused is a requests exception, and the chat's requests retried it as
+        one, waiting between: four and a half seconds to say what was known at once."""
+        from assistant.llm import LLMClient, LLMError
+        self.config.api_key = "k"
+        client = LLMClient(self.config)
+        with mock.patch("requests.adapters.HTTPAdapter.send") as sent, \
+                mock.patch("assistant.llm.time.sleep") as slept, \
+                self.assertRaisesRegex(LLMError, "cannot be used.*PySocks"):
+            client.complete("m", [{"role": "user", "content": "x"}])
+        slept.assert_not_called()
+        sent.assert_not_called()
+
     def test_nor_do_the_sealed_client_and_its_attestation(self):
         with self.assertRaisesRegex(PrivacyError, "nothing goes around it"):
             sealed.tinfoil_verify("https://nano-gpt.com/api/v1/private/tinfoil", "s")

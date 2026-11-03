@@ -253,8 +253,9 @@ def write_whole(path, data):
     what was there. Written through a link, as open() would; mode as the file it
     replaces, or as the umask has it for a new one."""
     target = os.path.realpath(path)
-    part = os.path.join(os.path.dirname(target),
-                        f".{os.path.basename(target)}.{os.getpid()}-{time.time_ns()}.part")
+    # Named after it, within the length a file name may have.
+    part = os.path.join(os.path.dirname(target), f".{os.path.basename(target)[:120]}."
+                                                 f"{os.getpid()}-{time.time_ns()}.part")
     fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
                  0o666)
     try:
@@ -2372,7 +2373,7 @@ class ChatWindow(Gtk.Window):
                         payload=None):
         if self._stale(cancel):
             return False
-        result = sound_text(result)         # written out, half a character raised
+        result = sound_text(result)         # no half characters kept: see sound_text
         cancelled = self._cancel is not None and self._cancel.is_set()
         # Note whether a streaming placeholder is on screen BEFORE _finish_stream
         # clears the flag - it decides replace-vs-append below.

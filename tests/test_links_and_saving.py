@@ -195,6 +195,12 @@ class SavingAsMarkdown(unittest.TestCase):
             self.assertEqual(saved.read(), window._markdown() + "\n")
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
 
+    def test_a_name_as_long_as_a_name_can_be_is_saved(self):
+        window = self._window()
+        path = os.path.join(self.dir, "n" * 252 + ".md")
+        self._save_to(window, path)
+        self.assertTrue(os.path.exists(path), window.status.get_text())
+
     def test_a_new_file_is_made_as_the_umask_says(self):
         window = self._window()
         path = os.path.join(self.dir, "new.md")

@@ -150,14 +150,13 @@ class ClipboardThatIsNotText(unittest.TestCase):
         gtk_clipboard = mock.Mock()
         gtk_clipboard.wait_for_text.return_value = None
         gtk_clipboard.wait_is_image_available.return_value = True
-
-        def png_bytes(*_args, **_kwargs):
-            raise UnicodeDecodeError("utf-8", b"\x89PNG", 0, 1, "invalid start byte")
-
+        # A reader that hands back a PNG where text was asked for.
+        png = [([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\x89PNG\\r\\n')"],
+                "wl-paste")]
         with mock.patch.object(clipboard.Gtk.Clipboard, "get",
                                return_value=gtk_clipboard), \
-                mock.patch.object(clipboard.shutil, "which", return_value="/usr/bin/x"), \
-                mock.patch.object(clipboard.subprocess, "run", side_effect=png_bytes):
+                mock.patch.object(clipboard.session, "session_type", return_value="x11"), \
+                mock.patch.object(clipboard, "FALLBACKS", png):
             self.assertEqual(clipboard.get_text(), (None, "image"))
 
 
@@ -389,9 +388,11 @@ class ClipboardOnWaylandWithoutFocus(unittest.TestCase):
     reported "the clipboard is empty" - on KDE Wayland, always.
     """
 
-    def _get_text(self, board, tools=(), klipper=None):
+    def _get_text(self, board, tools=(), klipper=None, session_type="x11"):
         gdbus = subprocess.CompletedProcess([], 0, stdout=klipper or "", stderr="")
         with mock.patch.object(clipboard, "Gtk", _fake_gtk(board)), \
+                mock.patch.object(clipboard.session, "session_type",
+                                  return_value=session_type), \
                 mock.patch.object(clipboard.shutil, "which",
                                   side_effect=lambda n: "/usr/bin/" + n if n in tools else None), \
                 mock.patch.object(clipboard, "_run", return_value=gdbus):
@@ -696,3 +697,73 @@ class AMissingThemeIsSaidOutLoud(TempDir):
         with mock.patch.object(theming, "settings",
                                return_value={"gtk-theme-name": "Adwaita"}):
             self.assertEqual(theming.problem(), "")
+
+
+class StaleGtkOnWayland(unittest.TestCase):
+    """GTK hears of a new clipboard only while the app has focus, and otherwise answers
+    with what it last heard: after one of the app's windows had been focused, the text
+    copied once it closed came back as the text before (KDE, GNOME 50 and Hyprland).
+    On Wayland the tools, which ask the compositor afresh, come first."""
+
+    def read(self, call, board, answers, session_type="wayland", tools=("wl-paste",)):
+        def run(argv, timeout=3, binary=False):
+            out = answers.get(argv[0] + (" --primary" if "--primary" in argv else "")
+                              + (" image" if "image/png" in argv else ""))
+            return subprocess.CompletedProcess(argv, 0 if out else 1, out or "", "")
+
+        with mock.patch.object(clipboard, "Gtk", _fake_gtk(board)), \
+                mock.patch.object(clipboard.session, "session_type",
+                                  return_value=session_type), \
+                mock.patch.object(clipboard.shutil, "which",
+                                  side_effect=lambda n: "/usr/bin/" + n if n in tools else None), \
+                mock.patch.object(clipboard, "_run", side_effect=run):
+            return call()
+
+    def test_the_text_copied_last_is_read_not_gtks_old_one(self):
+        self.assertEqual(self.read(clipboard.get_text, FakeClipboard("AAA from before"),
+                                   {"wl-paste": "BBB copied since"}),
+                         ("BBB copied since", "text"))
+
+    def test_so_is_the_highlighted_text(self):
+        self.assertEqual(self.read(clipboard.get_selection, FakeClipboard("old"),
+                                   {"wl-paste --primary": "new"}), "new")
+
+    def test_a_picture_is_found_by_the_tool_not_by_gtks_memory(self):
+        board = FakeClipboard("AAA from before")
+        with mock.patch.object(clipboard, "get_image", return_value=object()):
+            self.assertEqual(self.read(clipboard.get_text, board, {}), (None, "image"))
+
+    def test_with_no_tool_gtk_is_still_asked(self):
+        self.assertEqual(self.read(clipboard.get_text, FakeClipboard("all there is"), {},
+                                   tools=()), ("all there is", "text"))
+
+    def test_on_x11_gtk_comes_first_as_it_always_did(self):
+        self.assertEqual(self.read(clipboard.get_text, FakeClipboard("from gtk"),
+                                   {"wl-paste": "never asked"}, session_type="x11"),
+                         ("from gtk", "text"))
+
+
+class ReadersRunWithTheLoopTurning(unittest.TestCase):
+    def test_text_comes_back_decoded(self):
+        result = clipboard._run([sys.executable, "-c", "print('héllo')"])
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "héllo"))
+
+    def test_bytes_come_back_as_they_are(self):
+        result = clipboard._run([sys.executable, "-c",
+                                 "import sys; sys.stdout.buffer.write(bytes([0x89, 0x50]))"],
+                                binary=True)
+        self.assertEqual(result.stdout, bytes([0x89, 0x50]))
+
+    def test_output_that_is_not_text_is_none(self):
+        self.assertIsNone(clipboard._run([sys.executable, "-c",
+                                          "import sys; sys.stdout.buffer.write(b'\\xff\\xfe')"]))
+
+    def test_a_reader_that_hangs_is_given_up_on(self):
+        import time
+        started = time.monotonic()
+        self.assertIsNone(clipboard._run([sys.executable, "-c", "import time; time.sleep(30)"],
+                                         timeout=0.5))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_a_missing_reader_is_none(self):
+        self.assertIsNone(clipboard._run(["/nonexistent/wl-paste"]))

@@ -171,8 +171,8 @@ class TheTwoLocksAgree(unittest.TestCase):
 
     def test_unrelated_variables_are_passed_through(self):
         os.environ[hostenv.KEYS] = "LD_LIBRARY_PATH"
-        os.environ["XDG_SESSION_TYPE"] = "wayland"
-        self.assertEqual(hostenv.host_env()["XDG_SESSION_TYPE"], "wayland")
+        with mock.patch.dict(os.environ, {"XDG_SESSION_TYPE": "wayland"}):
+            self.assertEqual(hostenv.host_env()["XDG_SESSION_TYPE"], "wayland")
 
     def test_every_call_that_spawns_a_host_binary_passes_the_host_environment(self):
         for path in SPAWNS_HOST_BINARIES:

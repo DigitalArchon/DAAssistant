@@ -7,6 +7,7 @@ blocks with syntax highlighting, lists), and code blocks get copy buttons.
 import json
 import os
 import re
+import stat
 import time
 from urllib.parse import quote, unquote
 
@@ -234,6 +235,42 @@ def markdown_filename(title, extension=".md"):
 
 
 _SAVED_SCREENSHOT = re.compile(r"^!\[Screenshot\]\(([^)\s/]+)\)$", re.M)
+
+
+def sound_text(text):
+    """`text` with any lone surrogate made U+FFFD, and a pair of them the character
+    they spell. A reply is JSON, and JSON can spell half a character - an emoji split
+    across two chunks of a stream, or one broken - which Python keeps as a surrogate
+    that cannot be written out: not to a file, the clipboard, a text view or WebKit."""
+    if not text:
+        return text
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+
+
+def write_whole(path, data):
+    """Write the bytes `data` to `path` by way of a file of its own beside it, put in
+    its place only once it is whole: a write that fails part way - a full disk - leaves
+    what was there. Written through a link, as open() would; mode as the file it
+    replaces, or as the umask has it for a new one."""
+    target = os.path.realpath(path)
+    part = os.path.join(os.path.dirname(target),
+                        f".{os.path.basename(target)}.{os.getpid()}-{time.time_ns()}.part")
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                 0o666)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+        try:
+            os.chmod(part, stat.S_IMODE(os.stat(target).st_mode))
+        except FileNotFoundError:
+            pass                            # a new file: as the umask made it
+        os.replace(part, target)
+    except BaseException:
+        try:
+            os.unlink(part)
+        except OSError:
+            pass
+        raise
 
 
 def screenshot_beside(markdown_path, replacing):
@@ -2323,7 +2360,7 @@ class ChatWindow(Gtk.Window):
         self._redraw_queued = False
         if self._cancel is None or self._stale(cancel) or self._cancel.is_set():
             return False
-        self._streaming_text = text
+        self._streaming_text = sound_text(text)
         self.status.set_text(f"Receiving… {len(text)} chars")
         self._render()
         return False
@@ -2332,6 +2369,7 @@ class ChatWindow(Gtk.Window):
                         payload=None):
         if self._stale(cancel):
             return False
+        result = sound_text(result)         # written out, half a character raised
         cancelled = self._cancel is not None and self._cancel.is_set()
         # Note whether a streaming placeholder is on screen BEFORE _finish_stream
         # clears the flag - it decides replace-vs-append below.
@@ -2402,8 +2440,10 @@ class ChatWindow(Gtk.Window):
         self.status.set_text("")
         self._settle_question()
         restored = self._restore_replaced()
-        # Marked so history_for() keeps it out of what is sent upstream.
-        self._append_turn({"role": "assistant", "content": f"**Error:** {message}",
+        # Marked so history_for() keeps it out of what is sent upstream. A provider's
+        # error body is JSON too: see sound_text.
+        self._append_turn({"role": "assistant",
+                           "content": f"**Error:** {sound_text(str(message))}",
                            "error": True},
                           replace_placeholder=placeholder)
         if restored:
@@ -2502,12 +2542,14 @@ class ChatWindow(Gtk.Window):
         picture = None
         if self.screenshot:
             picture = screenshot_beside(path, replacing=os.path.exists(path))
+        # Encoded before anything is opened, so that it cannot fail part way: open(path,
+        # "w") emptied a saved conversation being replaced, and then a reply with half
+        # a character in it raised, which left the file empty.
+        text = sound_text(self._markdown(picture and os.path.basename(picture)) + "\n")
         try:
             if picture:
-                with open(picture, "wb") as out:
-                    out.write(self.screenshot)
-            with open(path, "w", encoding="utf-8") as out:
-                out.write(self._markdown(picture and os.path.basename(picture)) + "\n")
+                write_whole(picture, self.screenshot)
+            write_whole(path, text.encode("utf-8"))
         except OSError as e:
             self.status.set_text(f"Not saved: {e.strerror or e}")
             return
@@ -2537,8 +2579,7 @@ class ChatWindow(Gtk.Window):
         if not path:
             return
         try:
-            with open(path, "wb") as out:
-                out.write(self.screenshot)
+            write_whole(path, self.screenshot)
         except OSError as e:
             self.status.set_text(f"Screenshot not saved: {e.strerror or e}")
             return

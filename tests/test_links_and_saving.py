@@ -1,6 +1,7 @@
 """URLs in answers are links, a conversation can be saved as Markdown, and the
 settings drop-downs open with every option showing."""
 
+import json
 import os
 import shutil
 import sys
@@ -16,7 +17,12 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 from assistant import gtkcompat  # noqa: F401
 from gi.repository import Gtk
 
-from assistant import webkitguard
+from assistant import collector, webkitguard
+
+# Windows are made and closed here while worker threads run - Settings' look for the
+# Private Mode client among them; a cycle collected on one of those would finalize a
+# GTK or WebKit object there, and WebKit aborts. On the main loop instead, as the app.
+collector.install()
 from assistant.config import Config
 from assistant.ui import chat, markdown_text
 from assistant.ui.markdown_html import render_markdown
@@ -148,6 +154,69 @@ class SavingAsMarkdown(unittest.TestCase):
         window = self._window()
         self._save_to(window, os.path.join(self.dir, "missing", "out.md"))
         self.assertIn("Not saved", window.status.get_text())
+
+    HALF = json.loads('"broken \\ud83d emoji"')        # as a reply's JSON can spell it
+
+    def _replacing(self, window, before="an earlier save\n"):
+        path = os.path.join(self.dir, "out.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(before)
+        return path
+
+    def test_a_reply_with_half_a_character_is_saved(self):
+        window = self._window()
+        window.conversation[-1]["content"] = self.HALF
+        path = self._replacing(window)
+        self._save_to(window, path)
+        with open(path, encoding="utf-8") as saved:
+            self.assertIn("broken � emoji", saved.read())
+        self.assertIn("Saved to", window.status.get_text())
+
+    def test_a_write_that_fails_leaves_the_file_it_was_to_replace(self):
+        window = self._window()
+        path = self._replacing(window)
+        with mock.patch.object(chat.os, "replace",
+                               side_effect=OSError(28, "No space left on device")):
+            self._save_to(window, path)
+        with open(path, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), "an earlier save\n")
+        self.assertEqual(sorted(os.listdir(self.dir)), ["out.md"], "a part left behind")
+        self.assertIn("No space left", window.status.get_text())
+
+    def test_a_link_is_written_through_and_a_files_mode_kept(self):
+        window = self._window()
+        path = self._replacing(window)
+        os.chmod(path, 0o600)
+        link = os.path.join(self.dir, "link.md")
+        os.symlink(path, link)
+        self._save_to(window, link)
+        self.assertTrue(os.path.islink(link))
+        with open(path, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), window._markdown() + "\n")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    def test_a_new_file_is_made_as_the_umask_says(self):
+        window = self._window()
+        path = os.path.join(self.dir, "new.md")
+        mask = os.umask(0o022)
+        try:
+            self._save_to(window, path)
+        finally:
+            os.umask(mask)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
+
+    def test_half_a_character_streamed_is_drawn_until_the_other_half_comes(self):
+        window = self._window()
+        window._cancel = types.SimpleNamespace(is_set=lambda: False)
+        window._streaming_text = ""
+        half = json.loads('"broken \\ud83d"')           # an emoji split across chunks
+        window._on_stream_progress(half)
+        self.assertEqual(window._streaming_text, "broken �")
+        window._on_stream_done(half + json.loads('"\\ude00 emoji"'))
+        self.assertEqual(window.conversation[-1]["content"], "broken \U0001f600 emoji")
+        window._show_error(self.HALF)
+        self.assertEqual(window.conversation[-1]["content"],
+                         "**Error:** broken � emoji")
 
     def test_the_suggested_name_is_a_valid_file_name(self):
         name = chat.markdown_filename("Ask: what/is this?")

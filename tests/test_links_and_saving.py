@@ -211,6 +211,68 @@ class SavingAsMarkdown(unittest.TestCase):
             os.umask(mask)
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
 
+    def test_a_long_name_in_another_script_is_saved(self):
+        window = self._window()
+        path = os.path.join(self.dir, "語" * 83 + ".md")       # 252 bytes
+        self._save_to(window, path)
+        self.assertTrue(os.path.exists(path), window.status.get_text())
+        self.assertEqual(os.listdir(self.dir), [os.path.basename(path)])
+
+    def test_a_private_file_is_replaced_by_one_as_private_while_it_is_written(self):
+        window = self._window()
+        path = self._replacing(window)
+        os.chmod(path, 0o600)
+        modes, fdopen = [], os.fdopen
+
+        def opened(fd, *args, **kwargs):
+            modes.append(os.fstat(fd).st_mode & 0o777)
+            return fdopen(fd, *args, **kwargs)
+
+        mask = os.umask(0)
+        try:
+            with mock.patch.object(chat.os, "fdopen", opened):
+                self._save_to(window, path)
+        finally:
+            os.umask(mask)
+        self.assertEqual(modes, [0o600])
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+    @unittest.skipIf(os.geteuid() == 0, "root may write to anything")
+    def test_a_file_that_may_not_be_written_to_is_refused_not_replaced(self):
+        window = self._window()
+        path = self._replacing(window)
+        os.chmod(path, 0o444)
+        self._save_to(window, path)
+        self.assertIn("Not saved: Permission denied", window.status.get_text())
+        with open(path, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), "an earlier save\n")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o444)
+
+    def test_a_file_with_other_names_stays_one_file(self):
+        window = self._window()
+        path = self._replacing(window)
+        other = os.path.join(self.dir, "other name.md")
+        os.link(path, other)
+        self._save_to(window, path)
+        self.assertTrue(os.path.samefile(path, other))
+        with open(other, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), window._markdown() + "\n")
+
+    @unittest.skipIf(os.geteuid() == 0, "root may write to anything")
+    def test_a_file_in_a_folder_that_takes_no_new_files_is_written(self):
+        window = self._window()
+        folder = os.path.join(self.dir, "fixed")
+        os.mkdir(folder)
+        path = os.path.join(folder, "out.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("an earlier save\n")
+        os.chmod(folder, 0o555)
+        self.addCleanup(os.chmod, folder, 0o755)
+        self._save_to(window, path)
+        with open(path, encoding="utf-8") as saved:
+            self.assertEqual(saved.read(), window._markdown() + "\n")
+        self.assertEqual(os.listdir(folder), ["out.md"])
+
     def test_half_a_character_streamed_is_drawn_until_the_other_half_comes(self):
         window = self._window()
         window._cancel = types.SimpleNamespace(is_set=lambda: False)

@@ -4,6 +4,7 @@ Tokens land in the view as they arrive, markdown is rendered properly (tables, c
 blocks with syntax highlighting, lists), and code blocks get copy buttons.
 """
 
+import errno
 import json
 import os
 import re
@@ -251,20 +252,50 @@ def write_whole(path, data):
     """Write the bytes `data` to `path` by way of a file of its own beside it, put in
     its place only once it is whole: a write that fails part way - a full disk - leaves
     what was there. Written through a link, as open() would; mode as the file it
-    replaces, or as the umask has it for a new one."""
+    replaces, or as the umask has it for a new one.
+
+    Where another file in its place would not be the same file - one with other names
+    (hard links), someone else's, or not a plain file - or the folder takes no new
+    files, it is written in place, as open() did. One that may not be written to is
+    refused, as open() refused it, not replaced."""
     target = os.path.realpath(path)
-    # Named after it, within the length a file name may have.
-    part = os.path.join(os.path.dirname(target), f".{os.path.basename(target)[:120]}."
-                                                 f"{os.getpid()}-{time.time_ns()}.part")
-    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-                 0o666)
+    try:
+        info = os.stat(target)
+    except FileNotFoundError:
+        info = None
+    if info is not None:
+        if not os.access(target, os.W_OK):
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), path)
+        if (info.st_nlink > 1 or info.st_uid != os.geteuid()
+                or info.st_gid not in (os.getegid(), *os.getgroups())
+                or not stat.S_ISREG(info.st_mode)):
+            _write_in_place(target, data)
+            return
+    # Named after it, within the bytes a file name may have: 120 characters of a
+    # Japanese name are 360.
+    name = os.path.basename(target)
+    while len(os.fsencode(name)) > 120:
+        name = name[:-1]
+    part = os.path.join(os.path.dirname(target),
+                        f".{name}.{os.getpid()}-{time.time_ns()}.part")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    try:
+        # Its owner's alone while it is written, when it replaces a file: that may be
+        # private. Then the group and mode of the file it replaces - in a shared folder,
+        # the group is who it was shared with.
+        fd = os.open(part, flags, 0o666 if info is None else 0o600)
+    except PermissionError:
+        if info is None:
+            raise
+        _write_in_place(target, data)       # a folder that takes no new files
+        return
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(data)
-        try:
-            os.chmod(part, stat.S_IMODE(os.stat(target).st_mode))
-        except FileNotFoundError:
-            pass                            # a new file: as the umask made it
+            if info is not None:
+                if os.fstat(out.fileno()).st_gid != info.st_gid:
+                    os.fchown(out.fileno(), -1, info.st_gid)
+                os.fchmod(out.fileno(), stat.S_IMODE(info.st_mode))
         os.replace(part, target)
     except BaseException:
         try:
@@ -272,6 +303,11 @@ def write_whole(path, data):
         except OSError:
             pass
         raise
+
+
+def _write_in_place(path, data):
+    with open(path, "wb") as out:
+        out.write(data)
 
 
 def screenshot_beside(markdown_path, replacing):

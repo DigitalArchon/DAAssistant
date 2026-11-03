@@ -368,6 +368,12 @@ class Config:
         provider, address = providers.legacy(api_url)
         if provider == providers.NANOGPT:
             return False
+        if provider == providers.OLLAMA and self.api_key:
+            # Ollama takes no key, and a server that wanted one - on Ollama's port, but
+            # behind https with a key of its own - is an endpoint of another kind. Named
+            # Ollama, its key stayed NanoGPT's, and went to nano-gpt.com with the next
+            # web search or model list.
+            provider, address = providers.CUSTOM, (api_url or "").strip()
         kind = providers.KINDS[provider]
         for _model_key, provider_key in providers.ROLES.values():
             setattr(self, provider_key, provider)

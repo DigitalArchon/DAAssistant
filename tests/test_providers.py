@@ -251,6 +251,8 @@ class WhichProviderAModelIsAskedOf(Case):
             b"data: [DONE]"]
         client.session.post.side_effect = [stream]
         session = mock.Mock()
+        # As PrivacySession.start takes them, and the request then goes by them.
+        session.api_url, session.api_key = self.config.api_url, self.config.api_key
         session.allows.return_value = True
         session.ensure.return_value = mock.Mock(headline="Attested")
         client.stream(self.config.model("text"), [{"role": "user", "content": "x"}],
@@ -572,6 +574,18 @@ class ASettingsFileFromBeforeProvidersHadNames(unittest.TestCase):
         self.assertEqual(config.vision_provider, "ollama")
         self.assertEqual(config.ollama_url, "http://192.168.1.20:11434")
         self.assertIsNone(providers.unready(config))            # no key wanted
+
+    def test_a_server_on_ollamas_port_with_a_key_of_its_own_keeps_it(self):
+        url = "https://llm.myhome.example:11434/v1/chat/completions"
+        config, keychain = self.load({"api_url": url, "web_search_enabled": True},
+                                     key="sk-my-own-server")
+        for key in ("text_provider", "premium_text_provider", "vision_provider"):
+            self.assertEqual(getattr(config, key), "custom", key)
+        self.assertEqual(config.custom_url, url)
+        self.assertEqual(config.custom_api_key, "sk-my-own-server")
+        self.assertEqual(config.api_key, "")                     # not NanoGPT's
+        self.assertIsNone(keychain.get("api_key"))
+        self.assertEqual(providers.of(config, config.model("text")).chat_url, url)
 
     def test_it_is_done_once(self):
         self.load({"api_url": "https://api.example.com/v1/chat/completions"})

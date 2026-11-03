@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import gtkcompat  # noqa: F401
-from gi.repository import GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk
 from PIL import Image, PngImagePlugin
 
 from assistant import attachments, imaging, prompts
@@ -307,6 +307,28 @@ class RedactEditor(unittest.TestCase):
         self.assertEqual(image.getpixel((10, 5)), (0, 0, 0))
         self.assertEqual(image.getpixel((40, 20)), (0, 0, 0))
         self.assertEqual(image.getpixel((41, 20)), (255, 255, 255))
+
+    def test_enter_while_dragging_blacks_out_the_box_being_drawn(self):
+        # It is drawn solid black while the button is held: what was seen black is sent
+        # black, as if the button had been let go first. At actual size, so that the
+        # pointer is in the picture's own pixels.
+        self.dialog.toggle_fit()
+        press = type("E", (), {"button": 1, "x": 10, "y": 10})
+        move = type("E", (), {"button": 1, "x": 40, "y": 30})
+        self.dialog._on_press(None, press)
+        self.dialog._on_motion(None, move)
+        self.dialog._on_key(None, type("K", (), {"keyval": Gdk.KEY_Return, "state": 0}))
+        [(image, boxes)] = self.results
+        [(x, y, w, h)] = boxes
+        self.assertEqual(image.getpixel((x + w // 2, y + h // 2)), (0, 0, 0))
+        self.assertEqual(image.getpixel((95, 55)), (255, 255, 255))
+
+    def test_enter_after_a_click_that_drew_nothing_blacks_out_nothing(self):
+        self.dialog._on_press(None, type("E", (), {"button": 1, "x": 10, "y": 10}))
+        self.dialog.apply()
+        [(image, boxes)] = self.results
+        self.assertEqual(boxes, [])
+        self.assertEqual(image.getpixel((10, 10)), (255, 255, 255))
 
     def test_undo_clear_and_cancel(self):
         self.dialog.add_box(0, 0, 10, 10)

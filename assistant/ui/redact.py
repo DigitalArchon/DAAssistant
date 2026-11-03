@@ -147,7 +147,12 @@ class RedactDialog(Gtk.Window):
     def apply(self):
         if self._finished:
             return
-        self._drag = None
+        # A box still being dragged - Enter pressed before the button was let go - is
+        # drawn solid black, so it is blacked out as a release would have it: the area
+        # the user saw black went out untouched.
+        drag, self._drag = self._drag, None
+        if drag is not None:
+            self.add_box(*drag)
         self._finish(imaging.black_out(self.image, self.boxes))
 
     def cancel(self):

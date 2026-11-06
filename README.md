@@ -41,7 +41,8 @@ blacked out first, and are re-encoded from their pixels alone, so no metadata go
 them. You choose which model does each job, and can switch models
 mid-conversation. Web search is optional, per request. **Privacy Mode** sends everything
 only to models running in an attested trusted execution environment, proving each one
-before anything is sent. Select a word anywhere the app shows text and right-click it to
+before anything is sent; its default models are end-to-end encrypted, so the provider
+relays only ciphertext. Select a word anywhere the app shows text and right-click it to
 look it up in your dictionaries, or in the encyclopedia. Requests can go through a proxy.
 
 The [manual](MANUAL.md) covers all of it in detail.
@@ -109,7 +110,9 @@ On Wayland, install `wl-clipboard` (KDE needs it only for Translate selected tex
 clipboard is read through Klipper), and on KDE, `spectacle` for selecting screen regions.
 For a SOCKS proxy, add PySocks and socksio: `python3-socks python3-socksio`
 (Debian, Ubuntu, Mint), `python3-pysocks python3-socksio` (Fedora), `python-pysocks
-python-socksio` (Arch). The manual has the details:
+python-socksio` (Arch). Privacy Mode's default models are end-to-end encrypted, which
+needs Tinfoil's client: the AppImage carries it, and from source
+`tools/install-private-mode.sh` installs it, pinned by hash. The manual has the details:
 [What it uses from the system](MANUAL.md#what-it-uses-from-the-system).
 
 ## First run

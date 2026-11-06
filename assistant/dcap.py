@@ -13,7 +13,8 @@ does, from the quote's bytes and Intel's published collateral:
      its path length, and keyCertSign in its keyUsage where it has one.
   2. The QE report is signed by that PCK key, and its report data is
      sha256(attestation key || QE authentication data): the QE vouches for the key that
-     signed the quote.
+     signed the quote. And the QE is Intel's TDX QE (INTEL_TD_QE), on every quote,
+     whether or not Intel's QE identity can be fetched.
   3. The quote - header and TD report, report data (our nonce) included - is signed by
      that attestation key.
   4. Neither the PCK certificate nor its CA is revoked (Intel's PCK and root CRLs,
@@ -531,8 +532,23 @@ def module_status(tcb_info, quote):
     raise DcapError(f"the {name} module (SVN {minor}) is older than any Intel lists")
 
 
-def qe_status(identity, qe_report):
-    """The quoting enclave's status. Raises DcapError when it is not Intel's QE."""
+# Intel's TDX quoting enclave, as Intel's own signed identity of it says
+# (QE_IDENTITY_URL; the same, field for field, in the collateral captured in Sept 2026).
+# Checked on every quote, whether or not Intel's collateral can be fetched now: it is
+# what makes the attestation key the QE's, not that of any enclave the platform
+# certified. Without it, collateral out of reach - or made so - let such an enclave sign
+# a quote of its own making, and it passed as a partial attestation. From DA Vibe
+# Manager's copy of this module (Nov 2026).
+INTEL_TD_QE = {"id": "TD_QE",
+               "mrsigner": "DC9E2A7C6F948F17474E34A7FC43ED030F7C1563F1BABDDF6340C82E0E54A8C5",
+               "isvprodid": 2, "miscselect": "00000000", "miscselectMask": "FFFFFFFF",
+               "attributes": "11000000000000000000000000000000",
+               "attributesMask": "FBFFFFFFFFFFFFFF0000000000000000"}
+
+
+def qe_is_intels(identity, qe_report):
+    """Raise DcapError unless the quoting enclave is Intel's TDX QE as `identity`
+    describes it."""
     if identity.get("id") != "TD_QE":
         raise DcapError(f"Intel's QE identity is for {identity.get('id')}, not TD_QE")
     (miscselect,) = struct.unpack_from("<I", qe_report, 16)
@@ -547,6 +563,11 @@ def qe_status(identity, qe_report):
     (product,) = struct.unpack_from("<H", qe_report, 256)
     if product != identity["isvprodid"]:
         raise DcapError("the quoting enclave is not Intel's TDX QE")
+
+
+def qe_status(identity, qe_report):
+    """The quoting enclave's status. Raises DcapError when it is not Intel's QE."""
+    qe_is_intels(identity, qe_report)
     (svn,) = struct.unpack_from("<H", qe_report, 258)
     for level in identity.get("tcbLevels", []):
         if svn >= level["tcb"]["isvsvn"]:
@@ -595,6 +616,7 @@ def verify(raw, session=None, now=None):
         raise DcapError("the quoting enclave does not vouch for the attestation key")
     if not _raw_verify(_key_from_xy(quote.attestation_key), quote.signature, quote.signed):
         raise DcapError("the quote's signature does not verify")
+    qe_is_intels(INTEL_TD_QE, quote.qe_report)      # with Intel's collateral or without it
 
     sgx = sgx_extension(pck.extensions.get_extension_for_oid(
         x509.ObjectIdentifier(SGX_EXTENSION)).value.value)

@@ -555,6 +555,30 @@ class RealEvidence(unittest.TestCase):
         self.assertEqual(result.status, "")
         self.assertIn("could not be fetched", result.notes[-1])
 
+    def test_the_quoting_enclave_is_intels_whether_or_not_its_collateral_can_be_had(self):
+        """It is what makes the attestation key the QE's, not any enclave's the platform
+        certified. It was checked only against Intel's QE identity, fetched with the
+        collateral: out of reach, or made so, a quote such an enclave signed passed as
+        partial."""
+        quote = dcap.parse_quote(self.quote)
+        dcap.qe_is_intels(dcap.INTEL_TD_QE, quote.qe_report)       # the real one is
+        other = bytearray(quote.qe_report)
+        other[128:160] = b"\x11" * 32                               # another's MRSIGNER
+        with self.assertRaisesRegex(dcap.DcapError, "not signed by Intel"):
+            dcap.qe_is_intels(dcap.INTEL_TD_QE, bytes(other))
+        # The real quote, held to an identity its QE does not have, with Intel's
+        # collateral out of reach: refused, not partial.
+        impostor = dict(dcap.INTEL_TD_QE, mrsigner="11" * 32)
+        with mock.patch.object(dcap, "INTEL_TD_QE", impostor), \
+                self.assertRaisesRegex(dcap.DcapError, "not signed by Intel"):
+            self.intel(session=FixtureSession(self.fixture, intel_status=503))
+
+    def test_the_td_qe_identity_pinned_is_the_one_intel_signed(self):
+        item = next(c for c in self.fixture["collateral"]
+                    if c["url"] == dcap.QE_IDENTITY_URL)
+        signed = json.loads(base64.b64decode(item["body"]))["enclaveIdentity"]
+        self.assertEqual(dcap.INTEL_TD_QE, {key: signed[key] for key in dcap.INTEL_TD_QE})
+
     # NVIDIA
 
     def test_nvidias_verdict_verifies_for_every_gpu(self):
@@ -617,6 +641,47 @@ class RealEvidence(unittest.TestCase):
                                                   "outside its validity window"):
             self.attest_with_nvidias_keys_out_of_reach(self.fixture["nonce"],
                                                        self.now + 86400)
+
+    def test_without_nvidias_keys_each_gpus_verdict_is_still_checked(self):
+        """Only the overall verdict, its nonce and its time were read without NVIDIA's
+        keys: a GPU whose token said its measurements failed, or a GPU token the
+        overall one does not list, passed as "unchecked"."""
+        no_keys = FixtureSession(self.fixture, jwks={"no": "keys"})
+        with self.assertRaises(nras.KeysUnavailable):
+            self.nvidia(session=no_keys)                    # as it came: unchecked
+        label, overall = self.fixture["nras_answer"][0]
+        tokens = dict(self.fixture["nras_answer"][1])
+        gpu = sorted(tokens)[0]
+        header, claims, signature = tokens[gpu].split(".")
+        failing = json.loads(base64.urlsafe_b64decode(claims + "=" * (-len(claims) % 4)))
+        failing["measres"] = "fail"
+        part = base64.urlsafe_b64encode(json.dumps(failing).encode()).decode().rstrip("=")
+        tokens[gpu] = f"{header}.{part}.{signature}"
+        # Listed by the overall verdict, digest and all: only the signatures, which go
+        # unchecked here, would have told it from NVIDIA's.
+        o_header, o_claims, o_signature = overall.split(".")
+        verdict = json.loads(base64.urlsafe_b64decode(o_claims + "=" * (-len(o_claims) % 4)))
+        verdict["submods"][gpu][1][1] = hashlib.sha256(tokens[gpu].encode()).hexdigest()
+        o_part = base64.urlsafe_b64encode(json.dumps(verdict).encode()).decode().rstrip("=")
+        forged = [[label, f"{o_header}.{o_part}.{o_signature}"], tokens]
+        with self.assertRaisesRegex(nras.NrasError, f"{gpu} failing: measurements"):
+            self.nvidia(answer=forged, session=no_keys)
+        unlisted = [[label, overall], dict(tokens)]
+        with self.assertRaisesRegex(nras.NrasError, "not the one NVIDIA's verdict lists"):
+            self.nvidia(answer=unlisted, session=no_keys)
+
+    def test_keys_fetched_before_are_used_when_fresh_ones_cannot_be_had(self):
+        """Older than an hour, but NVIDIA's, fetched over TLS from its own service: a
+        signature checked against them beats one not checked at all."""
+        self.assertEqual(self.nvidia(), 8)                  # fetched now, and kept
+        nras._keys["at"] = dcap.since_boot() - nras.KEYS_TTL - 1
+        no_keys = FixtureSession(self.fixture, jwks={"no": "keys"})
+        self.assertEqual(self.nvidia(session=no_keys), 8)
+        label, overall = self.fixture["nras_answer"][0]
+        forged = overall[:-4] + ("AAAA" if not overall.endswith("AAAA") else "BBBB")
+        with self.assertRaisesRegex(nras.NrasError, "signature does not verify"):
+            self.nvidia(answer=[[label, forged], self.fixture["nras_answer"][1]],
+                        session=no_keys)
 
     def test_with_nvidias_keys_out_of_reach_a_current_verdict_is_partial(self):
         attestation = self.attest_with_nvidias_keys_out_of_reach(self.fixture["nonce"],

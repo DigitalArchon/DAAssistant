@@ -634,8 +634,11 @@ worth, to answer from and quote.
   borrow the window's own badges, or fetch anything. It is closed off too, so one entry
   cannot run into the next, and shown to 4 MB at most, which no real one comes near,
   "[…]" standing for the rest. In the dark theme each colour is lifted to a shade of
-  itself that reads on the dark background. What an entry hides stays hidden, and is
-  not given to the model either.
+  itself that reads on the dark background, each background a dictionary sets - a pale
+  panel for a usage note, a highlight - is darkened to a shade of itself that the
+  lifted text reads on, and its pictures get a white ground, so that one drawn in black
+  on a transparent one still shows. What an entry hides stays hidden, and is not given
+  to the model either.
 - **Each word gets a page of its own**: looking up another - typed, or a
   cross-reference clicked - shows its entries in place of the last word's, and the
   questions asked about the last word go with it. **Back** and **Forward** in the header

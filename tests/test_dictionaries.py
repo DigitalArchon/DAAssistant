@@ -1806,8 +1806,52 @@ class DictionaryHTML(unittest.TestCase):
     def test_a_colour_in_a_style_gets_a_dark_variant_too(self):
         html = self.balance('<span style="background-color:#fff; color: navy">x</span>')
         self.assertIn(f"--dk:{markup.dark_variant('navy')}", html)
-        self.assertIn("data-dk", html)
+        self.assertIn("data-dk ", html)
         self.assertNotIn("data-dk", self.balance('<span style="color:#eee">x</span>'))
+        # Navy lifted to a light blue on a white box: as unreadable as it was dark.
+        self.assertIn(f"--dkbg:{markup.dark_background('#fff')}", html)
+        self.assertIn("data-dkbg", html)
+
+    def test_a_pale_background_is_darkened_for_the_dark_theme(self):
+        """A usage note's panel, #efefdf, kept as it was under the dark theme's own
+        #e6e6e6 text: almost nothing to read (Nov 2026)."""
+        html = self.balance('<div style="background-color:#efefdf">'
+                            '<b>USAGE:</b> the h- is sounded</div>')
+        self.assertEqual(html, '<div data-dkbg style="background-color:#efefdf;'
+                               f'--dkbg:{markup.dark_background("#efefdf")}">'
+                               '<b>USAGE:</b> the h- is sounded</div>')
+        self.assertNotIn("data-dkbg", self.balance(
+            '<div style="background-color:#1b1b1b">dark already</div>'))
+        self.assertNotIn("data-dkbg", self.balance(
+            '<div style="background-color:transparent">none</div>'))
+        # A <font> keeps its own colour's attributes beside the background's.
+        font = self.balance('<font color="navy" style="background-color:yellow">a</font>')
+        self.assertIn("data-dkbg", font)
+        self.assertIn(f"--dk:{markup.dark_variant('navy')}", font)
+
+    def test_dark_backgrounds_keep_the_hue_and_carry_what_the_dark_theme_writes(self):
+        import colorsys
+
+        from PIL import ImageColor
+        theme_text = (0xe6, 0xe6, 0xe6)
+        lifted = [markup.dark_variant(c) for c in ("navy", "maroon", "#008000", "gray")]
+        for colour in ("#efefdf", "white", "yellow", "beige", "#ffcc00", "lightblue",
+                       "rgb(240, 240, 220)", "hsl(60, 30%, 90%)", "#336699"):
+            dark = markup.dark_background(colour)
+            rgb = tuple(int(dark[i:i + 2], 16) for i in (1, 3, 5))
+            self.assertLessEqual(markup._luminance(rgb),
+                                 markup._luminance(markup.DARK_BACKGROUND), colour)
+            self.assertGreaterEqual(markup._contrast(rgb, theme_text), markup.CONTRAST)
+            for text in lifted:
+                text = tuple(int(text[i:i + 2], 16) for i in (1, 3, 5))
+                self.assertGreaterEqual(markup._contrast(rgb, text), markup.CONTRAST,
+                                        (colour, text))
+            before = colorsys.rgb_to_hls(*(c / 255 for c in ImageColor.getrgb(colour)[:3]))
+            after = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+            if before[2] > 0.1:
+                self.assertAlmostEqual(before[0], after[0], delta=0.03, msg=colour)
+        for colour in ("black", "#1b1b1b", "transparent", "not a colour", ""):
+            self.assertIsNone(markup.dark_background(colour), colour)
 
     def test_dark_variants_keep_the_hue_and_read_on_the_dark_theme(self):
         import colorsys
@@ -1825,8 +1869,10 @@ class DictionaryHTML(unittest.TestCase):
         self.assertIsNone(markup.dark_variant("not a colour"))
 
     def test_the_dark_theme_alone_reads_the_dark_variants(self):
-        self.assertIn("var(--dk)", markdown_html.page_css(dark=True))
-        self.assertNotIn("var(--dk)", markdown_html.page_css(dark=False))
+        dark, light = markdown_html.page_css(dark=True), markdown_html.page_css(dark=False)
+        for rule in ("var(--dk)", "var(--dkbg)", ".dict img { background-color: #ffffff"):
+            self.assertIn(rule, dark)
+            self.assertNotIn(rule, light)
 
 
 class LookupsStayOutOfHistory(unittest.TestCase):

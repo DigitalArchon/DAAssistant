@@ -262,8 +262,14 @@ def page_css(dark):
         ok, warn, bad = "#1d7f47", "#94650a", "#c4271f"
 
     # A dictionary's own colours are for a white page; the dark theme lifts each one
-    # to a shade that reads (see reference.markup.dark_variant).
+    # to a shade that reads (see reference.markup.dark_variant), and darkens each of
+    # its backgrounds to match the bubble (dark_background): a pale note box kept the
+    # theme's light text on it, all but unreadable. And its pictures get a white page
+    # behind them: one drawn in black on a transparent ground - a diagram, an icon -
+    # was black on the dark bubble.
     dictionary_dark = (".dict [data-dk] { color: var(--dk) !important; }\n"
+                       ".dict [data-dkbg] { background-color: var(--dkbg) !important; }\n"
+                       ".dict img { background-color: #ffffff; border-radius: 2px; }\n"
                        if dark else "")
 
     return f"""

@@ -164,6 +164,38 @@ def dark_variant(colour):
     return "#%02x%02x%02x" % out
 
 
+@functools.lru_cache(maxsize=1024)
+def dark_background(colour):
+    """`colour`, a background a dictionary set (a CSS name, #hex, rgb() or hsl()), as
+    the dark theme shows it: the same hue, made no lighter than the dark theme's bubble,
+    as "#rrggbb". None when it is that dark already, or is not a colour.
+
+    A dictionary sets its backgrounds for a white page - a pale panel for a usage note,
+    a highlight - and the dark theme kept them as they were, under its own light text:
+    in one, a usage note's #efefdf under #e6e6e6, almost nothing to read. No lighter
+    than the bubble, a background carries the theme's text, and every colour
+    dark_variant lifts - each read against the bubble - as well as the bubble does, and
+    its tint still sets it apart.
+    """
+    import colorsys
+
+    from PIL import ImageColor
+    try:
+        rgb = ImageColor.getrgb((colour or "").strip())[:3]
+    except ValueError:
+        return None
+    ceiling = _luminance(DARK_BACKGROUND)
+    if _luminance(rgb) <= ceiling:
+        return None
+    h, l, s = colorsys.rgb_to_hls(*(c / 255 for c in rgb))
+    while True:
+        l = max(0.0, l - 0.01)
+        out = tuple(round(c * 255) for c in colorsys.hls_to_rgb(h, l, s))
+        if l == 0 or _luminance(out) <= ceiling:
+            break
+    return "#%02x%02x%02x" % out
+
+
 # What a dictionary's [c] or <c> shows when it names no colour, as GoldenDict has it.
 DEFAULT_COLOUR = "green"
 _COLOUR_NAME = re.compile(r"#[0-9a-f]{3}(?:[0-9a-f]{3})?|[a-z]+", re.I)
@@ -192,6 +224,7 @@ def coloured(colour, style=""):
 # ---- a dictionary's own HTML ----------------------------------------------
 
 _STYLE_COLOUR = re.compile(r"(?:^|;)\s*color\s*:\s*([^;!]+)", re.I)
+_STYLE_BACKGROUND = re.compile(r"(?:^|;)\s*background-color\s*:\s*([^;!]+)", re.I)
 
 # The attributes a dictionary's HTML keeps, by element, and on any element: where its
 # links go and which of its own pictures it shows (both looked at again: see _Balancer),
@@ -374,6 +407,13 @@ class _Balancer(HTMLParser):
             if dark:
                 kept["data-dk"] = None
                 style = f"{style.rstrip().rstrip(';')};--dk:{dark}"
+        # And its background, which the dark theme darkens to match: see
+        # dark_background.
+        match = _STYLE_BACKGROUND.search(style)
+        dark = dark_background(match.group(1)) if match else None
+        if dark:
+            kept["data-dkbg"] = None
+            style = f"{style.rstrip().rstrip(';')};--dkbg:{dark}"
         out = "".join(f" {name}" if value is None else f' {name}="{attr(value)}"'
                       for name, value in kept.items())
         if colour is not None:

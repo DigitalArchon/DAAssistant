@@ -272,6 +272,10 @@ provider's list does not say which do; then all are listed, and the browser says
 | Premium text model | answering instead of the text model when **Use premium text model** is ticked; **Premium** in the model menu | your best text model |
 | Vision model (OCR) | OCR's transcription, stage one of Translate image selection, and reading the image for a model that cannot see | a cheap, literal reader |
 
+A `private/` model is end-to-end encrypted, and is only ever sent sealed, in a private
+conversation: chosen here, outside Privacy Mode, it is refused before anything is sent,
+web search included. Use it under **Settings > Privacy** instead.
+
 The vision model runs on every capture, so it is worth keeping cheap. Whether a question
 about an image is answered from the picture itself comes down to the answering model:
 pick one that accepts images (the **Capabilities** column says `vision`) and it will be
@@ -336,41 +340,61 @@ first step's and its answering model's, then any chosen along the way.
     quote), every certificate that signed another a CA allowed to (its basic constraints,
     path length and key usage), the quoting enclave's report, the quote's signature,
     Intel's revocation lists, and Intel's TCB information for the platform, its TDX
-    module and its quoting enclave, signed by Intel's TCB signing certificate. A debug TD
-    is refused;
+    module and its quoting enclave, signed by Intel's TCB signing certificate. The quoting
+    enclave must be Intel's TDX quoting enclave, as Intel's own identity of it describes
+    it, on every quote, even when Intel's services are out of reach. A debug TD is
+    refused;
   - the GPU evidence, made with the same nonce, goes to NVIDIA's attestation service with
     the app's own nonce, whatever nano-gpt's copy names, and its answer is checked in
     turn: every token's ES384 signature against NVIDIA's published keys, the nonce, the
     validity window, each GPU's token against the digest the overall verdict lists, and
     each GPU's measurements, secure boot and debug state. If NVIDIA's keys cannot be
-    fetched, the signatures go unchecked, but the nonce and the validity window are still
-    held to.
+    fetched, the ones fetched before are used. With none at all, the signatures go
+    unchecked, but everything else is still checked: the nonce, the validity window, each
+    GPU's token against the verdict's digest, and each GPU's own verdict.
 
   Every reply is then checked to be signed by the attested key. The enclave is attested
   again before the next message once its attestation is 15 minutes old - time the
   computer spent asleep counts - and the banner follows it. Your text still passes
   nano-gpt's gateway in the clear on its way in - attestation proves where the model
   runs, not that nano-gpt cannot read the request.
+
+  And where it runs is only partly shown. By Nov 2026 every `TEE/` model nano-gpt
+  attests comes through RedPill's gateway (`aci/1`), which passes each request on to
+  the model's host. Its quote is the gateway's own; the GPU evidence is the host's,
+  made with the app's nonce but not tied to that quote; that the model itself runs in
+  an enclave is not in the attestation at all. So such an attestation is partial: the
+  banner turns amber, *RedPill's gateway, not the model's host*, and **Strict** refuses
+  it. Keys the gateway attests that have expired are refused outright. For a model
+  whose own enclave is attested, and sealed end to end, use a `private/` model, as the
+  defaults now do.
 - **`private/` models** are nano-gpt's Private Mode: **end-to-end encrypted**. The body is
   sealed on this machine to a key only the attested enclave holds (Tinfoil's router,
   measured by AMD SEV-SNP or Intel TDX, its release checked against Sigstore), and the
   reply comes back sealed. Only a successful (2xx) reply is opened; any other, a
-  redirect included, is refused unread. The enclave is attested again before a message
+  redirect included, is refused unread. What nano-gpt's relay writes in an error is never
+  sealed, so an error quotes it as the relay's, on one short line, without line breaks
+  or characters you could not see: it cannot pass for the model's answer. The enclave is attested again before a message
   once its attestation is five minutes old, time asleep included. nano-gpt relays
   ciphertext: it sees your account, the model,
   timing, sizes and cost, never the text. It costs 5% more than the `TEE/` twin.
 
-The defaults, `TEE/glm-5.3-flash` and `TEE/qwen3.8-27b`, attested fully with GPU evidence
-when checked (Nov 2026), and need nothing installed but Python's cryptography package,
-which the AppImage carries. Their replies were signed in Sept 2026. By Nov 2026 the
-provider behind nano-gpt's attested `TEE/` models, RedPill, had replaced per-reply
-signatures with signed receipts (its `aci/1`), which only nano-gpt's own key can fetch;
-nano-gpt's signature lookup, made exactly as its documentation describes, then found no
-signature for any reply, even one whose headers said it had one. So answers read
-*signature unavailable* - each enclave is still attested before anything is sent to it.
-Up to 3.4.0 the vision default was `TEE/qwen3.6-27b`, whose attestation now comes
+The defaults are end-to-end encrypted: `private/deepseek-v4-1-flash` answers and reads
+images, and `private/glm-5-3` answers when **Use premium text model** is ticked. They need
+Tinfoil's client, which the AppImage carries (see below). Up to 4.0.0 the defaults were
+`TEE/glm-5.3-flash`, `TEE/glm-5.3` and `TEE/qwen3.8-27b`, which attest only as RedPill's
+gateway (above); GLM 5.3 Flash and Qwen have no `private/` version. A settings file that
+names them keeps them, amber banner and all, and with **Strict** on they are refused:
+choose `private/` models under **Settings > Privacy**.
+
+The `TEE/` models' replies were signed in Sept 2026. By Nov 2026 RedPill had replaced
+per-reply signatures with signed receipts (its `aci/1`), which only nano-gpt's own key can
+fetch; nano-gpt's signature lookup, made exactly as its documentation describes, then
+found no signature for any reply, even one whose headers said it had one. So their answers
+read *signature unavailable* - each enclave is still attested before anything is sent to
+it. Up to 3.4.0 the vision default was `TEE/qwen3.6-27b`, whose attestation now comes
 relayed for a nonce of the relay's own choosing, which is refused; a config still naming
-it is moved to `TEE/qwen3.8-27b`. **Check attestation** in Settings attests both enclaves
+it is moved to today's default. **Check attestation** in Settings attests both enclaves
 on the spot, which is free; **Test connection** sends the private text model one short
 request, checked end to end.
 
@@ -413,17 +437,19 @@ ordinary models - and the tray says how many conversations went private, or are 
 Nothing is ever sent if an enclave cannot be attested. A `TEE/` model is refused with the
 reason if it offers no attestation, if its quote does not bind the nonce, fails a
 signature, chains to anything but Intel's root, is revoked or comes from a debug TD, if
-Intel has revoked its TCB or lists none it meets, if its chain passes through a
-certificate that is not a CA allowed to sign it, if its TCB information is signed by
-anything but Intel's TCB signing certificate, or if NVIDIA's verdict is unsigned, for
-another nonce, out of date or negative - even with NVIDIA's keys out of reach, its nonce
-and time are checked - or if Python's cryptography package is not installed, without
+its quoting enclave is not Intel's, if Intel has revoked its TCB or lists none it meets,
+if its chain passes through a certificate that is not a CA allowed to sign it, if its TCB
+information is signed by anything but Intel's TCB signing certificate, if the keys it
+attests have expired, or if NVIDIA's verdict is unsigned, for another nonce, out of date
+or negative - even with NVIDIA's keys out of reach, its nonce, its time and each GPU's
+verdict are checked - or if Python's cryptography package is not installed, without
 which none of these signatures can be checked. So is an operation started with a non-TEE
 model configured. It never falls back to the ordinary models.
 
 **Strict** (Settings > Privacy, off by default) asks for everything. An enclave that
 proved less than it could - anything that would turn the banner amber - is refused, with
-what it lacked named, and nothing is sent. After an answer whose signature did not match,
+what it lacked named, and nothing is sent. With nano-gpt's `TEE/` models as they are in
+Nov 2026, all attested as RedPill's gateway, Strict takes `private/` models only. After an answer whose signature did not match,
 or that came back unsigned from a model whose attestation named the key it signs with,
 that model is attested again before it is sent anything more; if it attests well, the
 conversation carries on - while nano-gpt has no signatures to give (Nov 2026), that is
@@ -448,6 +474,8 @@ choose another there too. A list that cannot be read says nothing either way.
 nano-gpt's list (Sept 2026):
 
 - **Most** send one enclave's quote, binding the key that signs its replies to our nonce.
+  By Nov 2026 that enclave is RedPill's gateway for every one of them (`aci/1`), which
+  passes each request on: partial, as above.
 - **Chutes' models** (`TEE/kimi-k3`, for one) send every instance that could answer. Each
   instance's quote binds its own key, and that key signs a body carrying our nonce, the
   quote and its GPU evidence. Every instance is checked in full, and one that failed to

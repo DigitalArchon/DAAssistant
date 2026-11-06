@@ -37,6 +37,24 @@ def word_of(href):
     return unquote(href[len(LOOKUP_SCHEME):]).strip() or None
 
 
+# The scheme of the link beside each dictionary's name in a lookup, which hides that
+# dictionary in the conversation as its button in the bar does. The chat window follows
+# it itself. A dictionary's own HTML cannot make one: its links are kept only to the web
+# and to other words (balance's `links`).
+HIDE_SCHEME = "hide-dictionary:"
+
+
+def hide_href(path):
+    return HIDE_SCHEME + quote(path, safe="")
+
+
+def dictionary_to_hide(href):
+    """The dictionary's path a hide-dictionary: link names, or None for any other."""
+    if not (href or "").startswith(HIDE_SCHEME):
+        return None
+    return unquote(href[len(HIDE_SCHEME):]) or None
+
+
 def escape(text):
     return html.escape(text or "", quote=False)
 

@@ -375,6 +375,14 @@ img {{ max-width: 100%; }}
   cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .05em;
   text-transform: uppercase; color: {muted}; margin-bottom: 4px;
 }}
+.dict > summary .dict-hide {{
+  margin-left: 8px; padding: 0 5px; border-radius: 5px; color: {muted};
+  text-decoration: none; font-weight: 400; letter-spacing: 0; opacity: .6;
+  -webkit-user-select: none; user-select: none;
+}}
+.dict > summary .dict-hide:hover, .dict > summary .dict-hide:focus {{
+  opacity: 1; color: {fg}; background: rgba(128,128,128,.18);
+}}
 .dict .entry + .entry {{ border-top: 1px dashed {border}; margin-top: 8px; padding-top: 8px; }}
 .dict .hw {{ font-weight: 700; font-size: 1.08em; }}
 .dict .m0, .dict .m1 {{ margin-left: 0; }}
@@ -504,7 +512,7 @@ def lookup_html(lookup, hidden=0):
     (see assistant/reference), not text a model wrote. Cross-references are lookup:
     links, which the chat window follows itself.
     """
-    from ..reference.markup import attr, escape, lookup_href
+    from ..reference.markup import attr, escape, hide_href, lookup_href
     word, results = lookup["word"], lookup["results"]
     parts = []
     if not results and hidden:
@@ -524,8 +532,16 @@ def lookup_html(lookup, hidden=0):
     for result in results:
         entries = "".join(f'<div class="entry">{entry["html"]}</div>'
                           for entry in result["entries"])
-        parts.append(f'<details class="dict" open><summary>'
-                     f'{escape(result["dictionary"])}</summary>{entries}</details>')
+        # Beside the arrow that folds it away, which hides it from sight but not from
+        # what questions are sent with: the ✕ takes it out of both, as its button in
+        # the bar does (ChatWindow._hide_dictionary).
+        name = escape(result["dictionary"])
+        hide = (f'<a class="dict-hide" href="{attr(hide_href(result["path"]))}" '
+                f'title="Hide {attr(result["dictionary"])} in this conversation: its '
+                f'entries, and what questions are sent with. Its button in the bar above '
+                f'brings it back.">✕</a>' if result.get("path") else "")
+        parts.append(f'<details class="dict" open><summary>{name}{hide}</summary>'
+                     f'{entries}</details>')
     count = (f'<span class="badge">{len(results)} of {lookup.get("dictionaries", 0)} '
              f'dictionaries{f" · {hidden} hidden" if hidden else ""}</span>'
              if results or hidden else "")

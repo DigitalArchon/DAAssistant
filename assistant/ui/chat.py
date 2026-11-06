@@ -1071,6 +1071,10 @@ class ChatWindow(Gtk.Window):
                 self.lookup_entry.set_text(word)
                 self._look_up(word)
             return True
+        path = reference_markup.dictionary_to_hide(url)
+        if path is not None:
+            self._hide_dictionary(path)
+            return True
         if url.startswith("enc://"):
             self._follow_encyclopedia(url)
             return True
@@ -2366,7 +2370,29 @@ class ChatWindow(Gtk.Window):
                 button.set_tooltip_text(f"{name}\n\n{about}" if about else name)
 
     def _on_dictionary_toggled(self, button, path, name):
-        if button.get_active():
+        self._show_dictionary(path, name, button.get_active())
+
+    def _hide_dictionary(self, path):
+        """The ✕ beside a dictionary's name in a lookup: as its button in the bar,
+        which is released to say so and pressed to bring it back. Folding the entry
+        away with its arrow hides it only from sight; the questions are still sent
+        with it."""
+        button = self._dictionary_buttons.get(path)
+        if button is not None:
+            if not button.get_active():
+                return          # hidden already: the page is redrawn after the answer
+            button.set_active(False)                # _on_dictionary_toggled
+            self.status.set_text(self.status.get_text()
+                                 + "; its button in the bar brings it back")
+        elif path not in self._hidden_dictionaries:
+            names = [result["dictionary"] for page in self._pages for turn in page
+                     if turn.get("role") == "lookup" and "found" in turn
+                     for result in turn["found"]["results"] if result.get("path") == path]
+            self._show_dictionary(path, names[0] if names else os.path.basename(path),
+                                  False)
+
+    def _show_dictionary(self, path, name, shown):
+        if shown:
             self._hidden_dictionaries.discard(path)
             self.status.set_text(f"Showing {name}")
         else:

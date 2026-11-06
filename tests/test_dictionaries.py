@@ -1660,6 +1660,24 @@ class LookupHtml(unittest.TestCase):
         self.assertIn('href="lookup:x"',
                       markdown_html.sanitise(raw, ("http:", markup.LOOKUP_SCHEME)))
 
+    def test_each_dictionary_can_be_hidden_from_beside_its_name(self):
+        path = "/dicts/x y&z.dsl"
+        lookup = self._lookup(results=[{"dictionary": "D&D", "path": path, "entries": [
+            {"headword": "w", "html": "<b>entry</b>", "text": "entry"}]}])
+        html = markdown_html.lookup_html(lookup)
+        self.assertIn(f'<summary>D&amp;D<a class="dict-hide" '
+                      f'href="{markup.attr(markup.hide_href(path))}" title="Hide D&amp;D in '
+                      f'this conversation', html)
+        self.assertEqual(markup.dictionary_to_hide(markup.hide_href(path)), path)
+        self.assertIsNone(markup.dictionary_to_hide(markup.lookup_href("w")))
+        self.assertIsNone(markup.word_of(markup.hide_href(path)))
+        # A result with no path - none kept, in a lookup saved before - has no ✕.
+        self.assertNotIn("dict-hide", markdown_html.lookup_html(self._lookup()))
+        # Nor can a dictionary's own HTML make one.
+        self.assertEqual(markup.balance('<a href="hide-dictionary:%2Fx">x</a>',
+                                        ("http:", "https:", markup.LOOKUP_SCHEME)),
+                         "<a>x</a>")
+
     def test_word_of_reads_back_only_lookup_links(self):
         self.assertEqual(markup.word_of(markup.lookup_href("café au lait")),
                          "café au lait")
@@ -2004,6 +2022,56 @@ class DictionaryWindow(unittest.TestCase):
             buttons[1].set_active(True)
             self.assertIn("a rival account", turn["context"])
             self.assertIn("imaginary", turn["context"])
+        finally:
+            window.destroy()
+
+    def test_the_cross_beside_a_dictionarys_name_hides_it_as_its_button_does(self):
+        """Folding an entry away with its arrow hides it from sight only: the questions
+        are still sent with it. Its ✕ takes it out of both, as its button in the bar."""
+        second = os.path.join(self.dir, "dicts", "other.dsl")
+        write_dsl(second, '#NAME "Second Opinion"\n\nglorp\n\t[m1]a rival account')
+        window = chat.ChatWindow(StubApp(self.config, self.client), "Look up", [],
+                                 web_search=False, lookup=self.library.look_up,
+                                 dictionary_list=self.library.listing, lookup_word="glorp")
+        try:
+            self.assertTrue(self._run_until(lambda: window.conversation), "no lookup")
+            turn = window.conversation[0]
+            self.assertEqual(turn["html"].count('class="dict-hide"'), 2)
+            self.assertIn("a rival account", turn["context"])
+            buttons = [child.get_child() for child in window.dictionary_bar.get_children()]
+            if window.webview is not None:
+                # Clicked in the page, as a reader would: a link in its <summary>.
+                self.assertTrue(self._run_until(lambda: window._loaded, timeout=10))
+                window.webview.run_javascript(
+                    "document.querySelectorAll('.dict-hide')[1].click()", None, None)
+            else:
+                window._on_text_link(markup.hide_href(second))
+            self.assertTrue(self._run_until(
+                lambda: "a rival account" not in turn["context"], timeout=10))
+            self.assertEqual([b.get_active() for b in buttons], [True, False])
+            self.assertNotIn("Second Opinion", turn["html"])
+            self.assertIn("1 hidden", turn["html"])
+            self.assertNotIn("a rival account", window._request_system())
+            self.assertIn("hidden in this conversation", window.status.get_text())
+            self.assertIn("its button in the bar brings it back", window.status.get_text())
+            window._hide_dictionary(second)             # again, before a redraw: nothing
+            self.assertEqual(window.status.get_text().count("brings it back"), 1)
+
+            buttons[1].set_active(True)
+            self.assertIn("a rival account", turn["context"])
+        finally:
+            window.destroy()
+
+    def test_the_cross_works_without_the_bar_too(self):
+        window = self._window()
+        try:
+            self._looked_up(window, 1)
+            path = window.conversation[0]["found"]["results"][0]["path"]
+            self.assertTrue(window._on_text_link(markup.hide_href(path)))
+            self.assertEqual(window.conversation[0]["context"], "")
+            self.assertIn(path, window._hidden_dictionaries)
+            self.assertTrue(window.status.get_text().startswith(
+                "Invented Dictionary hidden in this conversation"))
         finally:
             window.destroy()
 

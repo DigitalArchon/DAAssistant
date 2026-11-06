@@ -648,7 +648,10 @@ worth, to answer from and quote.
   one, its initials where not, its name and description on hover (its `.ann`, or what
   its `.ifo` says of itself and whose it is). Release one to hide that dictionary's
   entries in every lookup in this window, and leave them out of what questions are sent
-  with; press it again to bring them back. Only that window is affected.
+  with; press it again to bring them back. Only that window is affected. The **✕**
+  beside a dictionary's name in a lookup does the same as releasing its button. The
+  arrow before the name only folds its entries away: folded, they are still sent with
+  your questions.
 - **The files are read in place**; nothing is copied. Since an archive of a dictionary
   can carry links to your own files, a link is followed only so far: a dictionary that
   is one, to a file within the folder; a file beside a dictionary - its `.idx`, `.dict`

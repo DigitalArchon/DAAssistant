@@ -280,14 +280,16 @@ class RetiredDefaults(unittest.TestCase):
                             "premium_text_provider": "custom", "text_provider": "nanogpt"})
         self.assertEqual(config.premium_text_model, "gpt-5-chat-latest")
 
-    def test_the_private_vision_model_that_is_now_refused_moves_to_its_successor(self):
+    def test_the_private_vision_model_that_is_now_refused_moves_to_todays_default(self):
+        """And a TEE/ model that was a default, and still attests, is left as chosen."""
         config = self.load({"private_vision_model": "TEE/qwen3.6-27b",
                             "private_text_model": "TEE/glm-5.3-flash",
                             "text_provider": "nanogpt"})
-        self.assertEqual(config.private_vision_model, "TEE/qwen3.8-27b")
+        self.assertEqual(config.private_vision_model, "private/deepseek-v4-1-flash")
         self.assertEqual(config.private_text_model, "TEE/glm-5.3-flash")
         with open(self.path) as f:
-            self.assertEqual(json.load(f)["private_vision_model"], "TEE/qwen3.8-27b")
+            self.assertEqual(json.load(f)["private_vision_model"],
+                             "private/deepseek-v4-1-flash")
 
     def test_a_private_vision_model_of_ones_own_is_left_alone(self):
         config = self.load({"private_vision_model": "TEE/kimi-k3", "text_provider": "nanogpt"})

@@ -43,22 +43,24 @@ DEFAULTS = {
     # and description it answers from. A cheap, literal reader.
     "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
     "use_premium": False,
-    # Privacy Mode: every operation, and every follow-up, goes only to these two models,
+    # Privacy Mode: every operation, and every follow-up, goes only to these models,
     # each attested before anything is sent to it (see assistant/privacy.py). TEE/ models
     # are attested and sign their replies; private/ models are end-to-end encrypted as
     # well. A conversation keeps the privacy it started with, whatever happens here.
-    # The defaults are the two that verified end to end - attestation with NVIDIA's GPU
-    # evidence, and signed replies - in StoryLoom's survey of Sept 2026, and need
-    # nothing installed. The vision model was TEE/qwen3.6-27b until, in Nov 2026, its
-    # attestation came relayed for a nonce of the relay's choosing, which is refused;
-    # its successor attested fully, GPU evidence and all, and read a test capture
-    # without fault.
+    # The defaults are private/ ones, sealed end to end to an enclave attested itself,
+    # after 4.0.0 (Nov 2026): every TEE/ model nano-gpt offered by then was attested as
+    # RedPill's gateway, which does not show that the model's own host is an enclave,
+    # so Strict refuses them (privacy.GATEWAY_SHORTFALL). Before, TEE/glm-5.3-flash,
+    # TEE/glm-5.3 and TEE/qwen3.8-27b. Tinfoil's client, which these need, is in the
+    # AppImage; from source, tools/install-private-mode.sh. GLM 5.3 Flash has no
+    # private twin any more (retired Oct 2026): DeepSeek V4.1 Flash, fast, cheap and
+    # able to see, answers and reads images in its place.
     "privacy_mode": False,
-    "private_text_model": "TEE/glm-5.3-flash",
+    "private_text_model": "private/deepseek-v4-1-flash",
     # Answers instead of private_text_model when the premium option is on, as
     # premium_text_model does outside Privacy Mode.
-    "private_premium_model": "TEE/glm-5.3",
-    "private_vision_model": "TEE/qwen3.8-27b",
+    "private_premium_model": "private/glm-5-3",
+    "private_vision_model": "private/deepseek-v4-1-flash",
     # Refuse an enclave that proved less than it could - no GPU evidence, an Intel TCB
     # that is not UpToDate, Intel's or NVIDIA's services out of reach, an older release
     # - rather than sending with an amber banner; and after a reply whose signature did

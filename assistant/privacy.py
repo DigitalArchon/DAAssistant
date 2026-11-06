@@ -6,7 +6,10 @@ nano-gpt offers two kinds, and this module is the one place that tells them apar
              enclave is attested (below), and every reply is checked to be signed by
              the key that attestation vouched for. The text still passes nano-gpt's
              gateway in the clear: attestation proves where the model runs, not that
-             nano-gpt cannot read it. Their own docs say so.
+             nano-gpt cannot read it. Their own docs say so. And most of them (all,
+             in Nov 2026) are attested as RedPill's gateway, which passes requests on
+             to the model's host: that attestation is partial, since it does not show
+             the model's own enclave (TeeClient._attest_signing_key).
   private/*  nano-gpt's Private Mode: end-to-end encrypted. The body is sealed on this
              machine to a key only the attested enclave holds, and the reply comes back
              sealed the same way; nano-gpt relays ciphertext. See sealed.py.
@@ -63,6 +66,10 @@ TEE_MAX_AGE_SECONDS = 15 * 60
 
 TEE = "tee"
 E2EE = "e2ee"
+
+# What an attestation of RedPill's gateway lacks (TeeClient._attest_signing_key): it
+# turns the banner amber, and Strict refuses it.
+GATEWAY_SHORTFALL = "RedPill's gateway, not the model's host"
 
 # What one reply's check found. See Receipt.
 SIGNED = "signed"            # TEE: the attested key signed this reply's record
@@ -138,7 +145,11 @@ def kind_of(model):
 
 
 def offers_private_mode(api_url):
-    return (urlparse(api_url or "").hostname or "").lower() in PRIVATE_MODE_HOSTS
+    try:
+        host = urlparse(api_url or "").hostname
+    except ValueError:      # "http://[fd00::5", half typed: netguard.problem says why
+        return False
+    return (host or "").lower() in PRIVATE_MODE_HOSTS
 
 
 def describe(model):
@@ -573,7 +584,19 @@ class TeeClient:
                            f"{unsealed_words(', '.join(sorted(body))) or 'nothing'})")
 
     def _attest_signing_key(self, body, nonce):
-        """aci/1: one enclave, its reply-signing key and our nonce in its quote."""
+        """One enclave, its reply-signing key and our nonce in its quote.
+
+        What nano-gpt relays for its TEE/ models in this shape is RedPill's gateway
+        (aci/1, "serving": "aggregator"; live, Nov 2026, every one of them, one signing
+        key for all), which passes each request on to the model's host. Its quote is the
+        gateway's; the GPU evidence is the upstream node's, made with our nonce but not
+        bound to that quote; that the model itself runs in an enclave is not in it -
+        RedPill says that per reply, in a signed receipt nano-gpt does not pass on. So
+        such an attestation is partial (GATEWAY_SHORTFALL), and Strict refuses it: a
+        private/ model is sealed end to end, to an enclave that is attested itself.
+        Keys RedPill attests that have expired are refused. From DA Vibe Manager
+        (Nov 2026).
+        """
         address = body.get("signing_address")
         address = address if isinstance(address, str) and address.startswith("0x") else None
         if address is None:
@@ -592,6 +615,20 @@ class TeeClient:
                                f"to our nonce")
 
         check = _Checks("the Intel TDX quote binds the signing key to our nonce")
+        attested = body.get("attestation")
+        keyset = attested.get("workload_keyset") if isinstance(attested, dict) else None
+        expires = keyset.get("not_after") if isinstance(keyset, dict) else None
+        if isinstance(expires, (int, float)) and not isinstance(expires, bool) \
+                and expires < time.time():
+            raise PrivacyError(f"{self.model}'s attested keys expired on "
+                               f"{time.strftime('%Y-%m-%d', time.gmtime(expires))}")
+        serving = body.get("service_capabilities")
+        if body.get("api_version") == "aci/1" or (
+                isinstance(serving, dict) and serving.get("serving") == "aggregator"):
+            check.fall_short(GATEWAY_SHORTFALL)
+            check.note("this is RedPill's gateway, which passes each request on to the "
+                       "model's host: the gateway's quote and the GPUs' evidence are "
+                       "checked, not that the model itself runs in an enclave")
         self._check_quote(raw, check)
         payload = _json(body.get("nvidia_payload"))
         if isinstance(payload, dict):
@@ -1066,8 +1103,12 @@ class PrivacySession:
                 attestation = client.attest()
             lacking = attestation.fell_short if self.strict else []
             if lacking:
-                raise PrivacyError(f"{model}'s enclave proved less than it could "
-                                   f"({', '.join(lacking)}), and strict attestation is on")
+                raise PrivacyError(
+                    f"{model}'s enclave proved less than it could "
+                    f"({', '.join(lacking)}), and strict attestation is on"
+                    + ("; nano-gpt's TEE/ models come through RedPill's gateway, which "
+                       "cannot prove more: choose a private/ model, sealed end to end, in "
+                       "Settings → Privacy" if GATEWAY_SHORTFALL in lacking else ""))
         except ModelRetired as e:
             self.note_retired(e)
             raise

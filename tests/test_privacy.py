@@ -110,8 +110,10 @@ class FakeNanoGpt:
 
     def __init__(self, nonce_bound=True, gpu=True, evidence=True, signer=KEY,
                  attestation_status=200, signature_status=200, reply="Hello there",
-                 intel=UP_TO_DATE, nvidia=8, nras_status=200):
+                 intel=UP_TO_DATE, nvidia=8, nras_status=200, attestation_extra=None):
         self.nonce_bound = nonce_bound
+        # More of the attestation's body: what RedPill's gateway adds, say.
+        self.attestation_extra = attestation_extra or {}
         self.gpu = gpu
         self.evidence = evidence
         self.signer = signer
@@ -154,6 +156,7 @@ class FakeNanoGpt:
                 "nvidia_payload": json.dumps(
                     {"nonce": nonce,
                      "evidence_list": [{"evidence": "e"}] if self.evidence else []}),
+                **self.attestation_extra,
             })
         if "/tee/signature/" in url:
             if self.signature_status != 200:
@@ -192,6 +195,11 @@ class TempConfig(unittest.TestCase):
         self.config = Config(os.path.join(self.dir, "c.json"))
         self.config.api_key = "k"
         self.config.api_url = API_URL
+        # The TEE/ models FakeNanoGpt attests, which were the defaults until the
+        # private/ ones (Nov 2026): what these tests send to, whatever the defaults.
+        self.config.private_text_model = TEXT
+        self.config.private_premium_model = "TEE/glm-5.3"
+        self.config.private_vision_model = VISION
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -2613,7 +2621,54 @@ class Sealed(unittest.TestCase):
         self.assertTrue(gemma["chat_template_kwargs"]["enable_thinking"])
 
 
-# ---- nano-gpt's words, and private/ models only sealed --------------------------------
+# ---- RedPill's gateway, nano-gpt's words, and private/ models only sealed ------------
+
+# What RedPill's gateway adds to an attestation (live, Nov 2026), its keys good to 2100.
+GATEWAY = {"api_version": "aci/1", "service_capabilities": {"serving": "aggregator"},
+           "attestation": {"workload_keyset": {"not_after": 4102444800}}}
+
+
+class GatewayAttestation(unittest.TestCase):
+    """What nano-gpt relays for its TEE/ models is RedPill's gateway, which passes each
+    request on to the model's host: its quote is the gateway's, and the model's own
+    enclave is not shown. It counted as a full attestation. From DA Vibe Manager."""
+
+    def attest(self, extra=GATEWAY):
+        return FakeNanoGpt(attestation_extra=extra).tee_client(API_URL, "k", TEXT).attest()
+
+    def test_the_gateways_attestation_is_partial_and_says_why(self):
+        attestation = self.attest()
+        self.assertEqual(attestation.level, "partial")
+        self.assertIn(privacy.GATEWAY_SHORTFALL, attestation.headline)
+        self.assertEqual(attestation.fell_short, [privacy.GATEWAY_SHORTFALL])
+        self.assertIn("not that the model itself runs in an enclave", attestation.detail)
+        self.assertEqual((attestation.gpus, attestation.tcb_status), (8, "UpToDate"),
+                         "every other check stands")
+
+    def test_either_of_its_marks_is_the_gateway(self):
+        for extra in ({"api_version": "aci/1"},
+                      {"service_capabilities": {"serving": "aggregator"}}):
+            self.assertEqual(self.attest(extra).fell_short, [privacy.GATEWAY_SHORTFALL])
+        self.assertEqual(self.attest({}).level, "full")
+
+    def test_keys_it_attests_that_have_expired_are_refused(self):
+        expired = dict(GATEWAY, attestation={"workload_keyset": {"not_after": 1700000000}})
+        with self.assertRaisesRegex(PrivacyError, "attested keys expired on 2023-11-14"):
+            self.attest(expired)
+
+    def test_strict_refuses_it_and_says_where_to_turn(self):
+        server = FakeNanoGpt(attestation_extra=GATEWAY)
+        strict = PrivacySession(API_URL, "k", TEXT, VISION, tee_factory=server.tee_client,
+                                strict=True)
+        with self.assertRaisesRegex(PrivacyError, "RedPill's gateway, not the model's "
+                                                  "host.*strict attestation is on.*choose "
+                                                  "a private/ model.*nothing was sent"):
+            strict.ensure(TEXT)
+        self.assertEqual(server.chat_posts, [])
+        relaxed = PrivacySession(API_URL, "k", TEXT, VISION, tee_factory=FakeNanoGpt(
+            attestation_extra=GATEWAY).tee_client)
+        self.assertEqual(relaxed.ensure(TEXT).level, "partial")
+
 
 class NanoGptsWords(unittest.TestCase):
     def test_they_are_one_short_line_with_nothing_a_reader_cannot_see(self):
@@ -2661,6 +2716,15 @@ class SealedOnly(TempConfig):
         with self.assertRaisesRegex(LLMError, "Nothing was sent"):
             client.stream("private/glm-5-3", [{"role": "user", "content": "secret"}],
                           web_search=True)
+
+    def test_a_half_typed_address_offers_no_private_mode_and_says_why(self):
+        """It raised, from the Settings dialog as it was typed, once the defaults were
+        private/ models: only they ask whose the address is."""
+        self.assertFalse(privacy.offers_private_mode("http://[fd00::5"))
+        self.config.api_url = "http://[fd00::5"
+        self.config.private_text_model = "private/glm-5-3"
+        self.assertTrue(any("Not a web address" in found
+                            for found in privacy.problems(self.config)))
 
     def test_tee_and_other_models_still_go(self):
         server = FakeNanoGpt()

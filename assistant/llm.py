@@ -494,8 +494,26 @@ class LLMClient:
         headers["Content-Encoding"] = "gzip"
         return gzip.compress(raw, GZIP_LEVEL), headers
 
+    @staticmethod
+    def _refuse_unsealed(model):
+        """Raise LLMError for a private/ model on the plain path, however it is written.
+
+        End-to-end encrypted, so only ever sent sealed, by _private_call. Chosen as an
+        ordinary model - the model browser lists them - it went to the provider's
+        ordinary endpoint, the whole conversation in the clear, while the browser called
+        it end-to-end encrypted. Asked before anything else is done with the request:
+        complete() and stream() search the web first, and the question would have gone
+        to the search provider. _post asks again, for every request."""
+        if privacy_module.sealed_only(model):
+            raise LLMError(f"Nothing was sent. {str(model).strip()} is end-to-end "
+                           f"encrypted, and is only ever sent sealed, in a private "
+                           f"conversation: switch Privacy Mode on and choose it under "
+                           f"Settings → Privacy, or choose another model.", model=model)
+
     def _post(self, payload, stream, cancel=None, provider=None):
-        provider = provider or self._provider(payload.get("model"))
+        model = payload.get("model")
+        self._refuse_unsealed(model)
+        provider = provider or self._provider(model)
         # https, or the local network: checked here, at the one place every request
         # leaves from, so that no setting or caller can send the key in the clear. And
         # a provider with no address or no key is said so, not left to a 401.
@@ -730,6 +748,7 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, None, system,
                                       privacy, status, max_tokens)
+        self._refuse_unsealed(model)
         if self._provider(model).stops(model):
             # One that has to be watched as it writes, to be stopped at all: streamed,
             # though nothing is shown, and without the search a stream would run.
@@ -881,6 +900,7 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, on_delta,
                                       system, privacy, status)
+        self._refuse_unsealed(model)
 
         # Ours to run, before the model is called, so the query is the user's question
         # rather than whatever the chat endpoint would have derived from the request.

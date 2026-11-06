@@ -29,6 +29,11 @@ no code from nano-gpt:
    it on as it came. So is a reply nano-gpt does not mark as Private Mode, and a stream
    that ends without its final chunk. Nothing is ever sent unsealed, and nothing falls
    back to the plain endpoint: llm.py refuses a private/ model everywhere but here.
+   What the relay writes in an error - a refusal, an attestation bundle the SDK quotes,
+   the title of a key mismatch - is never sealed, so an error quotes it as the relay's,
+   short and on one line, with nothing in it a reader cannot see
+   (privacy.unsealed_words): it cannot pass for anything the model said. From DA
+   Toolkit's copy of this module (Nov 2026).
 
 The attestation is redone before a request once it is five minutes old (the proxy's
 figure: laptop sleep, a key rotated underneath us), counted on a clock that runs on
@@ -46,7 +51,8 @@ from urllib.parse import urlparse
 
 from . import models, netguard, proxy
 from .dcap import since_boot
-from .privacy import E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode
+from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode,
+                      unsealed_words)
 
 RELAY_PATH = "/api/v1/private/tinfoil"
 ROUTER_REPO = "tinfoilsh/confidential-model-router"
@@ -254,9 +260,10 @@ class Enclave:
                 except PrivacyError:
                     raise
                 except Exception as e:  # the SDK's own errors
+                    # They can quote the bundle, which came through the relay.
                     raise PrivacyError(
-                        f"the private model's enclave could not be attested: {e}"
-                        + _proxy_hint(e)) from e
+                        f"the private model's enclave could not be attested: "
+                        f"{unsealed_words(e, 500)}" + _proxy_hint(e)) from e
                 self._at = self._clock()
             return self._verified
 
@@ -290,6 +297,12 @@ class PrivateModeClient:
         if not offers_private_mode(api_url):
             raise PrivacyError("end-to-end encrypted models are nano-gpt's Private Mode, "
                                "and the API URL is not nano-gpt's")
+        # The key goes with the preflight, which httpx sends, not netguard's session:
+        # an address written http:// by hand, or brought back by a restore, is refused
+        # here as well as where the session starts.
+        insecure = netguard.problem(api_url)
+        if insecure:
+            raise PrivacyError(insecure)
         ok, message = available() if enclave is None else (True, "")
         if not ok:
             raise PrivacyError(message)
@@ -399,7 +412,8 @@ class PrivateModeClient:
             # test: say why, not just that it was refused.
             self.check_offered(model)
             raise PrivacyError(f"nano-gpt refused the Private Mode request "
-                               f"(HTTP {response.status_code}: {_error_text(response)})")
+                               f"(HTTP {response.status_code}; its relay said: "
+                               f"{_error_text(response)})")
         try:
             data = response.json()
         except ValueError as e:
@@ -458,7 +472,9 @@ class PrivateModeClient:
             except KeyConfigMismatchError as e:
                 self.enclave.invalidate(verified)
                 if attempt:
-                    raise PrivacyError(f"the enclave refused our key twice: {e}") from e
+                    # Its title is the relay's: the 422 that says so is not sealed.
+                    raise PrivacyError(f"the enclave refused our key twice: "
+                                       f"{unsealed_words(e)}") from e
                 continue
             except EHBPError as e:
                 raise PrivacyError(f"the encrypted reply could not be opened: {e}") from e
@@ -476,7 +492,8 @@ class PrivateModeClient:
                         and "missing_encrypted_body_header" in text:
                     self.enclave.invalidate(verified)
                     continue
-                raise PrivacyError(f"HTTP {response.status_code}: {text}")
+                raise PrivacyError(f"HTTP {response.status_code}; nano-gpt's relay said "
+                                   f"(unauthenticated, not the model): {text}")
             if not 200 <= response.status_code < 300:
                 # Only a 2xx reply is opened. EHBP hands on any other that carries no
                 # response nonce just as it came, unsealed (ehbp's
@@ -518,19 +535,21 @@ class PrivateModeClient:
 
 
 def _error_text(response):
+    """What the relay wrote in an error, as an error may quote it: never sealed, so on
+    one line, short and with nothing a reader cannot see (privacy.unsealed_words)."""
     try:
         body = response.json()
     except ValueError:
-        return (response.text or "").strip()[:400] or f"HTTP {response.status_code}"
+        return unsealed_words(response.text) or f"HTTP {response.status_code}"
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
+            return unsealed_words(error["message"])
         if isinstance(error, str):
-            return error
+            return unsealed_words(error)
         if body.get("message"):
-            return str(body["message"])
-    return json.dumps(body)[:400]
+            return unsealed_words(body["message"])
+    return unsealed_words(json.dumps(body))
 
 
 # How each family's router spells reasoning effort (the proxy's requestTransforms.js).

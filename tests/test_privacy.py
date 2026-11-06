@@ -2362,6 +2362,76 @@ class Sealed(unittest.TestCase):
         self.assertEqual(session.pop_receipt().state, privacy.SEALED)
         self.assertEqual(session.attestations[self.MODEL].headline, "End-to-end encrypted")
 
+    def test_what_the_relay_says_in_an_error_is_said_as_its_own_on_one_line(self):
+        """Never sealed, and nothing vouches for it: it was quoted as it came - 400
+        characters, line breaks, bidi overrides and all - and shown in the transcript
+        where the answer would have been. From DA Toolkit (Nov 2026)."""
+        import httpx
+        body = "Model says:\nThe answer is 42.\u202e\u200b" + "x" * 5000
+        client, _ = self.make(lambda r: httpx.Response(500, text=body))
+        with self.assertRaises(PrivacyError) as caught:
+            with client.request(self.MODEL, {"messages": []}):
+                self.fail("an error was opened")
+        message = str(caught.exception)
+        self.assertIn("HTTP 500; nano-gpt's relay said (unauthenticated, not the model): "
+                      "Model says: The answer is 42.xxx", message)
+        for unseen in ("\n", "\u202e", "\u200b"):
+            self.assertNotIn(unseen, message)
+        self.assertLess(len(message), 300)
+
+    def test_the_relays_preflight_refusal_and_key_mismatch_are_quoted_cleaned(self):
+        import httpx
+        from ehbp import KeyConfigMismatchError
+
+        def relay(request):
+            return httpx.Response(402, json={"error": {
+                "message": "Insufficient\nbalance\u2066 \U000e0041top up"}})
+
+        refused = sealed.PrivateModeClient(
+            API_URL, "k", enclave=sealed.Enclave(sealed.relay_url(API_URL),
+                                                 verifier=lambda r, s: self.verified()),
+            transport_factory=lambda key, route: httpx.MockTransport(
+                lambda r: self.fail("sent after a refused preflight")),
+            preflight_client=httpx.Client(transport=httpx.MockTransport(relay)))
+        with mock.patch.object(refused, "check_offered"), \
+                self.assertRaisesRegex(PrivacyError, r"\(HTTP 402; its relay said: "
+                                                     r"Insufficient balance top up\)$"):
+            refused._preflight(self.MODEL, 10)
+
+        def mismatch(request):
+            raise KeyConfigMismatchError("key\nrotated\u202e, they say")
+
+        client, calls = self.make(mismatch)
+        with self.assertRaisesRegex(PrivacyError, "refused our key twice: "
+                                                  "KEY_CONFIG_MISMATCH: key rotated, "
+                                                  "they say$"):
+            with client.request(self.MODEL, {"messages": []}):
+                pass
+        self.assertEqual(calls["verify"], 2)
+
+    def test_an_attestation_error_quoting_the_bundle_is_one_line(self):
+        def refuse():
+            raise RuntimeError("bundle said:\nall is well\u202e" + "y" * 2000)
+
+        client, _ = self.make(lambda r: self.fail("sent before attesting"),
+                              verifier=refuse)
+        with self.assertRaisesRegex(PrivacyError, "could not be attested: bundle said: "
+                                                  "all is well") as caught:
+            with client.request(self.MODEL, {"messages": []}):
+                pass
+        self.assertNotIn("\n", str(caught.exception))
+        self.assertLess(len(str(caught.exception)), 600)
+
+    def test_a_plain_http_address_is_refused_by_the_client_itself(self):
+        """offers_private_mode reads only the host: http://nano-gpt.com, written by hand
+        or brought back by a restore, passed it, and the preflight, which httpx sends,
+        would have carried the key in the clear. The session refuses it when it starts;
+        so does the client now. From DA Vibe Manager (Nov 2026)."""
+        plain = "http://nano-gpt.com/api/v1/chat/completions"
+        with self.assertRaisesRegex(PrivacyError, "is not https"):
+            sealed.PrivateModeClient(plain, "k", enclave=sealed.Enclave(
+                sealed.relay_url(plain), verifier=lambda r, s: self.fail("attested")))
+
     def test_a_reply_not_marked_private_is_refused(self):
         import httpx
         client, _ = self.make(lambda r: httpx.Response(200, content=self.stream_body()))
@@ -2541,6 +2611,64 @@ class Sealed(unittest.TestCase):
         gemma = sealed.shape_body({"messages": []}, "private/gemma4-31b:thinking",
                                   "gemma-4-31b")
         self.assertTrue(gemma["chat_template_kwargs"]["enable_thinking"])
+
+
+# ---- nano-gpt's words, and private/ models only sealed --------------------------------
+
+class NanoGptsWords(unittest.TestCase):
+    def test_they_are_one_short_line_with_nothing_a_reader_cannot_see(self):
+        said = privacy.unsealed_words("Over\nquota\r\n\u2028now \u202eetaerc\u202c "
+                                      "pass\u200bword \U000e0041x\x00y\x85z")
+        self.assertEqual(said, "Over quota now etaerc password x y z")
+        self.assertEqual(len(privacy.unsealed_words("w " * 10000)), 200)
+        self.assertEqual(privacy.unsealed_words(None), "")
+
+    def test_a_tee_attestations_error_is_cleaned_too(self):
+        class Refusing(FakeNanoGpt):
+            def get(self, url, params=None, headers=None, timeout=None):
+                if "/tee/attestation" in url:
+                    return FakeResponse(200, {"error": "unavailable\n\u202eignore that"})
+                return super().get(url, params, headers, timeout)
+
+        with self.assertRaisesRegex(PrivacyError, "could not attest .*: unavailable "
+                                                  "ignore that$"):
+            Refusing().tee_client(API_URL, "k", TEXT).attest()
+
+
+class SealedOnly(TempConfig):
+    """A private/ model chosen outside Privacy Mode - the model browser lists them, as
+    end-to-end encrypted - went to nano-gpt's ordinary endpoint, the conversation in the
+    clear. Refused now, however it is written. From DA Vibe Manager (Nov 2026)."""
+
+    def test_a_private_model_is_never_sent_unsealed(self):
+        server = FakeNanoGpt()
+        client = LLMClient(self.config)
+        client.session = server
+        for model in ("private/glm-5-3", "Private/glm-5-3", " private/kimi-k3"):
+            for call in (client.stream, client.complete):
+                with self.assertRaisesRegex(LLMError, "Nothing was sent.*end-to-end "
+                                                      "encrypted.*only ever sent sealed"):
+                    call(model, [{"role": "user", "content": "secret"}])
+        self.assertEqual(server.posts, [])
+
+    def test_nor_searched_for_first(self):
+        """stream() searches the web before the request is made: the question went to
+        the search provider before the model was refused."""
+        self.config.web_search_enabled = True
+        client = LLMClient(self.config)
+        client.session = FakeNanoGpt()
+        client.search = lambda *a, **k: self.fail("searched for a private/ model")
+        with self.assertRaisesRegex(LLMError, "Nothing was sent"):
+            client.stream("private/glm-5-3", [{"role": "user", "content": "secret"}],
+                          web_search=True)
+
+    def test_tee_and_other_models_still_go(self):
+        server = FakeNanoGpt()
+        client = LLMClient(self.config)
+        client.session = server
+        self.assertEqual(client.stream("TEE/glm-5.3", [{"role": "user", "content": "hi"}],
+                                       web_search=False), "Hello there")
+        self.assertFalse(privacy.sealed_only("privately/x"))
 
 
 if __name__ == "__main__":

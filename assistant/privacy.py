@@ -44,6 +44,7 @@ import json
 import secrets
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlparse
 
@@ -80,6 +81,23 @@ class PrivacyError(Exception):
     """A private request was refused before anything was sent."""
 
 
+def unsealed_words(text, limit=200):
+    """What nano-gpt wrote - its gateway, or Private Mode's relay, which carries what the
+    enclave sealed and seals nothing of its own - as an error may quote it: on one line,
+    short, and without what a reader cannot see. Such an error is shown in the banner,
+    the status line and the transcript, beside what the model said, and nothing vouches
+    for it: a line break, a bidi override, a zero-width or tag character let it pass for
+    something else, or say more than it shows. Controls and line separators become
+    spaces, format characters (Unicode's Cf) go. Cut before it is cleaned: an error
+    body can be large. From DA Toolkit's relay_said (Nov 2026)."""
+    kept = []
+    for ch in str(text or "")[:4096]:
+        category = unicodedata.category(ch)
+        if category != "Cf":
+            kept.append(" " if category in ("Cc", "Zl", "Zp") else ch)
+    return " ".join("".join(kept).split())[:limit]
+
+
 class ModelRetired(PrivacyError):
     """nano-gpt no longer offers this Private Mode model. Attesting says nothing about
     it - the enclave is Tinfoil's router whatever the model - so without this a retired
@@ -101,6 +119,13 @@ def is_tee(model):
 
 def is_private_mode(model):
     return bool(model) and model.startswith("private/")
+
+
+def sealed_only(model):
+    """Whether `model` may only ever be sent sealed: a private/ model however it is
+    written ("Private/...", a space before it), so that the plain path refuses it
+    (llm.LLMClient._post). When in doubt, sealed. From DA Vibe Manager (Nov 2026)."""
+    return str(model or "").strip().lower().startswith("private/")
 
 
 def kind_of(model):
@@ -321,16 +346,16 @@ def _bases(api_url):
 
 
 def _error_text(response):
-    """The provider's message from an error response, or ""."""
+    """The provider's message from an error response, or "" (see unsealed_words)."""
     try:
         body = response.json()
     except ValueError:
-        return (getattr(response, "text", "") or "").strip()[:200]
+        return unsealed_words(getattr(response, "text", ""))
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict):
             error = error.get("message")
-        return str(error or body.get("message") or "")[:200]
+        return unsealed_words(error or body.get("message") or "")
     return ""
 
 
@@ -535,14 +560,17 @@ class TeeClient:
             why = ("made for a nonce the relay chose, not ours" if relayed != nonce
                    else "carries no binding of our nonce this app can check")
             raise PrivacyError(f"{self.model}'s attestation, relayed by its provider "
-                               f"({body.get('attestation_type') or 'unnamed'}), was {why}, "
+                               f"({unsealed_words(body.get('attestation_type'), 40) or 'unnamed'}"
+                               f"), was {why}, "
                                f"so it cannot show the enclave is live for this request")
         if body.get("signing_address") or body.get("intel_quote"):
             return self._attest_signing_key(body, nonce)
         if body.get("error"):
-            raise PrivacyError(f"nano-gpt could not attest {self.model}: {body['error']}")
+            raise PrivacyError(f"nano-gpt could not attest {self.model}: "
+                               f"{unsealed_words(body['error'])}")
         raise PrivacyError(f"{self.model}'s attestation is in a shape this app does not "
-                           f"recognise (it holds {', '.join(sorted(body)) or 'nothing'})")
+                           f"recognise (it holds "
+                           f"{unsealed_words(', '.join(sorted(body))) or 'nothing'})")
 
     def _attest_signing_key(self, body, nonce):
         """aci/1: one enclave, its reply-signing key and our nonce in its quote."""

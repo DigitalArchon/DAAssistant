@@ -199,6 +199,27 @@ class TheCaptureDialogToo(Case):
         self.assertIn(self.config.private_vision_model, dialog.plan.get_text())
         self.assertTrue(dialog.privacy_slot.get_children())
 
+    def test_a_plan_that_turns_on_the_search_box_follows_it(self):
+        from PIL import Image
+        from assistant.ui.dialogs import CaptureReviewDialog
+        answerer = (self.config.model("text"), "answers, seeing the image")
+        reader = (self.config.model("vision"), "reads the text for the search")
+        dialog = CaptureReviewDialog(Image.new("RGB", (60, 30), (255, 255, 255)),
+                                     "Query image", self.config, lambda *a: None,
+                                     ask_prompt=True, web_search_default=False,
+                                     plan=lambda web_search: ([reader] if web_search
+                                                              else []) + [answerer])
+        self.addCleanup(dialog.destroy)
+        self.assertEqual(dialog.plan.get_text(),
+                         f"Models: {TEXT} answers, seeing the image.")
+        dialog.search_check.set_active(True)
+        self.assertTrue(dialog.plan.get_text().startswith(
+            f"Models: {VISION} reads the text for the search, then {TEXT} answers, "
+            f"seeing the image. Web search:"))
+        dialog.search_check.set_active(False)
+        self.assertEqual(dialog.plan.get_text(),
+                         f"Models: {TEXT} answers, seeing the image.")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

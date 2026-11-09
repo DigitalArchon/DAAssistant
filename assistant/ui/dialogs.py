@@ -193,11 +193,13 @@ class ReviewRoute:
     def _show_plan(self):
         plan = getattr(self, "route_plan", None)
         privacy = getattr(self, "route_privacy", None)
+        web_search = self.search_check.get_active()
+        if callable(plan):
+            plan = plan(web_search)         # a route that turns on the search box
         if not plan:
             self.plan.hide()
             return
-        self.plan.set_markup(plan_markup(self.config, plan, privacy,
-                                         self.search_check.get_active()))
+        self.plan.set_markup(plan_markup(self.config, plan, privacy, web_search))
         self.plan.set_tooltip_text(
             "The models under Settings > Privacy, in Privacy Mode." if privacy else
             "Chosen in Settings > General. In the conversation that follows, the model "
@@ -236,7 +238,8 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
                  web_search_default=None, privacy=None, plan=None, language=None,
                  prompt_default=None):
         """`plan` is [(model, what it does)], in order (Assistant._capture_plan), so the
-        models are known before anything goes; set_route keeps it current."""
+        models are known before anything goes; set_route keeps it current. It may be a
+        function of whether the search box is ticked, called again as it is."""
         super().__init__(title=operation)
         self.image = image
         self.config = config

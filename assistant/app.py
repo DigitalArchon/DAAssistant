@@ -364,7 +364,8 @@ class Assistant:
         private - here, at once, so the dialog says so before Send rather than after -
         and switching it off leaves an opened private request private, as
         _confirm_privacy always has. `uses()` is which private models it needs, and
-        `plan_for(privacy)` names the models.
+        `plan_for(privacy)` names the models - as a list, or as a function of whether
+        the search box is ticked, for a route that turns on it (see _capture_plan).
         """
         def refresh():
             privacy, refused = route["privacy"], None
@@ -557,7 +558,10 @@ class Assistant:
                                 privacy=session, screenshot=screenshot)
 
         def plan_for(session):
-            return self._capture_plan(transcribe_first, answer_by_text, session)
+            # A function of the search box, which the dialog calls as it is ticked: a
+            # question to a model that sees takes the vision model in only for a search.
+            return lambda web_search: self._capture_plan(
+                transcribe_first, answer_by_text, session, web_search)
 
         dialog = CaptureReviewDialog(image, title, self.config, on_confirm,
                                      ask_prompt=ask_prompt, on_recrop=on_recrop,
@@ -569,7 +573,7 @@ class Assistant:
         self._watch_review(dialog, route, lambda: ("vision", self._answer_role()),
                            plan_for)
 
-    def _capture_plan(self, transcribe_first, answer_by_text, privacy):
+    def _capture_plan(self, transcribe_first, answer_by_text, privacy, web_search=False):
         """[(model, what it does)] for this capture, in order: for the review dialog to
         say, before anything is sent, which models the capture goes to. The same
         choices as the operations themselves make - _image_answer's among them."""
@@ -580,7 +584,10 @@ class Assistant:
         if not answer_by_text:
             return [(reader, "transcribes the text")]
         if catalogue.accepts_images(self.config, answerer):
-            return [(reader, "reads the text"), (answerer, "answers, seeing the image")]
+            if web_search:
+                return [(reader, "reads the text for the search"),
+                        (answerer, "answers, seeing the image")]
+            return [(answerer, "answers, seeing the image")]
         return [(reader, "reads and describes the image"),
                 (answerer, "answers from that reading")]
 
@@ -594,8 +601,10 @@ class Assistant:
                       screenshot=None):
         """Answer a question about a capture with the answering model.
 
-        If that model accepts images, it is given the image itself, with the OCR model's
-        literal reading beside the question (see _read_preflight). If it does not - or
+        If that model accepts images, it is given the image itself, and nothing else
+        sees the capture - unless the question is to be searched on the web, which
+        cannot see the image: then the OCR model reads it first, for the search and
+        for beside the question (see _read_preflight). If it does not accept images - or
         the catalogue does not list it - the vision model reads the image first,
         transcribing its text and describing what it shows, and the answering model
         answers from that reading. Either way the capture stays with the conversation,
@@ -606,12 +615,12 @@ class Assistant:
         if catalogue.accepts_images(self.config, answerer):
             self._open_chat(
                 title, prompts.query_image(question), question,
-                image_base64=image_base64,
-                web_search=web_search, system=prompts.query_image_system(language),
+                image_base64=image_base64, web_search=web_search,
+                system=prompts.query_image_system(language, transcribed=web_search),
                 preflight=self._read_preflight(
                     image_base64,
                     lambda q, extracted=None: (prompts.query_image(q, extracted), q),
-                    question, privacy),
+                    question, privacy) if web_search else None,
                 privacy=privacy, screenshot=screenshot)
             return
         reader = privacy.vision_model if privacy else self.config.model("vision")
@@ -696,12 +705,12 @@ class Assistant:
     def _read_preflight(self, image_base64, build, question, privacy=None):
         """Read the image with the OCR model, and put the text beside the question.
 
-        Two jobs for one cheap call. The model answering has the picture, but a literal
-        reading from a model doing nothing else is what keeps an error code, a version
-        or a stack frame exact - reading pixels while also reasoning about them is where
-        a digit goes astray, and this app is pointed at error dialogs and consoles. And
-        a web search cannot see the image at all, so without this it could only search
-        for the question.
+        Made only for a question to be searched on the web (_image_answer): a search
+        cannot see the image at all, so without this it could only search for the
+        question. Once made, the reading goes beside the question as well - a literal
+        reading from a model doing nothing else keeps an error code, a version or a
+        stack frame exact. Without a search, a model that sees reads the capture itself
+        and is asked nothing twice.
 
         Unlike _transcribe_preflight this adds to the request rather than replacing it:
         the image still goes to the model that answers. If nothing readable comes back,

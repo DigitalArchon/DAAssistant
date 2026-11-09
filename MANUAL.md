@@ -129,12 +129,10 @@ and that reading goes with every message to such a model instead.
 **Query image selection** is answered by your answering model. How depends on whether
 that model can see images, which the app looks up in the provider's model list:
 
-- **If it can**, it is given the image itself. The vision model reads the region first,
-  and its text goes beside the question. The answering model has the picture, but a
-  literal reading from a model given only that job is what keeps an error code, a
-  version or a stack frame exact — reading pixels while also reasoning about them is
-  where a digit goes astray, and this app is mostly pointed at error dialogs, consoles
-  and text in page images.
+- **If it can**, it is given the image itself, and the capture goes to no other model.
+  The one exception is a question with **Search the web** ticked: a search cannot see
+  the image, so the vision model reads the region's text first, for the search to look
+  up, and that text goes beside your question too.
 - **If it cannot**, or the model list does not include it, the vision model reads the
   image for it: every piece of text, verbatim, and a description of the rest — the kind
   of window, its layout, what is selected or disabled, icons and colours that mean
@@ -142,7 +140,8 @@ that model can see images, which the app looks up in the provider's model list:
   question so you can see what it had to go on.
 
 Either way the reading arrives whole; only the search query is cut down to a distinctive
-line or two. One cheap vision call, on the first message of an image query.
+line or two. At most one cheap vision call, on the first message of an image query, and
+none for a model that sees answering without a search.
 
 Web search can be switched on or off for each individual request, from the **Search the
 web** box on the send dialog. The three operations that cannot benefit from it —
@@ -270,7 +269,7 @@ provider's list does not say which do; then all are listed, and the browser says
 |---|---|---|
 | Text model | answering: clipboard operations, translation, questions about images, and follow-ups | everyday quality |
 | Premium text model | answering instead of the text model when **Use premium text model** is ticked; **Premium** in the model menu | your best text model |
-| Vision model (OCR) | OCR's transcription, stage one of Translate image selection, and reading the image for a model that cannot see | a cheap, literal reader |
+| Vision model (OCR) | OCR's transcription, stage one of Translate image selection, reading the image for a model that cannot see, and reading its text for a web search | a cheap, literal reader |
 
 A `private/` model is end-to-end encrypted, and is only ever sent sealed, in a private
 conversation: chosen here, outside Privacy Mode, it is refused before anything is sent,
@@ -558,7 +557,7 @@ the crafted `psycopg2.errors.DeadlockDetected deadlock detected` returned four e
 Stack Overflow and GitHub issue threads. It costs one cheap call per searched request and
 can be turned off under **Settings > Web search**.
 
-Failing that, the query is built from the question you asked and the material it is about — for an image query, the text the OCR pass read out of the capture —
+Failing that, the query is built from the question you asked and the material it is about — for an image query, the text the vision model read out of the capture —
 rather than scraped back out of the prompt, which carries labels the model needs and a
 search engine trips over. Measured, `Can you identify this song? --- Text visible in the
 image: <lyrics>` returned two on-target results out of five, the rest generic "identify

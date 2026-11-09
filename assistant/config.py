@@ -40,7 +40,8 @@ DEFAULTS = {
     "premium_text_model": "anthropic/claude-sonnet-5.5",
     # Reads images: OCR, stage one of Translate image selection, and - when the text
     # model answering a question about an image cannot see images - the transcription
-    # and description it answers from. A cheap, literal reader.
+    # and description it answers from; for one that can, only the text a web search on
+    # the question needs. A cheap, literal reader.
     "vision_model": "Qwen/Qwen3-VL-235B-A22B-Instruct",
     "use_premium": False,
     # Privacy Mode: every operation, and every follow-up, goes only to these models,

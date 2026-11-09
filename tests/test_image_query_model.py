@@ -3,15 +3,16 @@
 The selected text model answers - the premium one when the star is on by default, the
 private text model in Privacy Mode. What it is given depends on whether it can see:
 
-  - a model that accepts images gets the image itself, with the vision model's literal
-    transcription beside the question, and the conversation stays with it, image
-    attached;
+  - a model that accepts images gets the image itself, and the conversation stays with
+    it, image attached. The vision model is not asked at all - unless the question is
+    searched on the web, which cannot see the image: then it transcribes the text, for
+    the search and beside the question;
   - one that cannot (or that the catalogue does not list) gets the vision model's
     reading instead - the text verbatim and a description of the rest - and the
     conversation is a text one from then on.
 
 `vision_model` stays the cheap, literal reader: OCR, stage one of Translate image
-selection, and the reading above. Nothing in the UI would show the plumbing going wrong
+selection, the readings above. Nothing in the UI would show the plumbing going wrong
 - some model still answers, just worse - hence these.
 """
 
@@ -178,7 +179,7 @@ class TheReviewSaysWhichModels(ImageQueryCase):
     """The capture is on screen with Send under it: which models it is about to go to,
     and for what, is said there - not only afterwards, in the chat window."""
 
-    def plan(self, operation):
+    def plan(self, operation, web_search=False):
         getattr(self.app, operation)()
         started = self.app.started
         original = app_module.CaptureReviewDialog
@@ -191,7 +192,10 @@ class TheReviewSaysWhichModels(ImageQueryCase):
                 answer_by_text=started["answer_by_text"])
         finally:
             app_module.CaptureReviewDialog = original
-        return [(str(model), job) for model, job in CaptureDialogStub.plans[-1]]
+        plan = CaptureDialogStub.plans[-1]
+        if callable(plan):
+            plan = plan(web_search)     # the dialog asks again as the search box changes
+        return [(str(model), job) for model, job in plan]
 
     def test_ocr_is_the_vision_model_alone(self):
         self.assertEqual(self.plan("ocr_only"), [(OCR_MODEL, "transcribes the text")])
@@ -205,18 +209,27 @@ class TheReviewSaysWhichModels(ImageQueryCase):
     def test_a_question_says_whether_the_answering_model_sees_the_image(self):
         self.sees_images = True
         self.assertEqual(self.plan("query_image"),
-                         [(OCR_MODEL, "reads the text"),
-                          (TEXT_MODEL, "answers, seeing the image")])
+                         [(TEXT_MODEL, "answers, seeing the image")])
         self.sees_images = False
+        for web_search in (False, True):
+            self.assertEqual(self.plan("query_image", web_search),
+                             [(OCR_MODEL, "reads and describes the image"),
+                              (TEXT_MODEL, "answers from that reading")])
+
+    def test_a_model_that_sees_shares_the_capture_only_for_a_search(self):
+        self.sees_images = True
+        self.config.use_premium = True
         self.assertEqual(self.plan("query_image"),
-                         [(OCR_MODEL, "reads and describes the image"),
-                          (TEXT_MODEL, "answers from that reading")])
+                         [(PREMIUM_MODEL, "answers, seeing the image")])
+        self.assertEqual(self.plan("query_image", web_search=True),
+                         [(OCR_MODEL, "reads the text for the search"),
+                          (PREMIUM_MODEL, "answers, seeing the image")])
 
     def test_the_models_carry_their_providers(self):
         self.config.vision_provider = "ollama"
         getattr(self.app, "ocr_only")()
         self.plan("ocr_only")
-        [(model, _job)] = CaptureDialogStub.plans[-1]
+        [(model, _job)] = CaptureDialogStub.plans[-1](False)
         self.assertEqual(model.provider, "ollama")
 
 
@@ -276,23 +289,38 @@ class ATextModelThatSeesImages(ImageQueryCase):
                          "the image itself must be sent, not a reading of it")
         self.assertIsNone(opened["first_model"])
         self.assertEqual(opened["system"],
-                         prompts.query_image_system(self.config.default_language))
-        self.assertIn(CaptureDialogStub.prompt, opened["prompt"])
+                         prompts.query_image_system(self.config.default_language,
+                                                    transcribed=False))
+        self.assertNotIn("transcription", opened["system"].lower(),
+                         "no transcription goes with it, so none should be promised")
+        self.assertEqual(opened["prompt"], CaptureDialogStub.prompt)
 
-    def test_the_cheap_model_reads_the_text_beside_the_question(self):
-        """A literal reading keeps an error code exact, and gives a search words the
-        image only holds in its pixels. One cheap call, whether searching or not."""
-        for web_search in (True, False):
+    def test_without_a_search_the_vision_model_is_not_asked(self):
+        """It sees the capture itself: a second model reading it first only costs a
+        call and a wait, and sends the capture somewhere it need not go."""
+        for premium in (False, True):
+            self.config.use_premium = premium
             self.client.calls.clear()
-            opened = self._confirm(web_search=web_search)
-            update = opened["preflight"](threading.Event(), lambda _m: None)
-            self.assertIn(TRANSCRIPTION, update["content"])
-            self.assertIn(CaptureDialogStub.prompt, update["content"])
-            self.assertEqual(update["display"], CaptureDialogStub.prompt)
-            passes = [c for c in self.client.calls if c["kind"] == "complete"]
-            self.assertEqual([p["model"] for p in passes], [OCR_MODEL])
-            self.assertEqual(passes[0]["prompt"], prompts.OCR)
-            self.assertTrue(passes[0]["image"])
+            opened = self._confirm(web_search=False)
+            self.assertIsNone(opened["preflight"])
+            self.assertEqual(self.client.calls, [])
+
+    def test_for_a_search_the_cheap_model_reads_the_text_beside_the_question(self):
+        """A search cannot see the image: the cheap model's reading gives it the words
+        the image only holds in its pixels, and goes beside the question too, where it
+        keeps an error code exact. One cheap call."""
+        opened = self._confirm(web_search=True)
+        self.assertEqual(opened["system"],
+                         prompts.query_image_system(self.config.default_language))
+        update = opened["preflight"](threading.Event(), lambda _m: None)
+        self.assertIn(TRANSCRIPTION, update["content"])
+        self.assertIn(CaptureDialogStub.prompt, update["content"])
+        self.assertEqual(update["display"], CaptureDialogStub.prompt)
+        self.assertIn(TRANSCRIPTION, update["search_query"])
+        passes = [c for c in self.client.calls if c["kind"] == "complete"]
+        self.assertEqual([p["model"] for p in passes], [OCR_MODEL])
+        self.assertEqual(passes[0]["prompt"], prompts.OCR)
+        self.assertTrue(passes[0]["image"])
 
     def test_an_image_with_no_text_is_sent_as_it_was(self):
         self.client.transcription = "NO TEXT FOUND"
@@ -446,6 +474,8 @@ class PrivacyModeImageQueries(ImageQueryCase):
         self.assertTrue(opened["image_first"])
         self.assertEqual(opened["image"], "IMAGEDATA")
         self.assertEqual(self.asked[-1], self.PRIVATE_TEXT)       # at Send
+        # No search in Privacy Mode, so no reading by the private vision model first.
+        self.assertIsNone(opened["preflight"])
 
 
 class AConversationFollowsItsModelMenu(unittest.TestCase):

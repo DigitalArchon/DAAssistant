@@ -86,15 +86,25 @@ def excerpt(text, limit=SEARCH_EXCERPT_CHARS):
     return "\n".join(kept) or text[:limit]
 
 
-def query_image_system(language):
+def query_image_system(language, transcribed=True):
+    """`transcribed`: whether a transcription goes beside the question - made only for
+    one searched on the web (Assistant._image_answer), and absent even then from an
+    image with no text in it."""
+    if transcribed:
+        reading = (
+            "A transcription of the image, made by a model given only that job, usually "
+            "accompanies it. Take error codes, identifiers, versions, paths and exact "
+            "wording from the transcription rather than reading them off the picture a "
+            "second time, and quote them exactly. The image is authoritative where the "
+            "two disagree, and it is the only place layout, colour, state, highlighting "
+            "and anything that looks wrong can be seen at all - so use both.\n\n")
+    else:
+        reading = (
+            "Read error codes, identifiers, versions, paths and exact wording off the "
+            "image character by character, and quote them exactly.\n\n")
     return (
         "Answer the user's question about the attached image.\n\n"
-        "A transcription of the image, made by a model given only that job, usually "
-        "accompanies it. Take error codes, identifiers, versions, paths and exact "
-        "wording from the transcription rather than reading them off the picture a "
-        "second time, and quote them exactly. The image is authoritative where the two "
-        "disagree, and it is the only place layout, colour, state, highlighting and "
-        "anything that looks wrong can be seen at all - so use both.\n\n"
+        f"{reading}"
         "If the image does not contain enough information to answer, say so plainly "
         f"instead of guessing. Reply in {language}, formatted as Markdown."
     )
@@ -103,10 +113,11 @@ def query_image_system(language):
 def query_image(question, transcription=None):
     """The user's turn for a question about a capture: the question and the reading.
 
-    The transcription is here for two readers. The model answering has the picture as
-    well, but a literal reading from a model that did nothing else is what keeps an
-    error code or a stack frame exact. And a web search cannot see the image at all, so
-    without this it could only ever search for the question.
+    The transcription is made for a web search, which cannot see the image at all and
+    without it could only ever search for the question; there is none otherwise. Made,
+    it serves the model answering too: it has the picture as well, but a literal
+    reading from a model that did nothing else keeps an error code or a stack frame
+    exact.
 
     Nothing else belongs in this turn - it is the user's own words plus what was on
     screen, and the query is built from it.

@@ -207,7 +207,9 @@ pictures and text files to your next message with it, or drop files on the messa
 or the conversation. Each shows as a chip above the message box until you send, with ×
 to take it off again. A message can be pictures alone.
 
-- **Pictures** (PNG, JPEG, WebP, GIF, BMP) open in the same black-out editor first;
+- **Pictures** (PNG, JPEG, WebP, GIF, BMP: only those formats' readers ever look at a
+  file, which is how a file made to trip one of the others is kept away from it) open in
+  the same black-out editor first;
   **Attach** sends the picture as it looks there. It is then decoded to pixels and
   re-encoded from those pixels alone: no EXIF (location, camera, timestamps, the
   embedded thumbnail), XMP, ICC profile, text chunks or comments, only the first frame
@@ -621,9 +623,12 @@ rather than "what does this error mean" — because a stack trace pasted into a 
 finds nothing. Measured, that literal paste returned HTTP 504 and no usable results, while
 the crafted `psycopg2.errors.DeadlockDetected deadlock detected` returned four exact
 Stack Overflow and GitHub issue threads. It costs one cheap call per searched request and
-can be turned off under **Settings > Web search**.
+can be turned off under **Settings > Web search**. If the model cannot write a query (its
+provider is down, or it answers with an explanation instead), nothing is searched: the
+message as it is - a pasted page, the text read from a capture - is never sent in its
+place, and the answer says it was not searched.
 
-Failing that, the query is built from the question you asked and the material it is about — for an image query, the text the vision model read out of the capture —
+With it off, the query is built from the question you asked and the material it is about — for an image query, the text the vision model read out of the capture —
 rather than scraped back out of the prompt, which carries labels the model needs and a
 search engine trips over. Measured, `Can you identify this song? --- Text visible in the
 image: <lyrics>` returned two on-target results out of five, the rest generic "identify
@@ -668,6 +673,19 @@ response, which is why they cannot be the app's source of citations.
 
 Turn it off with *List the sources searched* under **Settings > Web search** if you
 prefer terser answers.
+
+**Results are untrusted.** A page can carry text written to steer the model. The results
+reach it labelled as web content, to use as evidence and never as instructions; text in
+them that looks like instructions to the model is named to it, which is told to ignore it,
+and the answer says so too; and characters no one can see - a sentence written in
+invisible Unicode tag characters, bidi controls, zero-width spaces - are taken out before
+the model reads them.
+
+**Linkup keeps nothing.** It is the one provider NanoGPT allows under Zero Data Retention.
+Chosen as the provider, it is the only one ever asked: a search that fails there is not
+made with another. With any other provider, a search that fails on NanoGPT's side is made
+again with Valyu, and one refused because your NanoGPT account requires zero data
+retention with Linkup; the model is told which ran, and the answer says so.
 
 ## Look up word
 

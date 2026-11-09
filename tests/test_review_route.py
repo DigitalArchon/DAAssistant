@@ -120,10 +120,10 @@ class WhileTheDialogWaits(Case):
     def test_privacy_mode_switched_on_makes_it_private_before_send(self):
         dialog = self.open("query_text")
         dialog.search_check.set_active(True)
-        self.assertEqual(dialog.send.get_label(), "Send")
+        self.assertEqual(dialog.send.get_label(), "_Send")
         self.config.privacy_mode = True
         self.app._refresh_reviews()
-        self.assertEqual(dialog.send.get_label(), "Send privately")
+        self.assertEqual(dialog.send.get_label(), "_Send privately")
         self.assertEqual(dialog.header.get_subtitle(), "Review before sending privately")
         self.assertTrue(dialog.privacy_slot.get_children(), "no Privacy Mode note")
         self.assertFalse(dialog.search_check.get_active())
@@ -144,7 +144,7 @@ class WhileTheDialogWaits(Case):
         self.app._refresh_reviews()
         self.config.privacy_mode = False
         self.app._refresh_reviews()
-        self.assertEqual(dialog.send.get_label(), "Send privately")
+        self.assertEqual(dialog.send.get_label(), "_Send privately")
 
     def test_privacy_mode_that_cannot_be_honoured_holds_send_and_says_why(self):
         dialog = self.open("query_text")
@@ -157,7 +157,7 @@ class WhileTheDialogWaits(Case):
         self.config.privacy_mode = False                  # and switched off, it can go
         self.app._refresh_reviews()
         self.assertTrue(dialog.send.get_sensitive())
-        self.assertEqual(dialog.send.get_label(), "Send")
+        self.assertEqual(dialog.send.get_label(), "_Send")
         self.assertTrue(dialog.plan.get_visible())
 
     def test_web_search_comes_back_as_it_was_left(self):
@@ -195,7 +195,7 @@ class TheCaptureDialogToo(Case):
         session = privacy.PrivacySession.start(self.config, uses=("vision", "text"))
         dialog.set_route(session, [(session.vision_model, "reads the text"),
                                    (session.text_model, "translates it")])
-        self.assertEqual(dialog.send.get_label(), "Send privately")
+        self.assertEqual(dialog.send.get_label(), "_Send privately")
         self.assertIn(self.config.private_vision_model, dialog.plan.get_text())
         self.assertTrue(dialog.privacy_slot.get_children())
 

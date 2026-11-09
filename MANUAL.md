@@ -64,11 +64,17 @@ seconds after. **Ctrl+F** finds text in the conversation: every match is marked,
 or F3 goes to the next and Shift+Enter to the one before, Escape closes it. In Search
 Encyclopedia it searches the article when that is where you were reading.
 Drag the bar above the message box to give it more room or less; the height you leave it
-at is kept for the next window. Each answer has a **Copy** of its own, copying it as the
+at is kept for the next window, as is the window's own size. Each answer has a **Copy** of its own, copying it as the
 Markdown it was. **Ctrl+plus** and **Ctrl+minus** (or Ctrl and the wheel) make the text
 larger or smaller, **Ctrl+0** puts it back, and the size is kept for the next window;
 **Ctrl+W** closes the window, and **Escape** stops an answer, as Stop does. A stopped
 answer keeps what had come, marked as cut short, and the conversation carries on from it.
+
+On the send dialogs, **Enter** in the question box sends, and **Ctrl+Enter** sends from
+anywhere - the way to send a translation, whose text box takes Enter as a new line;
+**Alt+S** is Send too, and **Escape** closes the dialog. Typing with an input method
+(Chinese, Japanese, Korean), Enter and Escape go to the text being composed first: Enter
+commits it rather than sending without it.
 
 A long conversation is fitted to the model: every turn resends everything, and once that
 is more than the model takes, the oldest exchanges after the first question - which holds

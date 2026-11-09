@@ -15,6 +15,7 @@ from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,
                 proxy as proxy_module, sealed, websearch)
 from ..vendored import location as vendored_location
+from . import keys
 from .model_browser import ModelBrowser
 
 # A dictionary dragged within Settings > Reference's list, by its handle.
@@ -77,6 +78,16 @@ def privacy_note(privacy, planned=None):
           "conversation stays private until it is closed.")
     box.pack_start(label, True, True, 0)
     return box
+
+
+def _show_capture(view, image, max_w=1400, max_h=900):
+    """Put the capture in `view` at its own size in device pixels, as ScreenshotViewer
+    does: a plain pixbuf is drawn one pixel per logical pixel, so on a scale-2 screen the
+    preview of a capture was twice its size and blurred. Shrunk to fit max_w x max_h
+    logical pixels."""
+    scale = max(1, view.get_scale_factor())
+    pixbuf = _scaled_pixbuf(image, max_w * scale, max_h * scale)
+    view.set_from_surface(Gdk.cairo_surface_create_from_pixbuf(pixbuf, scale, None))
 
 
 def _scaled_pixbuf(image, max_w, max_h):
@@ -180,7 +191,7 @@ class ReviewRoute:
         self.header.set_subtitle(
             "Nothing can be sent" if refused else
             "Review before sending privately" if privacy else "Review before sending")
-        self.send.set_label("Send privately" if privacy else "Send")
+        self.send.set_label("_Send privately" if privacy else "_Send")
         self.send.set_sensitive(not refused)
 
         for child in self.privacy_slot.get_children():
@@ -292,18 +303,19 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
         header.pack_start(cancel)
 
         if on_recrop is not None:
-            recrop = Gtk.Button.new_with_label("Re-crop")
+            recrop = Gtk.Button.new_with_mnemonic("_Re-crop")
             recrop.set_tooltip_text("Choose a different area of this same capture")
             recrop.connect("clicked", self._on_recrop)
             header.pack_start(recrop)
 
-        self.redact_button = Gtk.Button.new_with_label("Black out…")
+        self.redact_button = Gtk.Button.new_with_mnemonic("_Black out…")
         self.redact_button.set_tooltip_text(
             "Paint over anything that should not be sent - names, addresses, keys")
         self.redact_button.connect("clicked", lambda _w: self._on_redact())
         header.pack_start(self.redact_button)
 
-        self.send = Gtk.Button.new_with_label("Send")
+        # Alt+S, as well as Enter in the question box and Ctrl+Enter anywhere.
+        self.send = Gtk.Button.new_with_mnemonic("_Send")
         self.send.get_style_context().add_class("suggested-action")
         self.send.connect("clicked", lambda _w: self._confirm())
         header.pack_end(self.send)
@@ -321,8 +333,11 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
         scrolled.get_style_context().add_class("preview-frame")
         scrolled.set_hexpand(True)
         scrolled.set_vexpand(True)
-        self.preview = preview = Gtk.Image.new_from_pixbuf(
-            _scaled_pixbuf(image, 1400, 900))
+        self.preview = preview = Gtk.Image()
+        _show_capture(preview, image)
+        # Moved to a screen of another scale, drawn again for it.
+        preview.connect("notify::scale-factor",
+                        lambda view, _spec: _show_capture(view, self.image))
         preview.set_margin_top(6)
         preview.set_margin_bottom(6)
         scrolled.add(preview)
@@ -374,15 +389,22 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
         buf = self.prompt_view.get_buffer()
         return buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
 
-    def _on_key(self, _widget, event):
-        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and \
+    def _on_key(self, widget, event):
+        if event.keyval in keys.ENTER and \
                 not (event.state & Gdk.ModifierType.SHIFT_MASK):
+            if keys.input_method_takes(widget, event):
+                return True         # a candidate committed, not the question sent
             self._confirm()
             return True
         return False
 
     def _on_window_key(self, _widget, event):
+        if keys.control_enter(event):
+            self._confirm()
+            return True
         if event.keyval == Gdk.KEY_Escape:
+            if keys.input_method_takes(self.get_focus(), event):
+                return True         # what was being composed abandoned, not the dialog
             self.destroy()
             return True
         return False
@@ -402,7 +424,7 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
             self.image = image
             self._blacked_out += len(boxes)
             self.image_base64, self.info = imaging.prepare_for_vision(image, self.config)
-            self.preview.set_from_pixbuf(_scaled_pixbuf(image, 1400, 900))
+            _show_capture(self.preview, image)
             self.meta.set_text(f"{imaging.describe(self.info)} · {self._blacked_out} "
                                f"area{'s' if self._blacked_out != 1 else ''} blacked out")
 
@@ -463,7 +485,8 @@ class TextReviewDialog(ReviewRoute, Gtk.Window):
         cancel.connect("clicked", lambda _w: self.destroy())
         header.pack_start(cancel)
 
-        self.send = Gtk.Button.new_with_label("Send")
+        # Alt+S, as well as Enter in the question box and Ctrl+Enter anywhere.
+        self.send = Gtk.Button.new_with_mnemonic("_Send")
         self.send.get_style_context().add_class("suggested-action")
         self.send.connect("clicked", lambda _w: self._confirm())
         header.pack_end(self.send)
@@ -530,15 +553,22 @@ class TextReviewDialog(ReviewRoute, Gtk.Window):
         self.present()
         (self.prompt_view or self.textview).grab_focus()
 
-    def _on_key(self, _widget, event):
-        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and \
+    def _on_key(self, widget, event):
+        if event.keyval in keys.ENTER and \
                 not (event.state & Gdk.ModifierType.SHIFT_MASK):
+            if keys.input_method_takes(widget, event):
+                return True         # a candidate committed, not the question sent
             self._confirm()
             return True
         return False
 
     def _on_window_key(self, _widget, event):
+        if keys.control_enter(event):
+            self._confirm()
+            return True
         if event.keyval == Gdk.KEY_Escape:
+            if keys.input_method_takes(self.get_focus(), event):
+                return True         # what was being composed abandoned, not the dialog
             self.destroy()
             return True
         return False
@@ -612,8 +642,8 @@ class SettingsDialog(Gtk.Dialog):
         self._closed = False
         self.connect("destroy", lambda _w: setattr(self, "_closed", True))
         self.set_default_size(680, -1)
-        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        self.save_button = save = self.add_button("Save", Gtk.ResponseType.OK)
+        self.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        self.save_button = save = self.add_button("_Save", Gtk.ResponseType.OK)
         save.get_style_context().add_class("suggested-action")
 
         content = self.get_content_area()
@@ -631,7 +661,8 @@ class SettingsDialog(Gtk.Dialog):
         notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
         notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
         from .shortcuts import ShortcutsPage
-        notebook.append_page(self._build_actions(), Gtk.Label(label="Actions"))
+        notebook.append_page(self._scrolled(self._build_actions()),
+                             Gtk.Label(label="Actions"))
         self.shortcuts_page = ShortcutsPage(config, hotkeys)
         notebook.append_page(self.shortcuts_page, Gtk.Label(label="Shortcuts"))
         notebook.append_page(self._build_advanced(), Gtk.Label(label="Advanced"))
@@ -641,8 +672,15 @@ class SettingsDialog(Gtk.Dialog):
         # Under the pages, since the General page's choice of provider and the
         # Providers page's address can each be what is wrong.
         self.url_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.url_warning.get_style_context().add_class("warning-text")
         self.url_warning.set_no_show_all(True)
         content.pack_start(self.url_warning, False, False, 0)
+        # Why Save is held, when the reason is on a page other than the one open - or
+        # is a check still being made - beside the button, not only where it arose.
+        self.save_held = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.save_held.get_style_context().add_class("dim-label")
+        self.save_held.set_no_show_all(True)
+        content.pack_start(self.save_held, False, False, 0)
 
         self.show_all()
         self._sync_url_warning()
@@ -794,13 +832,23 @@ class SettingsDialog(Gtk.Dialog):
         """Why the providers' addresses as they stand here may not be used, or None."""
         return providers.refused(self._staged())
 
+    @staticmethod
+    def _scrolled(page):
+        """A page that can grow taller than a screen - six custom actions - scrolls:
+        the notebook asks for its tallest page on every page, and Save and Cancel went
+        off the bottom of a 1080-pixel screen."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_propagate_natural_height(True)
+        scrolled.set_max_content_height(560)
+        scrolled.add(page)
+        return scrolled
+
     def _sync_url_warning(self, _entry=None):
         if not hasattr(self, "url_warning"):        # still being built
             return
         problem = self.url_problem()
-        self.url_warning.set_markup(
-            f'<span foreground="#d23a31">{GLib.markup_escape_text(problem)}</span>'
-            if problem else "")
+        self.url_warning.set_text(problem or "")
         self.url_warning.set_visible(bool(problem))
         if hasattr(self, "privacy_problems"):       # built: Save follows what is typed
             self._sync_privacy()
@@ -1023,6 +1071,7 @@ class SettingsDialog(Gtk.Dialog):
         page.pack_start(self.privacy_strict, False, False, 0)
 
         self.privacy_problems = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.privacy_problems.get_style_context().add_class("warning-text")
         page.pack_start(self.privacy_problems, False, False, 0)
 
         self.e2ee_status = e2ee = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
@@ -1103,11 +1152,22 @@ class SettingsDialog(Gtk.Dialog):
             text = " ".join(found)
             if enabled:
                 text = "Privacy Mode cannot be switched on: " + text[0].lower() + text[1:]
-            self.privacy_problems.set_markup(
-                f'<span foreground="#d23a31">{GLib.markup_escape_text(text)}</span>')
+            self.privacy_problems.set_text(text)
         else:
             self.privacy_problems.set_text("")
         self.privacy_problems.set_visible(bool(found))
+        held = None
+        if self.url_problem():
+            pass                        # said in full under the pages already
+        elif enabled and found:
+            held = "Save waits until Privacy Mode can be used: see the Privacy page."
+        elif self.proxy_problem():
+            held = "Save waits until the proxy address can be used: see the Advanced page."
+        elif enabled and unsure:
+            held = ("Checking whether the end-to-end encrypted models can be used here; "
+                    "Save waits for the answer…")
+        self.save_held.set_text(held or "")
+        self.save_held.set_visible(bool(held))
         self.save_button.set_sensitive(not (enabled and (found or unsure))
                                        and not self.url_problem()
                                        and not self.proxy_problem())
@@ -1220,11 +1280,19 @@ class SettingsDialog(Gtk.Dialog):
         # Provider-specific rows appear only for their provider.
         self.search_combos["web_search_provider"][0].connect(
             "changed", lambda _w: self._sync_search_sensitivity())
+        self.search_combos["web_search_mode"][0].connect(
+            "changed", lambda _w: self._sync_search_sensitivity())
         return page
 
     def _sync_search_sensitivity(self):
-        on = self.search_enabled.get_active()
-        self.search_grid.set_sensitive(on)
+        # Greyed only by Mode off, which no request overrides: "Enable by default" is
+        # only where the send dialog's box starts, and a request ticked there is
+        # searched with every setting here, ticked by default or not.
+        on = (self.search_combos["web_search_mode"][0].get_active_id() or "") != "off"
+        for key, (combo, label) in self.search_combos.items():
+            if key != "web_search_mode":
+                combo.set_sensitive(on)
+                label.set_sensitive(on)
         self.search_citations.set_sensitive(on)
         self.search_craft.set_sensitive(on)
         provider = self.search_combos["web_search_provider"][0].get_active_id() or ""
@@ -1686,6 +1754,7 @@ class SettingsDialog(Gtk.Dialog):
         grid.attach(self._label("Proxy"), 0, 3, 1, 1)
         grid.attach(self.proxy_entry, 1, 3, 1, 1)
         self.proxy_warning = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.proxy_warning.get_style_context().add_class("warning-text")
         self.proxy_warning.set_no_show_all(True)
         page.pack_start(self.proxy_warning, False, False, 0)
         return page
@@ -1708,9 +1777,7 @@ class SettingsDialog(Gtk.Dialog):
 
     def _sync_proxy(self):
         problem = self.proxy_problem()
-        self.proxy_warning.set_markup(
-            f'<span foreground="#d23a31">{GLib.markup_escape_text(problem)}</span>'
-            if problem else "")
+        self.proxy_warning.set_text(problem or "")
         self.proxy_warning.set_visible(bool(problem))
         if hasattr(self, "privacy_problems"):
             self._sync_privacy()

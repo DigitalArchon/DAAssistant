@@ -145,7 +145,7 @@ class ADialogMadeAgain(Case):
                                lambda privacy: [(privacy.text_model if privacy
                                                  else TEXT, "answers")])
         self.assertIsNotNone(route["privacy"])
-        self.assertEqual(dialog.send.get_label(), "Send privately")
+        self.assertEqual(dialog.send.get_label(), "_Send privately")
 
     def test_the_privacy_note_names_the_models_the_plan_does(self):
         self.config.privacy_mode = True

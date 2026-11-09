@@ -85,13 +85,15 @@
   padding: 0 7px;
   border: 1px solid currentColor;
 }
-.privacy-ok { color: #2a9d5c; }
-.privacy-warn { color: #c08a12; }
-.privacy-bad { color: #d23a31; }
+/* The light theme's; ui/tones.py puts the dark theme's in front when it is in force. */
+.privacy-ok { color: #1d7f47; }
+.privacy-warn { color: #94650a; }
+.privacy-bad { color: #c4271f; }
+.warning-text { color: #c4271f; }
 .privacy-pending { opacity: 0.7; }
 
 .chat-bubble.chat-private {
-  border-left: 3px solid #2a9d5c;
+  border-left: 3px solid #1d7f47;
 }
 
 .privacy-banner {

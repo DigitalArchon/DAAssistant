@@ -114,6 +114,8 @@ class Assistant:
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        from .ui import tones
+        tones.install()             # status colours for the theme in force, and kept so
 
     def _warm_catalogue(self):
         """Refresh the model catalogue in the background, if it is stale.

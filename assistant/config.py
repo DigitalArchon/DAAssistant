@@ -148,6 +148,10 @@ DEFAULTS = {
     # The size of a conversation's text, as Ctrl+plus, Ctrl+minus and Ctrl+0 last left
     # it: 1.0 is the theme's own. Kept for the next window.
     "chat_zoom": 1.0,
+    # A conversation window's size as it was last left, in pixels; 0 until it has been
+    # resized. See ChatWindow._initial_size.
+    "chat_width": 0,
+    "chat_height": 0,
     # The user's own actions, Settings > Actions: [{"slot": 1-6, "name", "prompt",
     # "source": "clipboard" | "selection" | "region"}]. See hotkeys.CUSTOM_ACTIONS.
     "custom_actions": [],
@@ -196,6 +200,8 @@ RANGES = {
     "request_timeout": (1, None),
     "chat_prompt_height": (0, None),            # 0: never dragged
     "chat_zoom": (0.5, 3.0),                    # ui/chat.py's ZOOM_STEPS, end to end
+    "chat_width": (0, None),                    # 0: never resized
+    "chat_height": (0, None),
 }
 
 

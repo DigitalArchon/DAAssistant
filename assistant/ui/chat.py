@@ -13,9 +13,9 @@ import time
 from urllib.parse import quote, unquote
 
 from .. import errors, gtkcompat, webkitguard
-from gi.repository import Gdk, GLib, Gtk
+from gi.repository import Gdk, GLib, Gtk, Pango
 
-from . import (bubbles, find, lookups, markdown_html,
+from . import (bubbles, find, keys, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
 from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
                 providers, websearch)
@@ -470,8 +470,16 @@ class ChatWindow(Gtk.Window):
         # The answers an Ask again is to replace, until its answer has come.
         self._replacing = []
 
-        self.set_default_size(880, 720)
+        self.set_default_size(*self._initial_size())
         self.set_position(Gtk.WindowPosition.CENTER)
+        self._size_timer = None
+        self.connect("configure-event", self._on_configure)
+        # The theme can change with the window open: its transcript follows, rather
+        # than keeping the palette it opened with until it is closed.
+        settings = Gtk.Settings.get_default()
+        self._theme_handlers = [] if settings is None else [
+            settings.connect(f"notify::{name}", self._on_theme_changed)
+            for name in ("gtk-theme-name", "gtk-application-prefer-dark-theme")]
 
         self.header = header = Gtk.HeaderBar(show_close_button=True, title=title)
         self.set_titlebar(header)
@@ -1211,6 +1219,54 @@ class ChatWindow(Gtk.Window):
         self._prompt_height_timer = GLib.timeout_add(PROMPT_HEIGHT_SAVE_MS,
                                                      self._save_prompt_height)
 
+    # Window size: a conversation window opens at the size the last one was left, as
+    # long as it fits the screen. A subclass that sizes itself sets this False.
+    KEEPS_SIZE = True
+    _last_save_folder = None        # where a file was last saved from any window
+
+    def _initial_size(self):
+        width = self.config.chat_width if self.KEEPS_SIZE else 0
+        height = self.config.chat_height if self.KEEPS_SIZE else 0
+        width, height = width or 880, height or 720
+        display = Gdk.Display.get_default()
+        monitor = display and (display.get_primary_monitor() or display.get_monitor(0))
+        if monitor is not None:
+            area = monitor.get_workarea()
+            width, height = min(width, area.width), min(height, area.height)
+        return max(width, 420), max(height, 320)
+
+    def _on_configure(self, _widget, _event):
+        if not self.KEEPS_SIZE:
+            return False
+        if self._size_timer is not None:
+            GLib.source_remove(self._size_timer)
+        self._size_timer = GLib.timeout_add(PROMPT_HEIGHT_SAVE_MS, self._save_size)
+        return False
+
+    def _save_size(self):
+        self._size_timer = None
+        if self._destroyed or self.is_maximized():
+            return False            # a maximised window says nothing of the size wanted
+        width, height = self.get_size()
+        if (width, height) != (self.config.chat_width, self.config.chat_height):
+            self.config.chat_width, self.config.chat_height = width, height
+            try:
+                self.config.save()
+            except OSError as e:
+                print(f"[chat] window size not kept: {e}")
+        return False
+
+    def _on_theme_changed(self, *_args):
+        dark = _is_dark()
+        if self._destroyed or dark == self.dark:
+            return
+        self.dark = dark
+        if self.webview is not None:
+            bg = Gdk.RGBA()
+            bg.parse("#1e1f22" if dark else "#ffffff")
+            self.webview.set_background_color(bg)
+        self._render(full=True, new_page=True)
+
     def _save_prompt_height(self):
         self._prompt_height_timer = None
         height = self.prompt_box.get_allocated_height()
@@ -1272,6 +1328,12 @@ class ChatWindow(Gtk.Window):
 
         self.status = Gtk.Label(label="", xalign=1)
         self.status.get_style_context().add_class("dim-label")
+        # A long status - a privacy hold's reason, a dictionary hidden - is cut short
+        # with an ellipsis and given whole in its tooltip: unbounded, its width was the
+        # window's least, and one message pushed the window past the screen's edge.
+        self.status.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status.connect("notify::label", lambda label, _spec: label.set_tooltip_text(
+            label.get_text() or None))
         row.pack_start(self.status, False, False, 0)
 
         self.undo_button = Gtk.Button.new_with_label("Undo")
@@ -1466,6 +1528,8 @@ class ChatWindow(Gtk.Window):
         if self._destroyed:
             return                      # the view is gone; see _on_destroy
         turns = self._turns()
+        if full or new_page:
+            self._sync_again()
 
         if self.webview is None:
             # Same text the WebKit view shows, including `display` rather than the
@@ -1595,10 +1659,12 @@ class ChatWindow(Gtk.Window):
 
     # ---- sending ----------------------------------------------------------
 
-    def _on_entry_key(self, _widget, event):
-        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+    def _on_entry_key(self, widget, event):
+        if event.keyval in keys.ENTER:
             if event.state & Gdk.ModifierType.SHIFT_MASK:
                 return False        # let GTK insert the newline itself
+            if keys.input_method_takes(widget, event):
+                return True         # a candidate committed, not the message sent
             self._send()
             return True
         return False
@@ -1697,7 +1763,8 @@ class ChatWindow(Gtk.Window):
                     # after it, as a ValueError from Pillow once did. Logged by its kind
                     # alone: what it says can quote the file.
                     errors.record(f"Attaching a file failed: {type(e).__name__}")
-                    self.status.set_text(f"Not attached: {name}: {type(e).__name__}")
+                    self.status.set_text(f"Not attached: {name} could not be read, as a "
+                                         f"picture or as text")
                     continue
                 image, photo = picture
 
@@ -2112,9 +2179,10 @@ class ChatWindow(Gtk.Window):
                 GLib.idle_add(self._on_stream_error,
                               self._failure(stage, None, model, str(e)), cancel)
             except Exception as e:
+                errors.record(f"A request to {model} failed in its {stage} step: {e!r}")
                 GLib.idle_add(self._on_stream_error,
-                              self._failure(stage, None, model,
-                                            f"{type(e).__name__}: {e}"), cancel)
+                              self._failure(stage, None, model, errors.describe(e)),
+                              cancel)
             else:
                 receipt = privacy.pop_receipt() if privacy is not None else None
                 GLib.idle_add(self._on_stream_done, result, cancel, receipt, model,
@@ -2185,7 +2253,7 @@ class ChatWindow(Gtk.Window):
                 found = self._lookup(word, lambda m: GLib.idle_add(self._set_status, m))
             except Exception as e:
                 errors.record(f"Dictionary lookup of {word!r} failed: {e!r}")
-                GLib.idle_add(self._on_looked_up, None, f"{type(e).__name__}: {e}", add)
+                GLib.idle_add(self._on_looked_up, None, errors.describe(e), add)
             else:
                 GLib.idle_add(self._on_looked_up, found, None, add)
 
@@ -2302,6 +2370,8 @@ class ChatWindow(Gtk.Window):
                 self.find_bar.close()
                 return True
         if event.keyval == Gdk.KEY_Escape and self._cancel is not None:
+            if keys.input_method_takes(self.get_focus(), event):
+                return True             # what was being composed abandoned
             self._stop()                # Escape stops an answer, as Stop does
             return True
         if alt and event.keyval in (Gdk.KEY_Left, Gdk.KEY_Right) and self._lookup:
@@ -2653,9 +2723,22 @@ class ChatWindow(Gtk.Window):
             # After the finished answer has taken the placeholder's place.
             GLib.idle_add(self._redraw)
         self.send_button.set_sensitive(True)
-        self.again_button.set_sensitive(True)
+        self._sync_again()
         self.stop_button.hide()
         return False
+
+    def _sync_again(self):
+        """Ask again with… only where there is a question to ask again: not in an empty
+        window, after Clear, or on a page of lookups alone, where choosing a model did
+        nothing at all - and not while an answer is coming."""
+        if self._cancel is not None:
+            return
+        asked = any(turn.get("role") == "user" for turn in self.conversation)
+        self.again_button.set_sensitive(asked)
+        self.again_button.set_tooltip_text(
+            "Ask your last question again with another model. The earlier answer stays "
+            "on screen, but only the new one is carried into the conversation." if asked
+            else "Nothing has been asked here yet")
 
     def _stop(self):
         """End the request on screen now, whatever the worker is doing.
@@ -2702,7 +2785,9 @@ class ChatWindow(Gtk.Window):
 
     def _on_copy_all(self, _widget):
         Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(self._markdown(), -1)
-        self.app.notify("Conversation copied to clipboard")
+        # Said here, not as a desktop notification: that one replaced whatever the
+        # app's notification was saying, a settings or keyring failure among them.
+        self.status.set_text("Conversation copied to the clipboard")
 
     def _ask_save_path(self, title, name, kind, pattern, mime, parent=None):
         """Where the user wants a file saved, or None if they cancelled."""
@@ -2711,7 +2796,9 @@ class ChatWindow(Gtk.Window):
                                            Gtk.FileChooserAction.SAVE, "_Save", "_Cancel")
         dialog.set_do_overwrite_confirmation(True)
         dialog.set_current_name(name)
-        folder = GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOCUMENTS)
+        # Where the last file was saved, while the app runs; Documents before that.
+        folder = ChatWindow._last_save_folder or GLib.get_user_special_dir(
+            GLib.UserDirectory.DIRECTORY_DOCUMENTS)
         if folder and os.path.isdir(folder):
             dialog.set_current_folder(folder)
         files = Gtk.FileFilter()
@@ -2722,6 +2809,8 @@ class ChatWindow(Gtk.Window):
         accepted = dialog.run() == Gtk.ResponseType.ACCEPT
         path = dialog.get_filename() if accepted else None
         dialog.destroy()
+        if path:
+            ChatWindow._last_save_folder = os.path.dirname(path)
         return path
 
     def _on_save_markdown(self, _widget):
@@ -2780,6 +2869,13 @@ class ChatWindow(Gtk.Window):
 
     def _on_destroy(self, _widget):
         self._cancel_undo_timer()
+        settings = Gtk.Settings.get_default()
+        for handler in self._theme_handlers:
+            settings.disconnect(handler)
+        self._theme_handlers = []
+        if self._size_timer is not None:
+            GLib.source_remove(self._size_timer)
+            self._size_timer = None
         if self._prompt_height_timer is not None:
             GLib.source_remove(self._prompt_height_timer)
             self._save_prompt_height()          # dragged, and closed straight after

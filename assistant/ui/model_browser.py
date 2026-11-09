@@ -66,6 +66,10 @@ class ModelBrowser(Gtk.Dialog):
         self.search.set_placeholder_text("Search by name, provider or description…")
         self.search.set_hexpand(True)
         self.search.connect("search-changed", lambda _w: self._refilter())
+        # From the search box to the list without the mouse: Enter or Down goes to the
+        # first model found (or the one chosen, if it is still listed).
+        self.search.connect("activate", lambda _w: self._into_list())
+        self.search.connect("key-press-event", self._on_search_key)
         controls.pack_start(self.search, True, True, 0)
 
         self.vision_check = Gtk.CheckButton.new_with_label("Vision only")
@@ -130,6 +134,10 @@ class ModelBrowser(Gtk.Dialog):
         box.pack_start(self.detail, False, False, 0)
 
         self.status = Gtk.Label(label="Loading models…", xalign=0)
+        # Cut short, and whole in the tooltip: a long error made the dialog that wide.
+        self.status.set_ellipsize(Pango.EllipsizeMode.END)
+        self.status.connect("notify::label", lambda label, _spec: label.set_tooltip_text(
+            label.get_text() or None))
         self.status.get_style_context().add_class("capture-meta")
         box.pack_start(self.status, False, False, 0)
 
@@ -246,6 +254,22 @@ class ModelBrowser(Gtk.Dialog):
             return True
         haystack = model[iterator][COL_HAYSTACK] or ""
         return all(term in haystack for term in terms)
+
+    def _on_search_key(self, _widget, event):
+        from gi.repository import Gdk
+        if event.keyval in (Gdk.KEY_Down, Gdk.KEY_KP_Down):
+            return self._into_list()
+        return False
+
+    def _into_list(self):
+        """Focus the list, on the model selected or else the first one listed."""
+        if len(self.filtered) == 0:
+            return False
+        model, iterator = self.tree.get_selection().get_selected()
+        path = model.get_path(iterator) if iterator is not None else Gtk.TreePath.new_first()
+        self.tree.set_cursor(path, None, False)
+        self.tree.grab_focus()
+        return True
 
     def _refilter(self):
         self.filtered.refilter()

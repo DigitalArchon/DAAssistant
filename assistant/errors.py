@@ -27,6 +27,19 @@ def log_path():
     return LOG_FILE
 
 
+def describe(error):
+    """An unexpected exception in words for the user: what it says, where that means
+    something - an OSError's reason, a message written to be read - and otherwise that
+    something went wrong, with where the details are. "KeyError: 'senses'" and
+    "PrivacyError: …" read as the app's insides, not as what happened."""
+    text = str(error).strip()
+    if isinstance(error, (OSError, ValueError, RuntimeError)) and len(text) > 3 \
+            and not isinstance(error, (KeyError, IndexError, UnicodeError)):
+        return text
+    return (f"something went wrong inside the app ({type(error).__name__}); the details "
+            f"are in {LOG_FILE}")
+
+
 def record(text):
     """Append to the log, trimming it first so it cannot grow without bound."""
     try:

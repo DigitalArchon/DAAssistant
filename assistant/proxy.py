@@ -7,7 +7,10 @@ attestation services, and Tinfoil's own client, which reads the same variables -
 is by those variables, set for this process alone (hostenv.set_own): the programs the
 app starts, a browser among them, get the environment they had. A server on this
 machine or its own network is still reached directly: NO_PROXY names those, as
-netguard does, so a model server next door is not sent the long way round.
+netguard does, so a model server next door is not sent the long way round - and names
+nothing else. The environment's own NO_PROXY is not kept beside them: a desktop's or a
+company's `*` or `.example.com` sent those hosts, or everything, direct from this
+machine's address, around the proxy the user had set, without a word.
 
 `socks5h://` is what reaches a Tor onion service - Tor's SOCKS port is usually
 `socks5h://127.0.0.1:9050` - because the proxy, not this machine, resolves the name,
@@ -199,10 +202,9 @@ def apply(config):
         return False
     for name in VARIABLES:
         hostenv.set_own(name, url)
-    kept = [part.strip() for part in (hostenv.original("NO_PROXY")
-                                      or hostenv.original("no_proxy") or "").split(",")
-            if part.strip()]
-    no_proxy = ",".join(dict.fromkeys(kept + list(LOCAL)))
+    # This machine and its network alone, whatever NO_PROXY the app was started with
+    # (see the module's docstring). The programs it starts get theirs back.
+    no_proxy = ",".join(LOCAL)
     hostenv.set_own("NO_PROXY", no_proxy)
     hostenv.set_own("no_proxy", no_proxy)
     return True

@@ -1083,7 +1083,12 @@ onion address needs. Left empty, the environment's own proxy settings (`HTTPS_PR
 the rest) stand. The programs the app starts - a browser for a link, the screenshot
 tools - get the environment they had, without the app's proxy. A server on this machine
 or its network is reached directly whatever the environment's proxy says, IPv6 addresses
-and names with a trailing dot included, which `NO_PROXY` cannot name. A proxy set here
+and names with a trailing dot included, which `NO_PROXY` cannot name - and nothing else
+is: while a proxy is set here, the `NO_PROXY` the app was started with is not used, so a
+desktop's or a company's `*` or `.example.com` cannot send requests around it, from this
+machine's own address. (Up to 4.1.0 it was kept beside the app's own.) A server on your
+network that you reach by a name of its own rather than its address or a `.local` name
+goes through the proxy too, then; give its address instead. A proxy set here
 that cannot be used - a SOCKS proxy whose packages are missing, in a config copied from
 another machine, say - is not gone around: nothing but those local requests is sent
 until it can be used or is taken out, and the app says so when it starts. A proxy

@@ -81,14 +81,39 @@ class WhatMayBeAProxy(Environment):
 
 class EveryRequestGoesThroughIt(Environment):
     def test_requests_goes_through_it_and_local_servers_do_not(self):
-        os.environ["NO_PROXY"] = "intranet.example"
         self.config.proxy = "socks5h://127.0.0.1:9050"
         self.assertTrue(proxy.apply(self.config))
         through = requests.utils.get_environ_proxies("https://nano-gpt.com/api/v1/models")
         self.assertEqual(through.get("https"), "socks5h://127.0.0.1:9050")
         for direct in ("http://192.168.1.20:11434/api/tags", "http://localhost:11434/",
-                       "http://ollama.local:11434/", "https://intranet.example/v1"):
+                       "http://ollama.local:11434/", "http://10.0.0.5:8080/v1"):
             self.assertEqual(requests.utils.get_environ_proxies(direct), {}, direct)
+
+    def test_the_environments_no_proxy_does_not_go_around_it(self):
+        """A desktop's or a company's NO_PROXY - everything, or a domain - was kept
+        beside the app's own: with Tor set in Settings, those hosts went direct from
+        this machine's address, and said nothing."""
+        for inherited in ("*", ".example.com,intranet.example", "nano-gpt.com"):
+            for name in ("NO_PROXY", "no_proxy"):
+                os.environ[name] = inherited
+            self.config.proxy = "socks5h://127.0.0.1:9050"
+            self.assertTrue(proxy.apply(self.config))
+            for url in ("https://nano-gpt.com/api/v1/models", "https://api.example.com/",
+                        "https://intranet.example/v1"):
+                self.assertEqual(requests.utils.get_environ_proxies(url).get("https"),
+                                 "socks5h://127.0.0.1:9050", (inherited, url))
+                self.assertEqual(proxy.for_url(url), "socks5h://127.0.0.1:9050")
+            [(_url, proxies)] = self.sent("https://api.example.com/v1")
+            self.assertEqual(proxies.get("https"), "socks5h://127.0.0.1:9050")
+            # This machine and its network are still reached directly, and the programs
+            # the app starts get the NO_PROXY they had.
+            self.assertEqual(requests.utils.get_environ_proxies(
+                "http://192.168.1.201:11434/api/tags"), {})
+            self.assertEqual(hostenv.host_env().get("NO_PROXY"), inherited)
+            # With the proxy taken out of Settings, the environment's stands again.
+            self.config.proxy = ""
+            self.assertFalse(proxy.apply(self.config))
+            self.assertEqual(os.environ.get("NO_PROXY"), inherited)
 
     def test_the_programs_it_starts_get_their_own_environment(self):
         os.environ["HTTPS_PROXY"] = "http://theirs:8080"

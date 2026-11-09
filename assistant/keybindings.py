@@ -30,6 +30,7 @@ removed when found (remove_kde_legacy).
 
 import ast
 import glob
+import json
 import os
 import re
 import shlex
@@ -647,7 +648,15 @@ class ConfigFileKeybindings:
         """{action: where its key is bound already} for the keys in `bindings` that the
         user's own config binds: the file outside our block, and the files it brings in
         - Hyprland's `source`, Sway's `include`, the modules hyprland.lua requires from
-        the config directory. Only read; a file that cannot be read binds nothing."""
+        the config directory. Only read; a file that cannot be read binds nothing.
+
+        Hyprland is asked too, for the binds in force (_hyprland_live), and where it
+        answers, that is what decides: a Lua config is a program, and what it binds
+        cannot all be read off the page. Omarchy's, measured on 0.56, binds every key
+        through a helper of its own (o.bind), from modules found through a search path
+        it sets, loaded by a dofile whose path is built at run time - the files gave
+        none of its 225 binds, and a key it held was written and fired both. The files
+        still name the line, where they find it."""
         if not bindings or not os.path.exists(self.path):
             return {}
         own = self._outside_block(self._read())
@@ -657,10 +666,14 @@ class ConfigFileKeybindings:
             bound = _hyprland_binds(self.path, own)
         else:
             bound = _sway_binds(self.path, own)
+        live = _hyprland_live(self.run) if self.desktop == "hyprland" else None
         found = {}
         for action, accel in bindings.items():
             mods, key = shortcuts.parts(accel)
-            where = bound.get((frozenset(mods), key.lower()))
+            combination = (frozenset(mods), key.lower())
+            where = bound.get(combination)
+            if live is not None and combination not in live:
+                continue                    # in force it is not: the files misread
             if where:
                 path, number, line = where
                 line = " ".join(line.split())
@@ -668,6 +681,8 @@ class ConfigFileKeybindings:
                     line = line[:69] + "…"
                 found[action] = (f"already bound on line {number} of "
                                  f"{path.replace(os.path.expanduser('~'), '~', 1)}: {line}")
+            elif live is not None:
+                found[action] = f"already bound in Hyprland: {live[combination]}"
         return found
 
     def _outside_block(self, text):
@@ -790,6 +805,49 @@ def _hyprland_binds(path, text=None, bound=None, variables=None, depth=0, seen=N
         else:
             bound.setdefault(combination, (path, number, raw.strip()))
     return bound
+
+
+# Hyprland's modifier mask (hyprctl binds), bit by bit.
+_HYPRLAND_MASK = ((1, "shift"), (2, "other"), (4, "control"), (8, "alt"), (16, "other"),
+                  (32, "other"), (64, "super"), (128, "other"))
+
+
+def _hyprland_live(run):
+    """{(modifiers, key's name in lower case): what it does} for every key bind Hyprland
+    has in force outside a submap - its own description where it has one - from
+    `hyprctl binds -j`; None when Hyprland cannot be asked, or answers with something
+    that is not a list of binds. Ours are left out: in a Lua config they are described
+    "DA Assistant: ...", in hyprland.conf they run the app with --action=. Mouse binds
+    and keys given by code are left out too: none is one of the app's."""
+    code, output = run(["hyprctl", "binds", "-j"])
+    if code != 0:
+        return None
+    try:
+        binds = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(binds, list):
+        return None
+    live = {}
+    for bind in binds:
+        if not isinstance(bind, dict) or bind.get("mouse") or bind.get("submap"):
+            continue
+        key = str(bind.get("key") or "")
+        description = str(bind.get("description") or "")
+        argument = str(bind.get("arg") or "")
+        if not key or description.startswith(f"{NAME}:") or "--action=" in argument:
+            continue
+        try:
+            mask = int(bind.get("modmask") or 0)
+        except (TypeError, ValueError):
+            continue
+        mods = frozenset(name for bit, name in _HYPRLAND_MASK if mask & bit)
+        dispatcher = str(bind.get("dispatcher") or "")
+        what = description or (f"{dispatcher} {argument}".strip()
+                               if dispatcher and dispatcher != "__lua"
+                               else "a bind in its config")
+        live.setdefault((mods, key.lower()), what)
+    return live
 
 
 def _lua_code(lines):

@@ -66,7 +66,8 @@ class FakeHost:
         """The calls that change something: not the reads, which every start makes to
         look for keys the desktop has bound already (clashes)."""
         return [c for c in self.calls
-                if c[:2] not in (["gsettings", "get"], ["gsettings", "list-recursively"])]
+                if c[:2] not in (["gsettings", "get"], ["gsettings", "list-recursively"],
+                                 ["hyprctl", "binds"])]
 
 
 def session_of(desktop="cinnamon", kind="wayland", portal=False, x11=True, answered=True):
@@ -1975,12 +1976,12 @@ class HyprlandLuaConfig(TempDir):
             self.assertIn("hyprland.lua, each running DA Assistant", manager.describe())
             self.assertIn('hl.bind("CTRL + SHIFT + 5", ', self.read(lua))
             self.assertEqual(self.read(conf), "bind = SUPER, Q, exec, kitty\n")
-            self.assertEqual(host.calls, [["hyprctl", "reload"]])      # once, for both
+            self.assertEqual(host.writes(), [["hyprctl", "reload"]])   # once, for both
             self.assertTrue(Config(config.config_file).hotkeys_installed["into"]
                             .endswith("hyprland.lua"))
             host.calls.clear()
             manager.start()                                     # written: not again
-            self.assertEqual(host.calls, [])
+            self.assertEqual(host.writes(), [])
             config.hotkey_mode = "off"                          # and taken out of both
             hotkeys.HotkeyManager(config, lambda action: None, run=host).start()
         self.assertEqual(self.read(lua), self.OMARCHY)
@@ -2258,6 +2259,83 @@ class TheUsersOwnConfig(TempDir):
         self.assertEqual(set(found), {"ocr_only", "ask_anything"})
         self.assertIn(f"line 1 of {bindings}", found["ocr_only"])
         self.assertIn("line 6 of", found["ask_anything"])
+
+    def omarchy_binds(self, *extra):
+        """What `hyprctl binds -j` gave on Omarchy (Hyprland 0.56), cut down: every bind
+        made in Lua shows as dispatcher "__lua", with the description it was given."""
+        binds = [
+            {"modmask": 64, "submap": "", "key": "W", "keycode": 0, "mouse": False,
+             "description": "Close window", "dispatcher": "__lua", "arg": "17"},
+            {"modmask": 76, "submap": "", "key": "T", "keycode": 0, "mouse": False,
+             "description": "Show time", "dispatcher": "__lua", "arg": "210"},
+            {"modmask": 64, "submap": "", "key": "RETURN", "keycode": 0, "mouse": False,
+             "description": "Terminal", "dispatcher": "__lua", "arg": "269"},
+            # Ours, as the Lua block writes them, and as hyprland.conf's does.
+            {"modmask": 5, "submap": "", "key": "9", "keycode": 0, "mouse": False,
+             "description": "DA Assistant: Ask anything", "dispatcher": "__lua",
+             "arg": "11"},
+            {"modmask": 5, "submap": "", "key": "8", "keycode": 0, "mouse": False,
+             "description": "", "dispatcher": "exec",
+             "arg": "'/opt/DA.AppImage' --action=query_text"},
+            # Not keys of the app's kind: a mouse bind, one in a submap, a keycode.
+            {"modmask": 64, "submap": "", "key": "mouse:272", "keycode": 0,
+             "mouse": True, "description": "Move window", "dispatcher": "__lua",
+             "arg": "5"},
+            {"modmask": 0, "submap": "resize", "key": "L", "keycode": 0, "mouse": False,
+             "description": "", "dispatcher": "resizeactive", "arg": "10 0"},
+            {"modmask": 64, "submap": "", "key": "", "keycode": 191, "mouse": False,
+             "description": "", "dispatcher": "exec", "arg": "x"},
+            *extra]
+        host = FakeHost()
+
+        def run(args):
+            if args == ["hyprctl", "binds", "-j"]:
+                return 0, json.dumps(binds)
+            return host(args)
+
+        return run
+
+    def test_what_hyprland_has_in_force_is_what_a_key_clashes_with(self):
+        """Omarchy binds every key through o.bind, from modules found through a search
+        path of its own and a dofile built at run time: read off the files, it bound
+        nothing, and a key it held was written and fired both. Hyprland is asked."""
+        self.put("hypr/hyprland.lua", HyprlandLuaConfig.OMARCHY)
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            writer = keybindings.ConfigFileKeybindings("hyprland", self.omarchy_binds())
+            found = writer.clashes({"look_up_word": "<Control><Alt><Super>t",
+                                    "query_image": "<Super>w",
+                                    "ocr_only": "<Super>Return",
+                                    "ask_anything": "<Control><Shift>9",
+                                    "query_text": "<Control><Shift>8",
+                                    "translate_text": "<Super>l",
+                                    "ocr_translate": "<Control><Shift>5"})
+        self.assertEqual(found, {
+            "look_up_word": "already bound in Hyprland: Show time",
+            "query_image": "already bound in Hyprland: Close window",
+            "ocr_only": "already bound in Hyprland: Terminal"})
+
+    def test_a_bind_the_files_name_but_hyprland_does_not_have_is_free(self):
+        # Read off the page, but not in force - behind an if, say: Hyprland's answer
+        # decides. One it has in force that the files also name is named by its line.
+        self.put("hypr/hyprland.lua", HyprlandLuaConfig.OMARCHY)
+        bindings = self.put("hypr/bindings.lua", "\n".join([
+            'if false then hl.bind("CTRL + SHIFT + 5", hl.dsp.exec_cmd("kitty")) end',
+            'hl.bind("SUPER + W", hl.dsp.window.close())', ""]))
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            writer = keybindings.ConfigFileKeybindings("hyprland", self.omarchy_binds())
+            found = writer.clashes({"ocr_only": "<Control><Shift>5",
+                                    "query_image": "<Super>w"})
+        self.assertEqual(list(found), ["query_image"])
+        self.assertIn(f"line 2 of {bindings}", found["query_image"])
+
+    def test_without_an_answer_from_hyprland_the_files_decide(self):
+        self.assertIsNone(keybindings._hyprland_live(lambda args: (127, "")))
+        self.assertIsNone(keybindings._hyprland_live(lambda args: (0, "not json")))
+        self.assertIsNone(keybindings._hyprland_live(lambda args: (0, '{"a": 1}')))
+        path = self.put("hypr/hyprland.conf", "bind = CTRL SHIFT, 5, exec, kitty\n")
+        writer = keybindings.ConfigFileKeybindings("hyprland", lambda a: (1, "no"), path)
+        self.assertEqual(list(writer.clashes({"ocr_only": "<Control><Shift>5"})),
+                         ["ocr_only"])
 
     def test_a_config_that_sources_itself_is_read_once(self):
         path = self.put("hypr/hyprland.conf",

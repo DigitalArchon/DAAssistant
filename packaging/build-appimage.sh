@@ -16,15 +16,33 @@ command -v podman >/dev/null || { echo "Podman is needed: sudo apt install podma
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
     echo "Note: uncommitted changes are not built; this builds HEAD ($(git rev-parse --short HEAD))." >&2
 fi
-for ca in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-    [ -f "$ca" ] && break
-done
+# The host's CA bundle, for apt in the builder to reach the snapshot over https: the first
+# of these this machine has - where Debian and its kin, Fedora and RHEL, openSUSE and the
+# rest keep it, as AppRun looks for it. Only the builder image is made with it, and apt
+# checks what it fetches by signature whatever the bundle: nothing of it is in the
+# AppImage. Looked for only when that image is to be built.
+CA_BUNDLES=(/etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+            /etc/ssl/ca-bundle.pem /etc/pki/tls/cert.pem /etc/ssl/cert.pem)
+host_ca_bundle() {
+    local ca
+    for ca in "$@"; do
+        if [ -f "$ca" ]; then
+            printf '%s\n' "$ca"
+            return 0
+        fi
+    done
+    echo "No CA bundle on this machine: looked for $*. The builder's apt needs one to" \
+         "reach the package snapshot over https; install the distribution's" \
+         "ca-certificates package." >&2
+    return 1
+}
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 TAG="da-assistant-appimage-builder:$(cat packaging/appimage/Containerfile packaging/appimage/pins.sh | sha256sum | cut -c1-12)"
 if ! podman image exists "$TAG"; then
+    ca="$(host_ca_bundle "${CA_BUNDLES[@]}")"
     # The host's CA bundle, for apt to reach the snapshot over https, goes in as a copy in
     # the build context rather than a mount: on an SELinux host (Fedora, RHEL) a mount needs
     # :Z, and rootless Podman may not relabel a file root owns - nor should anything

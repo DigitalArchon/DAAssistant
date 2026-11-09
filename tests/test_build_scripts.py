@@ -1,8 +1,10 @@
 """The scripts beside the app: what they take from the machine they run on.
 
 tools/install-private-mode.sh checks the install it has just made by importing the app
-from its checkout, which may be in any folder. It is not run whole here - it installs
-from the network - but the part of it that reads the machine is.
+from its checkout, which may be in any folder; packaging/build-appimage.sh finds the
+host's CA bundle for the builder's apt, wherever the distribution keeps it. Neither is
+run whole here - one installs from the network, the other builds with Podman - but the
+parts of them that read the machine are.
 """
 
 import os
@@ -52,6 +54,52 @@ class TheInstallCheckTakesAnyFolder(unittest.TestCase):
         self.assertNotIn("injected", done.stdout)
         self.assertNotIn("SyntaxError", done.stderr)
         self.assertEqual(done.returncode, 0 if done.stdout.startswith("ok") else 1)
+
+
+class TheBuildFindsTheHostsCaBundle(unittest.TestCase):
+    WRAPPER = (ROOT / "packaging" / "build-appimage.sh").read_text()
+    APPRUN = (ROOT / "packaging" / "appimage" / "AppRun").read_text()
+
+    def lookup(self, *candidates):
+        """host_ca_bundle, as the script defines it, given `candidates`."""
+        found = re.search(r"^host_ca_bundle\(\) \{\n.*?^\}\n", self.WRAPPER, re.S | re.M)
+        self.assertIsNotNone(found, "the lookup is not where this test looks for it")
+        return subprocess.run(["bash", "-c", found.group(0) + 'host_ca_bundle "$@"',
+                               "bash", *candidates],
+                              capture_output=True, text=True, timeout=30)
+
+    def test_it_looks_wherever_apprun_looks(self):
+        listed = re.search(r"^CA_BUNDLES=\((.*?)\)", self.WRAPPER, re.S | re.M).group(1)
+        wrapper = listed.split()
+        apprun = [path for path in re.findall(r"(/etc/\S+)", self.APPRUN)
+                  if path.endswith((".crt", ".pem"))]
+        self.assertTrue(apprun)
+        self.assertEqual(wrapper, apprun)
+        for path in ("/etc/ssl/ca-bundle.pem", "/etc/pki/tls/cert.pem"):
+            self.assertIn(path, wrapper)
+
+    def test_the_first_there_is_used(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        bundle = os.path.join(folder, "ca-bundle.pem")
+        Path(bundle).write_text("certificates")
+        done = self.lookup(os.path.join(folder, "missing.crt"), bundle,
+                           os.path.join(folder, "also-missing.pem"))
+        self.assertEqual((done.returncode, done.stdout), (0, bundle + "\n"))
+
+    def test_none_there_is_said_plainly(self):
+        done = self.lookup("/nonexistent/one.crt", "/nonexistent/two.pem")
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(done.stdout, "")
+        self.assertIn("No CA bundle on this machine", done.stderr)
+        self.assertIn("/nonexistent/one.crt /nonexistent/two.pem", done.stderr)
+        self.assertIn("ca-certificates", done.stderr)
+
+    def test_it_is_looked_for_only_to_make_the_builder(self):
+        made = self.WRAPPER.index('if ! podman image exists "$TAG"; then')
+        self.assertGreater(self.WRAPPER.index('ca="$(host_ca_bundle "${CA_BUNDLES[@]}")"'),
+                           made)
+        self.assertNotRegex(self.WRAPPER, r"(?m)^for ca in ")
 
 
 if __name__ == "__main__":

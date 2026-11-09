@@ -75,6 +75,23 @@ class ArticlePane(Gtk.Box):
             view.add(self.textview)
         self.pack_start(view, True, True, 0)
         self.connect("destroy", self._on_destroy)
+        # The theme can change with an article open: it is shown again in the new one,
+        # as the conversation beside it is (ChatWindow._on_theme_changed).
+        settings = Gtk.Settings.get_default()
+        self._theme_handlers = [] if settings is None else [
+            settings.connect(f"notify::{name}", self._on_theme_changed)
+            for name in ("gtk-theme-name", "gtk-application-prefer-dark-theme")]
+
+    def _on_theme_changed(self, *_args):
+        dark = _is_dark()
+        if dark == self.dark or self.webview is None:
+            return
+        self.dark = dark
+        colour = Gdk.RGBA()
+        colour.parse("#1e1f22" if dark else "#ffffff")
+        self.webview.set_background_color(colour)
+        if self.history:
+            self._show()
 
     def _build_webkit_view(self, encyclopedia):
         """The article's WebKit view, scrolled; None to read the article as text.
@@ -133,6 +150,10 @@ class ArticlePane(Gtk.Box):
         # process goes with it, rather than at Python's next collection.
         if self._webkit_tried:
             webkitguard.note_success(self)
+        settings = Gtk.Settings.get_default()
+        for handler in getattr(self, "_theme_handlers", ()):
+            settings.disconnect(handler)
+        self._theme_handlers = []
         self.webview = None
 
     def text_views(self):

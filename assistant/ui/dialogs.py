@@ -12,8 +12,8 @@ import os
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
-from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,
-                proxy as proxy_module, sealed, websearch)
+from .. import (errors, imaging, llm as llm_module, privacy as privacy_module,
+                providers, proxy as proxy_module, sealed, websearch)
 from ..vendored import location as vendored_location
 from . import keys
 from .model_browser import ModelBrowser
@@ -1465,7 +1465,9 @@ class SettingsDialog(Gtk.Dialog):
             try:
                 meta = encyclopedia.import_from(folder)
             except Exception as e:
-                GLib.idle_add(notify, f"Encyclopedia import failed: {e}", "normal")
+                errors.record(f"Encyclopedia import failed: {e!r}")
+                GLib.idle_add(notify, f"Encyclopedia import failed: {errors.describe(e)}",
+                              "normal")
             else:
                 total = sum(int(meta[k]) for k in ("EB", "EBI", "EBK"))
                 GLib.idle_add(notify, f"Encyclopedia imported: {total:,} articles")

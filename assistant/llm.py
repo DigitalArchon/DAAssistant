@@ -805,7 +805,9 @@ class LLMClient:
         except websearch.SearchError as e:
             print(f"[search] {e}")
             return "", [], str(e), ""
-        flagged = websearch.warnings(results)
+        # what hidden text said is the model's to read in the results' warning, not the answer's to
+        # show: rendered as Markdown, a page's words would be the app's (a link, say)
+        flagged = list(dict.fromkeys(w.split(" that reads:")[0] for w in websearch.warnings(results)))
         notice = " ".join(x for x in (
             f"{note[:1].upper()}{note[1:]}." if note else "",
             "The search results held text that looks like instructions to the model ("

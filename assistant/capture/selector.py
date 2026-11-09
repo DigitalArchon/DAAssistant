@@ -307,13 +307,13 @@ class CropDialog(Gtk.Window, _SelectionMixin):
         cancel.connect("clicked", lambda _w: self._finish(cancelled=True))
         header.pack_start(cancel)
 
-        self.use_button = Gtk.Button.new_with_label("Use selection")
+        self.use_button = Gtk.Button.new_with_mnemonic("_Use selection")
         self.use_button.get_style_context().add_class("suggested-action")
         self.use_button.set_sensitive(False)
         self.use_button.connect("clicked", lambda _w: self._finish())
         header.pack_end(self.use_button)
 
-        self.whole_button = Gtk.Button.new_with_label("Use whole image")
+        self.whole_button = Gtk.Button.new_with_mnemonic("Use _whole image")
         self.whole_button.connect("clicked", self._on_whole)
         header.pack_end(self.whole_button)
 

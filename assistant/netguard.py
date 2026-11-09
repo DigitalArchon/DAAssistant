@@ -209,6 +209,26 @@ def shown(url):
     return parsed._replace(netloc="…@" + parsed.netloc.rsplit("@", 1)[1]).geturl()
 
 
+def without_password(url):
+    """`url` with the user name and password written into it taken out - as shown() does,
+    but leaving an address, not a placeholder, where they were: what config.json keeps
+    of an address whose password is in the keychain. Text with neither is returned as
+    it is."""
+    text = str(url or "")
+    if "@" not in text:
+        return text
+    try:
+        parsed = urlparse(text)
+        parsed.port                 # raises on a port that is not a number
+    except ValueError:
+        parsed = None
+    if parsed is None or not parsed.netloc:
+        return _UP_TO_AT.sub(r"\1", text, count=1)
+    if "@" not in parsed.netloc:
+        return text
+    return parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]).geturl()
+
+
 def key_problem(key, name="the provider"):
     """Why `key` cannot be sent as an API key, or None. A key is plain ASCII with no
     spaces in it; one pasted with a line break, or a zero-width space from a web page,

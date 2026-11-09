@@ -1114,7 +1114,7 @@ the GPU evidence that could not be checked, and Strict refuses it.
 | What | Where |
 |---|---|
 | Settings | `~/.config/da-assistant/config.json`, readable only by you (`0600`) |
-| API keys | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant`, one entry per provider |
+| API keys, and passwords written into an address | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant`, one entry per provider, and one per address with a password in it |
 | Model lists, dictionary index, error log | `~/.cache/da-assistant` (or `$XDG_CACHE_HOME/da-assistant`) |
 | The encyclopedia's database, the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` |
 | A hidden launcher entry, for the GlobalShortcuts portal (KDE, GNOME 48+) only | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
@@ -1123,7 +1123,13 @@ An API key is never written to `config.json`. The keyring encrypts it and unlock
 with your login. A key that an older version left in `config.json` is moved into the
 keyring the next time the app starts, and stays in the file until the keyring has taken
 it - saving Settings does not lose it. Where there is no keyring, a key typed into
-Settings is used until the app quits, and Settings shows why it cannot be kept. A key with
+Settings is used until the app quits, and Settings shows why it cannot be kept. The same
+goes for a user name and password written into an address - the proxy's
+(`https://user:password@proxy:3128`), Ollama's, or your own endpoint's: `config.json` has
+the address without them, and the keyring the address as you typed it, put back
+together when the app starts - but only while the file still has that same address, so
+that a password never goes anywhere but where it was typed for. (Up to 4.1.0 the whole
+address went into `config.json`.) A key with
 a space, a line break or a character no API key has in it - picked up where it was
 copied from - is refused when Settings is saved, and by every request, in words that do
 not repeat it. `--probe` shows a provider's address without any user name or password

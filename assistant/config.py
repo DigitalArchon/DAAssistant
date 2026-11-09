@@ -3,6 +3,8 @@
 What matters here:
   - API keys are kept in the desktop's keyring (see keychain.py), never in
     config.json. A key left in the file by an older version is moved there on start.
+  - So is a password written into an address - a proxy's, an endpoint's (ADDRESSES):
+    the file has the address without it, and the keyring the address as typed.
   - A config from before providers had names, whose one API URL was not NanoGPT's, is
     given the provider that URL was: see providers.legacy.
   - config.json is written 0600 all the same: it says which models and services are used.
@@ -159,6 +161,16 @@ DEFAULTS = {
 
 # Settings kept in the keychain under their own names, and never written to config.json.
 SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
+
+# Settings that are addresses, which may have a user name and password written into
+# them: a proxy that asks for them, an endpoint or a model server behind a password.
+# config.json has the address without them (netguard.without_password), and the keychain
+# the address as typed, under ADDRESS_SECRET's name - put back together when read, and
+# only while the file's address is that one less its password, so that a password goes
+# to no address but the one it was typed for, whatever the file is edited to. Up to
+# 4.1.0 the whole address went into the file, password and all.
+ADDRESSES = ("proxy", "custom_url", "ollama_url")
+ADDRESS_SECRET = "{}_with_password"
 
 # Defaults that were, and that their provider no longer lists or this app can no longer
 # use: a file still holding one (save() writes every setting) is moved to today's
@@ -396,6 +408,7 @@ class Config:
             # Where the keychain could not take it, the file's copy is used, and stays
             # in the file until it can: deleting it would lose the key.
             values[key] = stored or loose.get(key, "")
+        moved = self._load_addresses(values) or moved
 
         object.__setattr__(self, "_loading", True)
         try:
@@ -416,6 +429,47 @@ class Config:
                 self.save()                 # the same file, without the key in it
             except (OSError, KeychainError):
                 pass                        # read-only: it goes at the next save
+
+    def _load_addresses(self, values):
+        """Each of ADDRESSES as it was typed: the file's, with the password the keychain
+        has for it. One the file has a password in - an older version wrote it, or it
+        was edited in by hand - is moved to the keychain, and out of the file once it is
+        there; where the keychain cannot take it, it stays in the file and is used, as an
+        API key does. True if one moved."""
+        kept = object.__getattribute__(self, "_kept")
+        loose = object.__getattribute__(self, "_loose")
+        moved = False
+        for key in ADDRESSES:
+            name = ADDRESS_SECRET.format(key)
+            written = values.get(key) or ""
+            stored = ""
+            if written:                     # nothing to put a password back into
+                try:
+                    stored = self.keychain.get(name) or ""
+                except KeychainError as e:
+                    self.keychain_error = str(e)
+            if netguard.without_password(written) != written:
+                loose.add(written)
+                if stored != written and self.keychain_error is None:
+                    try:
+                        self.keychain.set(name, written)
+                        stored = written
+                    except KeychainError as e:
+                        self.keychain_error = str(e)
+                moved = moved or stored == written      # the file's copy can go
+            elif stored and netguard.without_password(stored) == written:
+                values[key] = stored
+            kept[name] = stored
+        return moved
+
+    def _address(self, key, written):
+        """The address to use for `key`, of which config.json now has `written`: the one
+        in memory or the keychain's, if either is that address with its password."""
+        kept = object.__getattribute__(self, "_kept")
+        for full in (getattr(self, key, ""), kept.get(ADDRESS_SECRET.format(key))):
+            if full and netguard.without_password(full) == written:
+                return full
+        return written
 
     def _name_provider(self, api_url):
         """Written before providers had names: everything went to one API URL with one
@@ -487,6 +541,13 @@ class Config:
         # Settings save about something else entirely used to do. A key typed in this
         # session is never written to the file; it is used until the app quits.
         changed = {key: getattr(self, key) for key in SECRETS if key in dirty}
+        # An address with a password goes to the keychain whole; one without takes out
+        # the password kept for what it was.
+        for key in ADDRESSES:
+            if key in dirty:
+                value = getattr(self, key) or ""
+                changed[ADDRESS_SECRET.format(key)] = (
+                    value if netguard.without_password(value) != value else "")
         try:
             self._save_secrets(changed)
             refused = None
@@ -499,6 +560,12 @@ class Config:
             value = getattr(self, key, "") or ""
             if value and kept.get(key) != value and value in loose:
                 merged[key] = value
+        # And the file has the address without its password - but for one that was in
+        # the file already, which stays there until the keychain takes it, as a key does.
+        for key in ADDRESSES:
+            full = merged.get(key) or ""
+            if kept.get(ADDRESS_SECRET.format(key)) == full or full not in loose:
+                merged[key] = netguard.without_password(full)
 
         fd, tmp_path = tempfile.mkstemp(dir=self.config_dir, prefix=".config-", suffix=".json")
         try:
@@ -511,10 +578,13 @@ class Config:
                 os.unlink(tmp_path)
             raise
 
-        # Adopt the merged result so this object reflects what is actually stored.
+        # Adopt the merged result so this object reflects what is actually stored - an
+        # address with the password the file does not have.
         object.__setattr__(self, "_loading", True)
         try:
             for key, value in merged.items():
+                if key in ADDRESSES:
+                    value = self._address(key, value)
                 if key not in SECRETS and key not in pending:
                     setattr(self, key, value)
         finally:

@@ -344,6 +344,40 @@ class RedactEditor(unittest.TestCase):
         self.assertEqual(image.getpixel((x + w // 2, y + h // 2)), (0, 0, 0))
         self.assertEqual(image.getpixel((95, 55)), (255, 255, 255))
 
+    def test_enter_presses_the_button_the_focus_was_moved_to(self):
+        # The window hears a key before the widget with the focus, and Enter applied,
+        # and sent the picture, with Cancel, Clear or Actual size focused.
+        enter = type("K", (), {"keyval": Gdk.KEY_Return, "state": 0})
+        self.dialog.add_box(0, 0, 10, 10)
+        self.dialog.zoom_button.grab_focus()            # Tab, Tab...
+        self.assertTrue(self.dialog._on_key(None, enter))
+        self.assertEqual(self.results, [])
+        self.assertFalse(self.dialog.fit)               # Actual size, pressed
+        self.dialog.clear_button.grab_focus()
+        self.dialog._on_key(None, enter)
+        self.assertEqual((self.results, self.dialog.boxes), ([], []))
+
+    def test_enter_on_cancel_cancels(self):
+        self.dialog.add_box(0, 0, 10, 10)
+        cancel = next(child for child in self.dialog.get_titlebar().get_children()
+                      if isinstance(child, Gtk.Button) and child.get_label() == "Cancel")
+        cancel.grab_focus()
+        self.dialog._on_key(None, type("K", (), {"keyval": Gdk.KEY_KP_Enter, "state": 0}))
+        self.assertEqual(self.results, [(None, [])])
+
+    def test_enter_applies_from_the_start_and_after_a_click(self):
+        # GTK gave the focus to the first button there was, Actual size; it starts on
+        # the picture, and a click on a button leaves it there.
+        self.assertIs(self.dialog.get_focus(), self.dialog.area)
+        self.assertFalse(self.dialog.zoom_button.get_focus_on_click())
+        self.dialog.zoom_button.grab_focus()
+        self.dialog._on_press(None, type("E", (), {"button": 1, "x": 5, "y": 5}))
+        self.dialog._on_release(None, type("E", (), {"button": 1, "x": 5, "y": 5}))
+        self.assertIs(self.dialog.get_focus(), self.dialog.area)
+        self.dialog._on_key(None, type("K", (), {"keyval": Gdk.KEY_Return, "state": 0}))
+        self.assertEqual(len(self.results), 1)
+        self.assertIsNotNone(self.results[0][0])
+
     def test_enter_after_a_click_that_drew_nothing_blacks_out_nothing(self):
         self.dialog._on_press(None, type("E", (), {"button": 1, "x": 10, "y": 10}))
         self.dialog.apply()

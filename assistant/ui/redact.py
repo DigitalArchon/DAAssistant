@@ -76,12 +76,19 @@ class RedactDialog(Gtk.Window):
         self.zoom_button = Gtk.Button.new_with_label("Actual size")
         self.zoom_button.connect("clicked", lambda _w: self.toggle_fit())
         row.pack_start(self.zoom_button, False, False, 0)
+        # Clicked, these keep the focus where it was - on the picture - so that Enter
+        # after a click still applies (see _on_key). Tab still reaches them.
+        for button in (self.undo_button, self.clear_button, self.zoom_button):
+            button.set_focus_on_click(False)
         box.pack_start(row, False, False, 0)
 
         self.scrolled = Gtk.ScrolledWindow()
         self.scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         self.scrolled.get_style_context().add_class("preview-frame")
         self.area = Gtk.DrawingArea()
+        # The focus starts here, and comes back with a click on the picture: GTK gave it
+        # to the first button there was, Actual size.
+        self.area.set_can_focus(True)
         self.area.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
                              | Gdk.EventMask.BUTTON_RELEASE_MASK
                              | Gdk.EventMask.BUTTON1_MOTION_MASK)
@@ -97,6 +104,7 @@ class RedactDialog(Gtk.Window):
         self.connect("destroy", lambda _w: self._finish(None))
         self._sync()
         self.show_all()
+        self.area.grab_focus()
         self.present()
 
     # ---- the boxes ------------------------------------------------------------------
@@ -167,11 +175,20 @@ class RedactDialog(Gtk.Window):
         self.on_done(image, boxes)
 
     def _on_key(self, _widget, event):
+        """Escape cancels, Ctrl+Z undoes, and Enter applies - unless the user has moved
+        the focus to a button, which Enter then presses. The window hears a key before
+        the widget with the focus, and Enter on Cancel, Clear or Actual size applied
+        the box drawn so far and sent it."""
         control = event.state & Gdk.ModifierType.CONTROL_MASK
         if event.keyval == Gdk.KEY_Escape:
             self.cancel()
             return True
-        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
+            focus = self.get_focus()
+            if isinstance(focus, Gtk.Button) and focus is not self.apply_button \
+                    and focus.is_sensitive() and self._drag is None:
+                focus.clicked()
+                return True
             self.apply()
             return True
         if control and event.keyval in (Gdk.KEY_z, Gdk.KEY_Z):
@@ -207,6 +224,7 @@ class RedactDialog(Gtk.Window):
     def _on_press(self, _widget, event):
         if event.button != 1:
             return False
+        self.area.grab_focus()
         x, y = self._to_image(event.x, event.y)
         self._drag = (x, y, x, y)
         return True

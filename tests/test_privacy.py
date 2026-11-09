@@ -2459,6 +2459,30 @@ class Sealed(unittest.TestCase):
         self.assertEqual(session.pop_receipt().state, privacy.SEALED)
         self.assertEqual(session.attestations[self.MODEL].headline, "End-to-end encrypted")
 
+    def test_a_private_model_written_another_way_goes_sealed_and_only_sealed(self):
+        """A private conversation refused "Private/glm-5-3" as no TEE model, and
+        sealed.py as no Private Mode model of its own: now it is one, sealed like the
+        rest, and nothing of it goes by the plain path."""
+        import httpx
+        seen = []
+
+        def handler(request):
+            seen.append(request.headers)
+            return httpx.Response(200, headers={"x-nanogpt-private-mode": "tinfoil"},
+                                  content=self.stream_body())
+
+        client, _calls = self.make(handler)
+        model = "Private/glm-5-3"
+        session = PrivacySession(API_URL, "k", model, model,
+                                 sealed_factory=lambda *a: client)
+        llm = LLMClient(Config(os.path.join(tempfile.mkdtemp(), "c.json")))
+        llm.session = FakeNanoGpt()
+        text = llm.stream(model, [{"role": "user", "content": "hi"}], privacy=session)
+        self.assertEqual(text, "Hi")
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(session.pop_receipt().state, privacy.SEALED)
+        self.assertEqual(llm.session.posts, [], "something went by the plain path")
+
     def test_what_the_relay_says_in_an_error_is_said_as_its_own_on_one_line(self):
         """Never sealed, and nothing vouches for it: it was quoted as it came - 400
         characters, line breaks, bidi overrides and all - and shown in the transcript
@@ -2822,6 +2846,26 @@ class SealedOnly(TempConfig):
         self.assertEqual(client.stream("TEE/glm-5.3", [{"role": "user", "content": "hi"}],
                                        web_search=False), "Hello there")
         self.assertFalse(privacy.sealed_only("privately/x"))
+
+    def test_however_it_is_written_it_counts_as_private_everywhere(self):
+        """Told by its exact prefix, "Private/glm-5-3" was no TEE model at all to
+        Settings, the model browser and a private conversation, while the plain path
+        refused it as end-to-end encrypted. Every place asks one question now, as DA
+        Vibe Manager's and DA Private Coder's do (Nov 2026)."""
+        for model in ("Private/glm-5-3", " private/glm-5-3", "PRIVATE/glm-5-3 "):
+            self.assertTrue(privacy.is_private_mode(model), model)
+            self.assertTrue(privacy.sealed_only(model), model)
+            self.assertEqual(privacy.kind_of(model), privacy.E2EE, model)
+            self.assertEqual(privacy.describe(model)[0], "end-to-end encrypted")
+        for model in ("tee/glm-5.3", " TEE/glm-5.3"):
+            self.assertEqual(privacy.kind_of(model), privacy.TEE, model)
+        for model in ("privately/x", "openai/private/x", "glm-5.3", "", None):
+            self.assertIsNone(privacy.kind_of(model), model)
+        self.config.private_text_model = "Private/glm-5-3"
+        self.assertFalse([found for found in privacy.problems(self.config)
+                          if "Private/glm-5-3" in found and "not a TEE model" in found])
+        listed = [{"id": "Private/glm-5-3", "vision": False}, {"id": "glm-5.3", "vision": False}]
+        self.assertEqual(models.search(listed, "", private_only=True), listed[:1])
 
 
 if __name__ == "__main__":

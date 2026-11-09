@@ -52,8 +52,8 @@ from urllib.parse import urlparse
 
 from . import models, netguard, proxy
 from .dcap import since_boot
-from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, offers_private_mode,
-                      unsealed_words)
+from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, is_private_mode,
+                      offers_private_mode, unsealed_words)
 
 RELAY_PATH = "/api/v1/private/tinfoil"
 ROUTER_REPO = "tinfoilsh/confidential-model-router"
@@ -555,7 +555,7 @@ class PrivateModeClient:
         import httpx
         from ehbp import EHBPError, KeyConfigMismatchError
 
-        if not model.startswith("private/"):
+        if not is_private_mode(model):
             raise PrivacyError(f"{model} is not a Private Mode model; nothing was sent")
         _around_the_proxy()
         for attempt in (0, 1):

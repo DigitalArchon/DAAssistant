@@ -8,9 +8,16 @@ with `sametypesequence` the types are given once in the .ifo and left out of the
 otherwise each field starts with its type letter. Lower-case types are NUL-terminated
 text (the last field of a sametypesequence article runs to its end instead); upper-case
 types are binary, prefixed with their size.
+
+The text types are shown: HTML (h) and Pango markup (g) as the dictionary wrote them,
+balanced; XDXF (x) as HTML; MediaWiki (w) with its links, bold and italics; KingSoft
+PowerWord's XML (k) as the text of its elements, a line each; and the rest - plain
+text (m, l), phonetics (t, y), WordNet's (n) - as text. Pictures, sounds and resource
+lists are not shown.
 """
 
 import base64
+import html
 import os
 import re
 import struct
@@ -235,7 +242,11 @@ class StarDict:
                 parts.append(markup.balance(_bword_links(text), LINKS, picture))
             elif kind == "x":
                 parts.append(markup.balance(xdxf_html(text), LINKS, picture))
-            elif kind in "mtylk":
+            elif kind == "w":
+                parts.append(markup.balance(wiki_html(text), LINKS))
+            elif kind == "k":
+                parts.append(markup.escape(xml_text(text)).replace("\n", "<br>"))
+            elif kind in "mtyln":
                 parts.append(markup.escape(text).replace("\n", "<br>"))
             # Pictures, sounds and resource lists are not shown.
         body = "".join(parts)
@@ -337,3 +348,61 @@ def xdxf_html(text):
     for pattern, replacement in _XDXF:
         text = pattern.sub(replacement, text)
     return text.replace("\n", "<br>")
+
+
+# MediaWiki's links - [[word]], [[word|shown as]], [[word#Section|shown as]] - and its
+# bold and italics, in text already escaped. Neither part of a link holds a bracket, nor
+# bold or italics an apostrophe or a line end: each is searched for no further than
+# that, however many openers there are without a closer.
+_WIKI_LINK = re.compile(r"\[\[([^\[\]|\n]*)(?:\|([^\[\]\n]*))?\]\]")
+_WIKI_BOLD = re.compile(r"'''([^'\n]+)'''")
+_WIKI_ITALIC = re.compile(r"''([^'\n]+)''")
+
+
+def wiki_html(text):
+    """A MediaWiki article (type w) as HTML: escaped, its links to other words lookup
+    links - a link to a page of another kind (File:, Category:...) only its text - and
+    its bold and italics kept. Shown as nothing, it still counted as found."""
+
+    def link(match):
+        target, shown = match.group(1), match.group(2)
+        word = html.unescape(target.split("#", 1)[0]).strip()
+        shown = shown if shown is not None else target
+        if not word or ":" in word:
+            return shown
+        return f'<a href="{markup.attr(markup.lookup_href(word))}">{shown}</a>'
+
+    text = _WIKI_LINK.sub(link, markup.escape(text))
+    text = _WIKI_ITALIC.sub(r"<i>\1</i>", _WIKI_BOLD.sub(r"<b>\1</b>", text))
+    return text.replace("\n", "<br>")
+
+
+def xml_text(text):
+    """The text of an XML article - KingSoft PowerWord's (type k) - and nothing of its
+    markup: each element's on a line of its own, its entities read, a CDATA section's
+    as it stands. It was shown as the XML itself, every tag escaped to be seen.
+
+    In one pass, from one "<" to the next: an opener with no closer after it is the
+    rest of the text, and no search runs past it again."""
+    out, position = [], 0
+    while True:
+        start = text.find("<", position)
+        if start == -1:
+            break
+        out.append(html.unescape(text[position:start]))
+        if text.startswith("<![CDATA[", start):
+            end = text.find("]]>", start + 9)
+            if end == -1:
+                out.append(text[start + 9:])
+                return markup.tidy("".join(out))
+            out.append(text[start + 9:end])
+            position = end + 3
+            continue
+        end = text.find(">", start + 1)
+        if end == -1:
+            position = start            # "<" and no ">" after it: text, to the end
+            break
+        out.append("\n")
+        position = end + 1
+    out.append(html.unescape(text[position:]))
+    return markup.tidy("".join(out))

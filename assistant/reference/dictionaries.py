@@ -634,7 +634,11 @@ class Library:
     def _gather(self, ready, keys, word=None):
         """Each dictionary's entries filed under `keys`, rendered - as many as fit in
         markup.MAX_HTML of HTML, the most one entry may make: twelve entries of that
-        each, all shown on the page, would hold up the window that shows them."""
+        each, all shown on the page, would hold up the window that shows them.
+
+        An entry with nothing to show - no text and no picture: an article only of
+        sounds, or of a kind of field not shown - is left out, and a dictionary with
+        only those is not one the word was found in."""
         results = []
         for dictionary, ident in ready:
             entries, made = [], 0
@@ -646,6 +650,8 @@ class Library:
                                                    dictionary.read(offset, size))
                 except Exception as e:
                     print(f"[dictionaries] {dictionary.name}, {headword!r}: {e}")
+                    continue
+                if not text.strip() and "<img" not in html:
                     continue
                 made += len(html)
                 entries.append({"headword": headword, "html": html, "text": text})

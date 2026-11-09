@@ -931,6 +931,65 @@ class StarDictFiles(unittest.TestCase):
         (word, offset, size), = d.headwords()
         self.assertEqual(d.render(word, d.read(offset, size))[0], "plainb<b>bold</b>")
 
+    def test_mediawiki_wordnet_and_kingsoft_articles_show_their_text(self):
+        # MediaWiki's and WordNet's were shown as nothing, and still counted as found;
+        # KingSoft's as its XML, every tag escaped to be seen.
+        king = ("<单词原型>glorp</单词原型><基本词义><单词项><单词词性>n.</单词词性>"
+                "<解释项><![CDATA[a <made-up> creature]]></解释项></单词项></基本词义>"
+                "<例句>&lt;b&gt; &amp; <script>alert(1)</script></例句>")
+        ifo = write_stardict(self.dir, "kinds", [
+            ("wiki", b"w'''Glorp''' is a [[creature]] of [[Quux land#Fauna|quuxland]], "
+                     b"''see'' [[File:x.png|a picture]] & <b>more</b>\x00"),
+            ("wordnet", b"nglorp\nn. a made-up creature\x00"),
+            ("king", b"k" + king.encode() + b"\x00"),
+        ], types_="")
+        d = StarDict(ifo)
+        shown = {word: d.render(word, d.read(offset, size))
+                 for word, offset, size in d.headwords()}
+        html, text = shown["wiki"]
+        self.assertIn("<b>Glorp</b>", html)
+        self.assertIn(f'<a href="{markup.lookup_href("creature")}">creature</a>', html)
+        self.assertIn(f'<a href="{markup.lookup_href("Quux land")}">quuxland</a>', html)
+        self.assertIn("<i>see</i>", html)
+        self.assertIn("a picture &amp; &lt;b&gt;more&lt;/b&gt;", html)   # text, as is
+        self.assertNotIn("File:", html)
+        self.assertEqual(text,
+                         "Glorp is a creature of quuxland, see a picture & <b>more</b>")
+        self.assertEqual(shown["wordnet"], ("glorp<br>n. a made-up creature",
+                                            "glorp\nn. a made-up creature"))
+        html, text = shown["king"]
+        self.assertEqual(text, "glorp\nn.\na <made-up> creature\n<b> &\nalert(1)")
+        self.assertEqual(html, "glorp<br>n.<br>a &lt;made-up&gt; creature<br>&lt;b&gt; "
+                               "&amp;<br>alert(1)")
+
+    def test_their_markup_never_closed_is_read_in_one_pass(self):
+        self.assertEqual(stardict.xml_text("a <![CDATA[ <c> & d"), "a <c> & d")
+        self.assertEqual(stardict.xml_text("a < b"), "a < b")
+        self.assertEqual(stardict.xml_text("x &amp; <y>z"), "x &\nz")
+        started = time.monotonic()
+        stardict.xml_text("<" * 200_000)
+        stardict.xml_text("<![CDATA[" * 50_000)
+        stardict.wiki_html("[[" * 100_000 + "[[a|" * 50_000 + "'''" * 50_000
+                           + "''x" * 50_000)
+        self.assertLess(time.monotonic() - started, 2)
+
+    def test_an_entry_with_nothing_to_show_is_not_found(self):
+        # An article of nothing but a sound was an empty entry, "Found in 2 of 2".
+        folder = os.path.join(self.dir, "dicts")
+        os.makedirs(folder)
+        write_dsl(os.path.join(folder, "made-up.dsl"))
+        write_stardict(folder, "sounds", [
+            ("glorp", b"W" + struct.pack(">I", 3) + b"RIF"),
+            ("zib", b"W" + struct.pack(">I", 3) + b"RIF" + b"mone word\x00")], types_="")
+        library = Library(types.SimpleNamespace(dictionaries_dir=folder,
+                                                dictionaries_disabled=[]),
+                          cache_dir=os.path.join(self.dir, "cache"))
+        found = library.look_up("glorp")
+        self.assertEqual(found["dictionaries"], 2)
+        self.assertEqual([result["dictionary"] for result in found["results"]],
+                         ["Invented Dictionary"])
+        self.assertEqual(len(library.look_up("zib")["results"]), 2)
+
 
 class UpperCaseNames(unittest.TestCase):
     """Dictionaries copied from Windows, where case does not matter: X.DSL.DZ beside

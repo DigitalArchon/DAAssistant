@@ -21,8 +21,10 @@ WATCHER = "org.kde.StatusNotifierWatcher"
 NO_TRAY = ("DA Assistant is running, but nothing on this desktop shows tray icons, so "
            "its icon and menu cannot appear. On GNOME, turn on the AppIndicator "
            "extension in the Extensions app (on Fedora, install "
-           "gnome-shell-extension-appindicator first). Your shortcuts work meanwhile, "
-           "and running DA Assistant with --action=settings opens Settings.")
+           "gnome-shell-extension-appindicator first); on Sway or another compositor, "
+           "add a tray to its bar (swaybar's tray, waybar's tray module). Your "
+           "shortcuts work meanwhile, and running DA Assistant with --action=settings "
+           "opens Settings.")
 
 
 def watcher_present():

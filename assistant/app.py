@@ -1301,7 +1301,9 @@ class Assistant:
             advice = gtkcompat.webkit_advice()
             if advice:
                 print(advice)
+        unbound = set(self.hotkeys.problems) & set(self.hotkeys.wanted)
         print(f"  hotkeys       : {self.hotkeys.mode} ({self.hotkeys.detail}), "
+              f"{len(self.hotkeys.wanted) - len(unbound)} of "
               f"{len(self.hotkeys.wanted)} bound")
         if self.hotkeys.problems or self.hotkeys.error:
             print(f"  not bound     : {self.hotkeys.error or self.hotkeys.problems}")

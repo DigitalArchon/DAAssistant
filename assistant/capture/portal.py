@@ -66,12 +66,14 @@ class PortalBackend(ScreenshotBackend):
         still used below it for the fullscreen-then-crop fallback.
 
         Nor where xdg-desktop-portal-wlr takes the screenshots - Sway's portal, and that
-        of the other wlroots compositors that use it. It reads `interactive` and does
-        nothing with it: no picker opens, and it answers with the whole of one output,
-        which, again, would be handed back as the region the user chose. grim+slurp
-        is what picks a region there, and is the rung below; without them the
-        fullscreen-then-crop rung still lets the user choose one, which this rung
-        never does - so it stands aside whether they are installed or not.
+        of the other wlroots compositors that use it. Older releases read `interactive`
+        and did nothing with it: no picker opened, and the whole of one output came
+        back as though it were the region chosen. 0.8 (measured on 0.8.1, Nov 2026)
+        does honour it, by running `grim -g "$(slurp)"` into a file of its own in /tmp
+        - the same picker as the grim+slurp rung below, which needs no fixed path in
+        /tmp and works with every release. So this rung stands aside for that one;
+        without grim and slurp, the fullscreen-then-crop rung still lets the user
+        choose a region.
 
         Hyprland keeps this rung, as before: its own portal, xdg-desktop-portal-hyprland,
         does honour `interactive`, by running slurp itself - the same picker as the

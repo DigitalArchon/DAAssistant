@@ -94,7 +94,8 @@ DEFAULTS = {
     "web_search_mode": "standard",          # off | standard | deep
     # Measured against the alternatives over three queries: the most primary sources
     # (10 of 16, against 4 for tavily and 2 for linkup) and about 1,300 characters of
-    # clean prose per result. See websearch.PROVIDERS for the full table.
+    # clean prose per result. See websearch.PROVIDERS for the full table. linkup keeps
+    # nothing (zero data retention): chosen, it is the only provider ever asked.
     "web_search_provider": "perplexity",
     "web_search_context_size": "medium",    # low | medium | high
     "web_search_valyu_search_type": "all",  # valyu only

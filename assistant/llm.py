@@ -773,7 +773,8 @@ class LLMClient:
         what it already has, which is what it would have done anyway. But it is said:
         `failure` is why, for the answer to carry, since an answer from the model alone
         reads just like a searched one. `notice` is what the answer says of a search that
-        ran: that its results held text aimed at the model, which it was told to ignore.
+        ran: that another provider searched (websearch.search), or that its results held
+        text aimed at the model, which it was told to ignore.
         """
         if not web_search_active(self.config, web_search):
             return "", [], None, ""
@@ -788,14 +789,16 @@ class LLMClient:
         if cancel is not None and cancel.is_set():
             return "", [], None, ""
         try:
-            results = websearch.run(query, self.config, session=self.session)
+            results, note = websearch.search(query, self.config, session=self.session)
         except websearch.SearchError as e:
             print(f"[search] {e}")
             return "", [], str(e), ""
         flagged = websearch.warnings(results)
-        notice = ("The search results held text that looks like instructions to the model ("
-                  + "; ".join(flagged) + "); it was told to ignore it.") if flagged else ""
-        return (websearch.as_context(query, results),
+        notice = " ".join(x for x in (
+            f"{note[:1].upper()}{note[1:]}." if note else "",
+            "The search results held text that looks like instructions to the model ("
+            + "; ".join(flagged) + "); it was told to ignore it." if flagged else "") if x)
+        return (websearch.as_context(query, results, note),
                 [(result["title"], result["url"]) for result in results], None, notice)
 
     def complete(self, model, messages, image_base64=None, cancel=None,

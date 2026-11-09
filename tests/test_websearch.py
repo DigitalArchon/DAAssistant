@@ -445,5 +445,63 @@ class UntrustedResults(unittest.TestCase):
         self.assertIn("told to ignore it", notice)
 
 
+class NanoGPT:
+    """Stands in for NanoGPT's /api/web: an answer per provider, and what was asked."""
+
+    def __init__(self, fail=None):
+        self.asked, self.fail = [], fail or {}
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        from unittest import mock
+        self.asked.append(json["provider"])
+        status, error = self.fail.get(json["provider"], (200, None))
+        body = {"error": error} if error else {"data": [
+            {"title": "A", "url": "https://a.test", "content": f"from {json['provider']}"}]}
+        return mock.Mock(status_code=status, json=lambda: body, text="")
+
+
+class ProvidersThatCannotTakeIt(unittest.TestCase):
+    """As DA Toolkit, DA Vibe Manager and DA Private Coder search: a provider down on NanoGPT's
+    side is searched again with Valyu, one an account requiring zero data retention refuses with
+    Linkup, and Linkup chosen - which keeps nothing - is never left for another."""
+
+    ZDR = (403, {"message": "Zero Data Retention is required", "code": "zero_data_retention"})
+
+    def test_an_account_that_requires_zero_retention_searches_with_linkup_and_says_so(self):
+        nano = NanoGPT(fail={"perplexity": self.ZDR})
+        results, note = websearch.search("q", a_config(), session=nano)
+        self.assertEqual(nano.asked, ["perplexity", "linkup"])
+        self.assertEqual(results[0]["content"], "from linkup")
+        self.assertIn("requires zero data retention", note)
+
+    def test_a_provider_down_on_nanogpts_side_is_searched_again_with_valyu(self):
+        nano = NanoGPT(fail={"perplexity": (504, {"message": "timed out"})})
+        results, note = websearch.search("q", a_config(), session=nano)
+        self.assertEqual(nano.asked, ["perplexity", "valyu"])
+        self.assertIn("failed on NanoGPT's side", note)
+
+    def test_a_mistake_is_not_asked_again_elsewhere(self):
+        nano = NanoGPT(fail={"perplexity": (400, {"message": "bad query"})})
+        with self.assertRaises(websearch.SearchError):
+            websearch.search("q", a_config(), session=nano)
+        self.assertEqual(nano.asked, ["perplexity"])
+
+    def test_linkup_keeps_nothing_and_is_never_left(self):
+        for failure in ((504, {"message": "timed out"}), self.ZDR):
+            nano = NanoGPT(fail={"linkup": failure})
+            with self.assertRaises(websearch.SearchError):
+                websearch.search("q", a_config(web_search_provider="linkup"), session=nano)
+            self.assertEqual(nano.asked, ["linkup"])
+
+    def test_the_model_and_the_answer_are_told_which_ran(self):
+        client = LLMClient(a_config(web_search_craft_query=False))
+        client.session = NanoGPT(fail={"perplexity": self.ZDR})
+        context, sources, failure, notice = client.search(
+            [{"role": "user", "content": "karate lyrics"}], web_search=True)
+        self.assertIsNone(failure)
+        self.assertIn("linkup searched", context)
+        self.assertTrue(notice.startswith("Perplexity is not allowed while the NanoGPT account requires"))
+
+
 if __name__ == "__main__":
     unittest.main()

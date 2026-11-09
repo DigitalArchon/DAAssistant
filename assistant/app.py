@@ -124,13 +124,25 @@ class Assistant:
         import threading
 
         def worker():
-            for provider in providers.in_use(self.config):
+            for provider in self._catalogue_providers():
                 try:
                     catalogue.fetch(self.config, provider=provider.id)
                 except Exception as e:
                     print(f"[models] catalogue not refreshed: {e}")
+            # Whether the answering model can see is read from it: a review dialog
+            # opened before it came may be planning a reading that is no longer needed.
+            GLib.idle_add(self._refresh_reviews)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _catalogue_providers(self):
+        """The providers whose model lists are worth fetching now. In Privacy Mode only
+        nano-gpt's, which lists the private models: every request goes there, and
+        asking the others for theirs - with their keys - would contact services the
+        mode promises to leave alone."""
+        if self.config.privacy_mode:
+            return [providers.get(self.config, providers.NANOGPT)]
+        return list(providers.in_use(self.config))
 
     def _check_tray(self):
         """Say so when nothing on this desktop will show the tray icon: the app would
@@ -330,6 +342,14 @@ class Assistant:
             upgraded += window.go_private(session)
         return upgraded, held
 
+    def _settings_changed_in_chats(self):
+        """Every open conversation names the model its next message goes to, and offers
+        the search, as the settings now have them (ChatWindow.settings_changed)."""
+        from .ui.chat import ChatWindow
+        for window in Gtk.Window.list_toplevels():
+            if isinstance(window, ChatWindow):
+                window.settings_changed()
+
     def _release_privacy_holds(self):
         from .ui.chat import ChatWindow
         for window in Gtk.Window.list_toplevels():
@@ -369,6 +389,11 @@ class Assistant:
         """
         def refresh():
             privacy, refused = route["privacy"], None
+            if privacy is not None and self.config.privacy_mode and \
+                    not privacy.matches(self.config):
+                # Strict, a model or the key changed in Settings before Send: the
+                # request goes with the settings as they are now (_confirm_privacy).
+                privacy = route["privacy"] = None
             if privacy is None and self.config.privacy_mode:
                 try:
                     privacy = route["privacy"] = privacy_module.PrivacySession.start(
@@ -382,6 +407,9 @@ class Assistant:
 
         self._reviews.append(refresh)
         dialog.connect("destroy", lambda _w: self._reviews.remove(refresh))
+        # Once now, too: a dialog made again by Re-crop is given the route as it was
+        # when the crop began, and Privacy Mode or the settings may have changed since.
+        refresh()
 
     def _refresh_reviews(self):
         """Privacy Mode, the premium option or the settings changed: every open review
@@ -393,9 +421,12 @@ class Assistant:
         """The session to send with, decided at Send. Privacy only ever tightens here:
         a dialog opened in Privacy Mode sends privately even if it was switched off
         since, and one opened outside it is upgraded if it was switched on - nothing
-        has been sent yet, so it is not too late."""
+        has been sent yet, so it is not too late. And a session the settings have moved
+        on from - Strict switched on, a private model changed - is made again from
+        them, since nothing has gone with it yet either."""
         if privacy is not None:
-            return privacy
+            if not self.config.privacy_mode or privacy.matches(self.config):
+                return privacy
         return self._start_privacy(uses)
 
     def dispatch(self, action):
@@ -429,10 +460,14 @@ class Assistant:
 
     def _open_chat(self, title, prompt, display, image_base64=None, first_model=None,
                    image_first=True, web_search=None, preflight=None, system=None,
-                   privacy=None, screenshot=None):
+                   privacy=None, screenshot=None, plain_display=None):
+        """`plain_display`, with a preflight whose `display` says it is under way, is
+        what the question shows should it fail or be stopped."""
+        first = {"role": "user", "content": prompt, "display": display}
+        if plain_display is not None:
+            first["plain_display"] = plain_display
         ChatWindow(
-            self, title,
-            [{"role": "user", "content": prompt, "display": display}],
+            self, title, [first],
             image_base64=image_base64, first_model=first_model,
             image_first=image_first, autostart=True,
             web_search=web_search, preflight=preflight, system=system,
@@ -457,12 +492,17 @@ class Assistant:
 
     def _start_capture(self, title, ask_prompt, build, web_search_default=None,
                        transcribe_first=False, system=None, answer_by_text=False,
-                       image=None, language=None, prompt_default=None):
+                       image=None, language=None, prompt_default=None,
+                       offer_search=True):
         """Capture -> review -> send. `build(prompt)` returns (prompt_text, display).
         `image`, a picture from the clipboard, is reviewed in place of a capture.
         `language`, a {"language": ...} the operation's build and `system` - which may
         then be a function - read, makes the dialog offer "Translate into" and fills it
         in at Send. `prompt_default` is the question box's text to start with.
+        `offer_search` False leaves the search box off the review dialog: OCR's first
+        request is the vision model's transcription, and a query could be made only
+        from its instructions. Its follow-ups can still be searched, from the chat
+        window.
 
         The first step goes to the model chosen for its job, and the conversation then
         belongs to the answering model - text or premium, private versions of each in
@@ -479,9 +519,7 @@ class Assistant:
         """
         if not self._require_api_key():
             return
-        # Every capture operation uses the vision model for its first step, and the
-        # answering model for what follows.
-        uses = ("vision", self._answer_role())
+        uses = self._capture_uses(answer_by_text)
         privacy = self._start_privacy(uses)
         if privacy is False:
             return
@@ -495,7 +533,7 @@ class Assistant:
         def on_image(image):
             self._review_capture(image, title, ask_prompt, build, on_error,
                                  web_search_default, transcribe_first, system, privacy,
-                                 answer_by_text, language, prompt_default)
+                                 answer_by_text, language, prompt_default, offer_search)
 
         if image is not None:
             on_image(image)             # a picture from the clipboard: nothing to capture
@@ -505,18 +543,32 @@ class Assistant:
     def _review_capture(self, image, title, ask_prompt, build, on_error,
                         web_search_default=None, transcribe_first=False, system=None,
                         privacy=None, answer_by_text=False, language=None,
-                        prompt_default=None):
-        def on_recrop(original):
+                        prompt_default=None, offer_search=True):
+        def on_recrop(original, state=None):
             from .capture import CropDialog
-            CropDialog(
-                original,
-                # The route as it stands: a dialog made private since it opened stays
-                # private through a re-crop.
-                lambda cropped: self._review_capture(
-                    cropped, title, ask_prompt, build, on_error,
-                    web_search_default, transcribe_first, system, route["privacy"],
-                    answer_by_text, language, prompt_default),
-                on_error, title=f"{title} — re-crop")
+            state = state or {}
+            if language is not None and state.get("language"):
+                language["language"] = state["language"]
+
+            def review_again(picture):
+                # The review as it was left: the question typed, the search ticked and
+                # the language chosen come back with the new crop. And the route as it
+                # stands: a dialog made private since it opened stays private.
+                self._review_capture(
+                    picture, title, ask_prompt, build, on_error,
+                    state.get("web_search", web_search_default), transcribe_first,
+                    system, route["privacy"], answer_by_text, language,
+                    state.get("prompt") or prompt_default, offer_search)
+
+            def crop_failed(message):
+                # Cancelling the crop goes back to the review it came from, capture and
+                # all, rather than dropping both without a word.
+                if message == CANCELLED:
+                    review_again(original)
+                else:
+                    on_error(message)
+
+            CropDialog(original, review_again, crop_failed, title=f"{title} — re-crop")
 
         route = {"privacy": privacy}
         dialog = None                   # read by on_confirm, once it has been made
@@ -525,7 +577,7 @@ class Assistant:
             if info.get("debug_path"):
                 print(f"[capture] sent image saved to {info['debug_path']}")
             session = self._confirm_privacy(route["privacy"],
-                                            ("vision", self._answer_role()))
+                                            self._capture_uses(answer_by_text))
             if session is False:
                 return
             if language is not None and dialog is not None:
@@ -546,8 +598,9 @@ class Assistant:
                 self._open_chat(
                     title, prompt_text, display, image_base64=image_base64,
                     image_first=False, web_search=web_search, system=chosen_system,
-                    preflight=self._transcribe_preflight(image_base64, build, session),
-                    privacy=session, screenshot=screenshot)
+                    preflight=self._transcribe_preflight(image_base64, build),
+                    privacy=session, screenshot=screenshot,
+                    plain_display=build(None, plain=True)[1])
             else:
                 # OCR: the vision model's transcription is the first answer, and the
                 # answering model takes the follow-ups.
@@ -568,10 +621,26 @@ class Assistant:
                                      web_search_default=web_search_default,
                                      privacy=privacy, plan=plan_for(privacy),
                                      language=language and language["language"],
-                                     prompt_default=prompt_default)
+                                     prompt_default=prompt_default,
+                                     offer_search=offer_search)
         self._offer_lookups(getattr(dialog, "prompt_view", None))
-        self._watch_review(dialog, route, lambda: ("vision", self._answer_role()),
+        self._watch_review(dialog, route, lambda: self._capture_uses(answer_by_text),
                            plan_for)
+
+    def _capture_uses(self, answer_by_text):
+        """Which private models a capture needs, were it private: the vision model for
+        its first step, and the answering model for what follows - but a question to a
+        private model that sees needs no reading of the capture, since a private request
+        never searches, so the vision model is not attested for it. Should a follow-up
+        go to a model that cannot see, the window enlists the vision model then."""
+        answer = self._answer_role()
+        if answer_by_text and self.config.privacy_mode:
+            model = {"text": self.config.private_text_model,
+                     "premium": self.config.private_premium_model}[answer].strip()
+            if catalogue.accepts_images(self.config, model or
+                                        self.config.private_text_model.strip()):
+                return (answer,)
+        return ("vision", answer)
 
     def _capture_plan(self, transcribe_first, answer_by_text, privacy, web_search=False):
         """[(model, what it does)] for this capture, in order: for the review dialog to
@@ -612,30 +681,43 @@ class Assistant:
         """
         language = self.config.default_language
         answerer = self._image_answerer(privacy)
+
+        def system_for(transcribed):
+            # Chosen at each message by whether its model sees (ChatWindow's
+            # _request_system): the conversation can move to one that cannot, or back.
+            return lambda sees: (prompts.query_image_system(language, transcribed)
+                                 if sees else prompts.query_described_system(language))
+
         if catalogue.accepts_images(self.config, answerer):
             self._open_chat(
                 title, prompts.query_image(question), question,
                 image_base64=image_base64, web_search=web_search,
-                system=prompts.query_image_system(language, transcribed=web_search),
+                system=system_for(transcribed=web_search),
                 preflight=self._read_preflight(
                     image_base64,
                     lambda q, extracted=None: (prompts.query_image(q, extracted), q),
-                    question, privacy) if web_search else None,
+                    question) if web_search else None,
                 privacy=privacy, screenshot=screenshot)
             return
         reader = privacy.vision_model if privacy else self.config.model("vision")
         self._open_chat(
             title, question, f"{question}\n\n_Reading the image with {reader}…_",
-            image_base64=image_base64, image_first=False,
-            web_search=web_search, system=prompts.query_described_system(language),
-            preflight=self._describe_preflight(image_base64, question, privacy),
+            plain_display=question, image_base64=image_base64, image_first=False,
+            web_search=web_search, system=system_for(transcribed=True),
+            preflight=self._describe_preflight(image_base64, question),
             privacy=privacy, screenshot=screenshot)
 
-    def _describe_preflight(self, image_base64, question, privacy=None):
+    # The preflights below are run by the chat window, with the privacy session and the
+    # search setting of the request they run for (ChatWindow._preflight): never ones of
+    # their own, fixed when they were made. One that failed or was stopped is made again
+    # with the next request, and by then the window may have gone private - the capture
+    # must then go only to the session's vision model, as everything else does.
+
+    def _describe_preflight(self, image_base64, question):
         """The vision model reads the image for a text model that cannot see it: the
         text, verbatim, and a description of the rest. Shown under the question, so the
         reader can see what the answer was given to work from."""
-        def preflight(cancel, status):
+        def preflight(cancel, status, privacy=None, web_search=False):
             status("Reading and describing the image…")
             if privacy is None:
                 reader = self.config.model("vision")
@@ -644,6 +726,7 @@ class Assistant:
                     image_base64=image_base64, cancel=cancel)
             else:
                 reader = privacy.vision_model
+                privacy.enlist(reader)
                 reading = self.client.complete(
                     reader, [{"role": "user", "content": prompts.IMAGE_BRIEF}],
                     image_base64=image_base64, cancel=cancel, privacy=privacy,
@@ -673,11 +756,12 @@ class Assistant:
                 self.config.model("vision"),
                 [{"role": "user", "content": prompts.OCR}],
                 image_base64=image_base64, cancel=cancel)
+        privacy.enlist(privacy.vision_model)
         return self.client.complete(
             privacy.vision_model, [{"role": "user", "content": prompts.OCR}],
             image_base64=image_base64, cancel=cancel, privacy=privacy, status=status)
 
-    def _transcribe_preflight(self, image_base64, build, privacy=None):
+    def _transcribe_preflight(self, image_base64, build):
         """Vision model transcribes, then the text model does the real work.
 
         Two stages, because doing it in one vision pass is worse in practice: the cheap,
@@ -689,7 +773,7 @@ class Assistant:
         gone by the time anything reasons about it, so it gets its own vision model and
         the image itself. See query_image.
         """
-        def preflight(cancel, status):
+        def preflight(cancel, status, privacy=None, web_search=False):
             status("Reading text from the image…")
             extracted = self._ocr(image_base64, cancel, status, privacy)
             if cancel.is_set():
@@ -698,11 +782,14 @@ class Assistant:
             if not extracted or extracted.upper().startswith("NO TEXT FOUND"):
                 raise LLMError("No readable text was found in the selection")
             prompt_text, display = build(extracted)
-            return {"content": prompt_text, "display": display}
+            # The window keeps the transcription as the capture's reading: it is in the
+            # conversation, in the turn built from it, so a follow-up to a model that
+            # cannot see does not send the capture to the vision model a second time.
+            return {"content": prompt_text, "display": display, "reading": extracted}
 
         return preflight
 
-    def _read_preflight(self, image_base64, build, question, privacy=None):
+    def _read_preflight(self, image_base64, build, question):
         """Read the image with the OCR model, and put the text beside the question.
 
         Made only for a question to be searched on the web (_image_answer): a search
@@ -714,11 +801,24 @@ class Assistant:
 
         Unlike _transcribe_preflight this adds to the request rather than replacing it:
         the image still goes to the model that answers. If nothing readable comes back,
-        the question goes out unchanged and the picture speaks for itself.
+        or the reading fails, the question goes out unchanged and the picture speaks for
+        itself: the model answering has it, and only the search is the poorer. Made
+        again for a request that no longer searches, it is not needed, and nothing is
+        read.
         """
-        def preflight(cancel, status):
+        def preflight(cancel, status, privacy=None, web_search=False):
+            if not web_search:
+                return None
             status("Reading the text in the image…")
-            extracted = self._ocr(image_base64, cancel, status, privacy)
+            try:
+                extracted = self._ocr(image_base64, cancel, status, privacy)
+            except (LLMError, privacy_module.PrivacyError) as e:
+                if cancel.is_set():
+                    return None
+                errors.record(f"Reading a capture's text for the search failed: {e}")
+                status(f"The text in the image could not be read for the search ({e}); "
+                       f"searching for the question alone")
+                return None
             if cancel.is_set():
                 return None
             extracted = (extracted or "").strip()
@@ -826,17 +926,20 @@ class Assistant:
             "OCR", ask_prompt=False,
             build=lambda _p: (prompts.OCR,
                               "_Transcribe all text in the selected region._"),
-            web_search_default=False)
+            web_search_default=False, offer_search=False)
 
     def ocr_translate(self, image=None):
         # The language this request is translated into: the dialog's "Translate into",
         # which starts on the setting, fills it in at Send.
         chosen = {"language": self.config.default_language}
 
-        def build(extracted=None):
+        def build(extracted=None, plain=False):
             # Called twice: once before the capture is sent, to label the turn, and
-            # again by the preflight with the transcribed text.
+            # again by the preflight with the transcribed text. `plain` is the label
+            # without the note that the reading is under way, for when it fails.
             language = chosen["language"]
+            if plain:
+                return ("", f"_Translate the text from the selection into {language}._")
             if not extracted:
                 return ("", f"_Reading the selection and translating it into "
                             f"{language}…_")
@@ -1082,6 +1185,7 @@ class Assistant:
                 if not providers.unready(self.config):
                     self._warm_catalogue()
                 self._refresh_reviews()
+                self._settings_changed_in_chats()
                 self._sync_privacy_item()
                 if self.config.privacy_mode:
                     # Switched on here, or its models fixed for windows held waiting.

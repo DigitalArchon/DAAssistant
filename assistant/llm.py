@@ -321,6 +321,39 @@ def content_text(content):
     return ""
 
 
+def _may_have_run(error):
+    """Whether a request that failed may have reached the provider and been run: the
+    body could not be read (a non-streamed answer is read inside post), or the
+    connection broke once the request was on it - the server closed it without an
+    answer, or reset it. A refused connection, a name that did not resolve, a TLS
+    handshake or a proxy that failed: nothing was run, and those are tried again."""
+    if isinstance(error, (requests.exceptions.ChunkedEncodingError,
+                          requests.exceptions.ContentDecodingError)):
+        return True
+    if isinstance(error, (requests.exceptions.SSLError, requests.exceptions.ProxyError,
+                          requests.exceptions.ConnectTimeout)):
+        return False
+    import http.client
+    import urllib3
+    seen, pending = set(), [error]
+    while pending:
+        cause = pending.pop()
+        if cause is None or id(cause) in seen:
+            continue
+        seen.add(id(cause))
+        if isinstance(cause, (urllib3.exceptions.NewConnectionError,
+                              urllib3.exceptions.ConnectTimeoutError)):
+            return False
+        if isinstance(cause, (urllib3.exceptions.ProtocolError,
+                              http.client.RemoteDisconnected, ConnectionResetError)):
+            return True
+        if isinstance(cause, BaseException):
+            pending.extend([cause.__cause__, cause.__context__,
+                            getattr(cause, "reason", None),
+                            *[a for a in cause.args if isinstance(a, BaseException)]])
+    return False
+
+
 class LLMError(Exception):
     """A request failed. `model` is the model it was for, when known, so the window can
     say which of a conversation's models failed - the OCR model reading the image, or
@@ -510,6 +543,17 @@ class LLMClient:
                            f"conversation: switch Privacy Mode on and choose it under "
                            f"Settings → Privacy, or choose another model.", model=model)
 
+    def refuse_unsendable(self, model):
+        """Raise LLMError, before anything is sent, for a model whose provider cannot
+        be sent to - no key, no address, or an address refused. _post asks too, for
+        every request; this is for a request with steps before its own - a web search,
+        the query written for it, a reading of the capture - which would otherwise go
+        out first, only for the answer to be refused with "Nothing was sent"."""
+        self._refuse_unsealed(model)
+        refused = self._provider(model).problem()
+        if refused:
+            raise LLMError(f"Nothing was sent. {refused}", model=model)
+
     def _post(self, payload, stream, cancel=None, provider=None):
         model = payload.get("model")
         self._refuse_unsealed(model)
@@ -548,6 +592,14 @@ class LLMClient:
                     f"No response within {self.config.request_timeout} seconds",
                     model=payload.get("model"))
             except requests.exceptions.RequestException as e:
+                if _may_have_run(e):
+                    # The request went, and the connection broke before or while its
+                    # answer came: as with a timeout, not evidence it was never run,
+                    # so it is not sent again - the capture uploaded and the completion
+                    # billed a second and third time. Ask again does it, if wanted.
+                    raise LLMError(f"The connection broke after the request was sent, "
+                                   f"so it was not sent again: {e}",
+                                   model=payload.get("model"))
                 last_error = str(e)
             else:
                 if response.status_code < 300:
@@ -900,7 +952,9 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, on_delta,
                                       system, privacy, status)
-        self._refuse_unsealed(model)
+        # The model's provider first: the search, and the query written for it, go out
+        # before the model is asked, and should not for an answer that cannot be.
+        self.refuse_unsendable(model)
 
         # Ours to run, before the model is called, so the query is the user's question
         # rather than whatever the chat endpoint would have derived from the request.
@@ -1052,14 +1106,15 @@ class LLMClient:
     def test_connection(self):
         """Used by the Settings 'Test connection' button. Returns (ok, message).
 
-        With Privacy Mode on, it is the private text model that is tried, attested and
-        checked exactly as a conversation would be: that is the model every request
-        will go to.
+        With Privacy Mode on, it is the private answering model that is tried, attested
+        and checked exactly as a conversation would be - the premium one when the
+        premium option is on: that is the model every request will go to.
         """
         privacy = None
+        role = "premium" if getattr(self.config, "use_premium", False) else "text"
         try:
-            privacy = privacy_module.PrivacySession.start(self.config)
-            model = privacy.text_model if privacy else self.config.active_text_model()
+            privacy = privacy_module.PrivacySession.start(self.config, uses=(role,))
+            model = privacy.model_for(role) if privacy else self.config.active_text_model()
             result = self.complete(
                 model,
                 [{"role": "user", "content": "Reply with the single word: ok"}],

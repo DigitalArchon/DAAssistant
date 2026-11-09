@@ -100,7 +100,11 @@ deepseek/deepseek-v4-pro translates it* - and, with **Search the web** ticked, t
 search query made from it goes to NanoGPT. If you switch Privacy Mode or the premium
 option, or change the settings, while it is open, it says so at once: switched on,
 Privacy Mode makes the waiting request private before you send it, and if Privacy Mode
-cannot be used, Send is held and the dialog says why.
+cannot be used, Send is held and the dialog says why. Changing **Strict** or a private
+model while it waits counts too: the request goes with the settings as they are when you
+press Send. **Re-crop** keeps what you typed, the search box and the language: the
+dialog after the new crop starts from them, and cancelling the crop brings the dialog
+back as you left it.
 
 - **OCR only**: the vision model's transcription is the first answer, verbatim and
   nothing else. Ask for changes, explanations or searches after, and those go to the
@@ -144,9 +148,12 @@ line or two. At most one cheap vision call, on the first message of an image que
 none for a model that sees answering without a search.
 
 Web search can be switched on or off for each individual request, from the **Search the
-web** box on the send dialog. The three operations that cannot benefit from it —
-translate clipboard text, translate image selection and OCR — start with it off
-regardless of your default, since they work from text already in front of the model. The chat window's header carries a matching magnifier for
+web** box on the send dialog. Translating clipboard text and translating an image
+selection start with it off regardless of your default, since they work from text
+already in front of the model; OCR's dialog has no box at all, as its first answer is the
+transcription itself. Where no search can run - **Mode** set to off under **Settings >
+Web search**, or no NanoGPT API key, which the search needs whichever provider answers -
+the box and the magnifier are greyed, and say why. The chat window's header carries a matching magnifier for
 follow-ups, beside the model menu. The send dialog starts from your saved default, and the
 magnifier from the send dialog's choice - so off for a translation or OCR's follow-ups,
 whatever your default - and neither writes back to it.

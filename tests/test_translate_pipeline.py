@@ -99,7 +99,7 @@ class TwoStageTranslate(unittest.TestCase):
         """Mirrors Assistant._transcribe_preflight without building a full tray app."""
         from assistant import prompts
 
-        def preflight(cancel, status):
+        def preflight(cancel, status, **_request):
             status("Reading text from the image…")
             extracted = self.client.complete(
                 self.config.vision_model,
@@ -169,7 +169,7 @@ class TwoStageTranslate(unittest.TestCase):
         window = ChatWindow(StubApp(self.config, self.client), "OCR + Translate",
                             [{"role": "user", "content": "", "display": "…"}],
                             autostart=True, web_search=False,
-                            preflight=lambda cancel, status: {
+                            preflight=lambda cancel, status, **_request: {
                                 "content": prompts.translate_text(half), "display": half},
                             system=prompts.translate_system("German"))
         try:
@@ -487,6 +487,7 @@ class TranslateDefaultsToNoSearch(unittest.TestCase):
         import tempfile
         self.dir = tempfile.mkdtemp()
         self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.api_key = "k"
         self.config.web_search_enabled = True       # global default is ON
 
     def tearDown(self):

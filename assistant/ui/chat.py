@@ -18,7 +18,7 @@ from gi.repository import Gdk, GLib, Gtk
 from . import (bubbles, find, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
 from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
-                providers)
+                providers, websearch)
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -406,6 +406,7 @@ class ChatWindow(Gtk.Window):
         # whether it is already in the history (an image query answered from it) or has
         # to ride along in the system prompt.
         self.reading = None
+        self._answer_is_reading = False
         self._reading_in_history = False
         # How to answer: sent as a system message on every turn, including follow-ups,
         # and deliberately not part of any user turn - the search query is built from
@@ -413,8 +414,13 @@ class ChatWindow(Gtk.Window):
         self.system = system
         # Optional first-request step run before the model is called, e.g. transcribing
         # an image with the vision model so the text model can translate the result.
-        # Signature: preflight(cancel, status) -> {"content": ..., "display": ...}, for
-        # the turn it is made for: the question the window opened with.
+        # Signature: preflight(cancel, status, privacy=, web_search=) -> {"content": ...,
+        # "display": ...}, for the turn it is made for: the question the window opened
+        # with. `privacy` and `web_search` are this request's, not the window's first:
+        # a preflight that failed or was stopped is made again with the next request,
+        # and the window may have gone private, or its search been switched off, since.
+        # The turn's "plain_display", when it has one, is its display without the note
+        # saying the step is under way, for when the step does not finish.
         self._preflight = preflight
         self._preflight_turn = next((turn for turn in reversed(self.conversation)
                                      if turn.get("role") == "user"), None)
@@ -536,6 +542,7 @@ class ChatWindow(Gtk.Window):
             header.pack_end(self.search_toggle)
         else:
             self.search_toggle.set_active(False)
+        self._sync_search_toggle()
 
         # Which model the next message goes to: a role ("text", "premium", "vision")
         # or "model:<id>" for one picked with Other model... It starts on the answering
@@ -746,6 +753,30 @@ class ChatWindow(Gtk.Window):
         menu.popup_at_widget(widget, Gdk.Gravity.SOUTH_WEST, Gdk.Gravity.NORTH_WEST,
                              Gtk.get_current_event())
         self._menu = menu                   # kept alive while it is open
+
+    def settings_changed(self):
+        """Settings were saved: the roles may name other models now, and the search
+        be switched off or out of reach. The header names the model the next message
+        goes to - a role's, read afresh at Send - so it is named again now, not left
+        saying the one before until something else redraws it."""
+        if self._destroyed:
+            return
+        self._sync_model_display()
+        self._sync_search_toggle()
+
+    def _sync_search_toggle(self):
+        """The magnifier offered only when a search can run (websearch.unavailable);
+        greyed, with why, when it cannot - left ticked or not as it was, for when it
+        can again."""
+        reason = websearch.unavailable(self.config)
+        self.search_toggle.set_sensitive(reason is None)
+        self.search_toggle.set_tooltip_text(
+            reason or "Search the web before each reply in this conversation")
+
+    def _search_now(self):
+        """Whether this request searches: the magnifier, if a search can run."""
+        return (self.search_toggle.get_active()
+                and websearch.unavailable(self.config) is None)
 
     def _sync_model_display(self):
         """Name the model the next message goes to, in the header and on the menu."""
@@ -1873,6 +1904,11 @@ class ChatWindow(Gtk.Window):
 
         privacy = self.privacy
         model = self._first_model if first and self._first_model else self.current_model
+        # OCR: the first answer is the vision model's transcription of the capture,
+        # and the reading a model that cannot see would otherwise have made for itself
+        # (_keep_transcription).
+        self._answer_is_reading = bool(first and self._first_model and self.image_base64
+                                       and self._image_first)
         if privacy is not None:
             try:
                 privacy.enlist(model)
@@ -1909,7 +1945,7 @@ class ChatWindow(Gtk.Window):
             self._sent_kinds = set()
             self._badge_question(privacy_module.pending_badge(privacy))
         else:
-            web_search = self.search_toggle.get_active()
+            web_search = self._search_now()
 
         self._cancel = threading.Event()
         self._redraw_queued = False
@@ -1935,7 +1971,7 @@ class ChatWindow(Gtk.Window):
         if preflight is not None:
             turns = [dict(turn) for turn in self.conversation]
             at = next(i for i, turn in enumerate(self.conversation) if turn is target)
-        system = self._request_system()
+        system = self._request_system(model)
         known_reading = self.reading
         prepared = self._prepare_answer()
 
@@ -1968,10 +2004,21 @@ class ChatWindow(Gtk.Window):
             nonlocal history
             stage = "answer"
             reading = known_reading
+            def answer_can_go():
+                # The answering model's provider before a step made only for its answer
+                # - a reading of the capture or of a picture - goes out: not sent for an
+                # answer that cannot be (LLMClient checks again for the answer itself).
+                if privacy is None:
+                    refused = providers.of(self.config, model).problem()
+                    if refused:
+                        raise LLMError(f"Nothing was sent. {refused}", model=model)
+
             try:
                 if preflight is not None:
+                    answer_can_go()
                     stage = "read"
-                    update = preflight(cancel, say)
+                    update = preflight(cancel, say, privacy=privacy,
+                                       web_search=web_search)
                     # A model's reply, and JSON can spell half a character: sound_text.
                     update = {key: sound_text(value) if isinstance(value, str) else value
                               for key, value in (update or {}).items()}
@@ -1998,6 +2045,7 @@ class ChatWindow(Gtk.Window):
                     # A model that cannot see, in a conversation about an image: the
                     # vision model reads it once - its text and a description - and
                     # that reading goes with this request and every later one like it.
+                    answer_can_go()
                     stage = "read"
                     say(f"Reading the image for {model.rsplit('/', 1)[-1]}…")
                     if privacy is not None:
@@ -2009,14 +2057,14 @@ class ChatWindow(Gtk.Window):
                     if cancel.is_set():
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return
-                    if privacy is not None:
-                        privacy.pop_receipt()
+                    self._note_reading_receipt(privacy, "Image reading")
                     if not reading:
                         raise LLMError("The vision model returned nothing about the image",
                                        model=reader)
                     GLib.idle_add(self._keep_reading, reading)
                 unread = [] if sees else attachments.unread(history)
                 if unread:
+                    answer_can_go()
                     stage = "read"
                     if privacy is not None:
                         privacy.enlist(reader)
@@ -2029,8 +2077,7 @@ class ChatWindow(Gtk.Window):
                         if cancel.is_set():
                             GLib.idle_add(self._on_stream_done, None, cancel)
                             return
-                        if privacy is not None:
-                            privacy.pop_receipt()
+                        self._note_reading_receipt(privacy, f"Reading of {picture['name']}")
                         if not text:
                             raise LLMError(f"The vision model returned nothing about "
                                            f"{picture['name']}", model=reader)
@@ -2059,6 +2106,11 @@ class ChatWindow(Gtk.Window):
             except LLMError as e:
                 GLib.idle_add(self._on_stream_error,
                               self._failure(stage, e.model, model, str(e)), cancel)
+            except privacy_module.PrivacyError as e:
+                # A model the conversation cannot send to privately (enlist): its own
+                # words say why, not "PrivacyError: " before them.
+                GLib.idle_add(self._on_stream_error,
+                              self._failure(stage, None, model, str(e)), cancel)
             except Exception as e:
                 GLib.idle_add(self._on_stream_error,
                               self._failure(stage, None, model,
@@ -2070,11 +2122,31 @@ class ChatWindow(Gtk.Window):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _request_system(self):
+    def _note_reading_receipt(self, privacy, what):
+        """A private reading of a picture was a reply too, and what the answer is given
+        to work from: if its signature failed, the question says so, as it does for the
+        first request's transcription. Called from the worker."""
+        if privacy is None:
+            return
+        read = privacy.pop_receipt()
+        if read is not None and read.state == privacy_module.MISMATCH:
+            GLib.idle_add(self._badge_question, (
+                f"⚠ {what} · signature mismatch", "bad", read.detail))
+
+    def _request_system(self, model=None):
         """The instructions for this request, then the reference material the
         conversation holds: the dictionary entries looked up, and whatever a subclass
-        adds for the question being asked (_extra_context)."""
-        parts = [self.system] if self.system else []
+        adds for the question being asked (_extra_context).
+
+        `system` may be a function of whether `model` can see: a question about a
+        capture is answered by a model that sees it or one given a reading of it, and a
+        conversation can move between the two at any message - told it cannot see the
+        image while it is attached, or to read it off a picture it does not have, a
+        model is given instructions that contradict what it is sent."""
+        system = self.system
+        if callable(system):
+            system = system(bool(catalogue.accepts_images(self.config, model)))
+        parts = [system] if system else []
         looked_up = [turn["context"] for turn in self.conversation
                      if turn.get("role") == "lookup" and turn.get("context")]
         if looked_up:
@@ -2511,10 +2583,20 @@ class ChatWindow(Gtk.Window):
                 "model": model or self._streaming_model}
         if private:
             turn["privacy"] = self._badge(privacy_module.receipt_badge(receipt))
+        if getattr(self, "_answer_is_reading", False):
+            self._keep_transcription(result)
         self._finish_answer(turn, payload)
         self._append_turn(turn, replace_placeholder=placeholder)
         self.status.set_text(turn["privacy"]["label"] if turn.get("privacy") else "")
         self._after_answer(turn, payload)
+
+    def _keep_transcription(self, text):
+        """OCR's first answer is the capture's text, in the conversation: a follow-up to
+        a model that cannot see works from it, rather than the capture being sent to
+        the vision model again for a reading of the same pixels."""
+        if self.reading is None and (text or "").strip():
+            self.reading = text.strip()
+            self._reading_in_history = True
 
     def _on_stream_error(self, message, cancel=None):
         if self._stale(cancel):
@@ -2555,6 +2637,14 @@ class ChatWindow(Gtk.Window):
     def _finish_stream(self):
         self._cancel = None
         self._streaming_text = None
+        # A first step that did not finish - it failed, or was stopped - leaves its
+        # question as it was asked, not saying the step is still under way; it is made
+        # again with the next request, and the status line says so then.
+        turn = self._preflight_turn
+        if (self._preflight is not None and turn is not None
+                and "plain_display" in turn and not self._destroyed):
+            turn["display"] = turn.pop("plain_display")
+            self._render(full=True)
         if self._pending_privacy is not None and not self._destroyed:
             session, self._pending_privacy = self._pending_privacy, None
             self._apply_privacy(session)

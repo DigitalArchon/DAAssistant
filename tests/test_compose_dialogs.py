@@ -25,6 +25,7 @@ class TextDialogWebSearch(unittest.TestCase):
         import tempfile
         self.dir = tempfile.mkdtemp()
         self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.api_key = "k"          # web search runs on NanoGPT, with its key
         self.result = {}
 
     def tearDown(self):
@@ -87,6 +88,7 @@ class CaptureDialogWebSearch(unittest.TestCase):
         import tempfile
         self.dir = tempfile.mkdtemp()
         self.config = Config(os.path.join(self.dir, "c.json"))
+        self.config.api_key = "k"
         self.result = {}
 
     def tearDown(self):

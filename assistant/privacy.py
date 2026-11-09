@@ -931,6 +931,19 @@ class PrivacySession:
                    premium_model=config.private_premium_model.strip(),
                    strict=getattr(config, "privacy_strict", False))
 
+    def matches(self, config):
+        """Whether a conversation started now would get this session: the same
+        provider, models and strictness. A review dialog's session is made when its
+        operation starts, before anything is sent; one the settings have moved on from
+        since is made again at Send (Assistant._confirm_privacy), so that Strict
+        switched on, or a model changed, before Send is what the request goes with."""
+        return (self.api_url == config.api_url and self.api_key == config.api_key
+                and self.text_model == config.private_text_model.strip()
+                and self.vision_model == config.private_vision_model.strip()
+                and self.premium_model == (config.private_premium_model.strip()
+                                           or self.text_model)
+                and self.strict == bool(getattr(config, "privacy_strict", False)))
+
     # ---- models ---------------------------------------------------------------------
 
     def model_for(self, role):

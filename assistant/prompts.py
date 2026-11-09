@@ -190,7 +190,7 @@ def ask_anything_system(language):
 def query_described_system(language):
     return (
         "Answer the user's question about an image they captured. You cannot see the "
-        "image: a vision model has read it for you, and its reading follows the "
+        "image: a vision model has read it for you, and its reading is given with the "
         "question - a verbatim transcription of the image's text, and a description of "
         "what it shows. Take error codes, identifiers, versions, paths and exact "
         "wording from the transcription, and quote them exactly.\n\n"

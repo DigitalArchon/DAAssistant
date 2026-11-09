@@ -1812,7 +1812,7 @@ class ChatStaysPrivate(TempConfig):
     def test_a_failure_names_the_model_and_its_part(self):
         from assistant.ui.chat import ChatWindow
 
-        def read(cancel, status):
+        def read(cancel, status, **_request):
             raise LLMError("HTTP 503: model temporarily overloaded", model="ocr/model")
 
         class Answering(RecordingClient):

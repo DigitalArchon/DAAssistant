@@ -62,6 +62,21 @@ class SearchError(Exception):
     pass
 
 
+def unavailable(config):
+    """Why no request can be searched now, whatever its box says, or None.
+
+    Asked where the box is offered - the compose dialogs, the chat window's magnifier -
+    so that a search that cannot run is not ticked, planned, waited for ("Searching the
+    web…") or paid for in a reading made only for it (Query image's), and then quietly
+    not made. llm.web_search_active is the same rule at the moment of sending."""
+    if (getattr(config, "web_search_mode", "") or "standard").lower() == "off":
+        return "Web search is switched off in Settings > Web search"
+    if not getattr(config, "api_key", ""):
+        return ("Web search runs on NanoGPT, and needs its API key "
+                "(Settings > Providers)")
+    return None
+
+
 def endpoint(api_url):
     """The /api/web URL that belongs with a configured chat-completions URL."""
     marker = "/api/"

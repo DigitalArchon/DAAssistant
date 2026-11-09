@@ -13,7 +13,7 @@ from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 from .. import (imaging, llm as llm_module, privacy as privacy_module, providers,
-                proxy as proxy_module, sealed)
+                proxy as proxy_module, sealed, websearch)
 from ..vendored import location as vendored_location
 from .model_browser import ModelBrowser
 
@@ -45,28 +45,33 @@ def web_search_toggle(config, default=None):
     return button
 
 
-def privacy_note(privacy):
+def privacy_note(privacy, planned=None):
     """The compose dialogs' statement that this request is private, or None.
 
     Shown before anything is sent, because that is the moment it matters: the capture or
-    the clipboard text is on screen and about to go somewhere.
+    the clipboard text is on screen and about to go somewhere. `planned` is the models
+    the request's plan names, when it has one: those are where it goes - the premium
+    model once the premium option is ticked, and not the vision model for a question a
+    private model that sees answers itself - rather than the ones its session began with.
     """
     if privacy is None:
         return None
+    chosen = list(dict.fromkeys(str(m) for m in planned)) if planned else privacy.models()
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
     box.get_style_context().add_class("privacy-compose")
     icon = Gtk.Image.new_from_icon_name("channel-secure-symbolic",
                                         Gtk.IconSize.LARGE_TOOLBAR)
     box.pack_start(icon, False, False, 0)
     models = []
-    for model in privacy.models():
+    for model in chosen:
         role = privacy.role(model)
         how = ("end-to-end encrypted" if privacy_module.is_private_mode(model)
                else "TEE, replies signed")
         models.append(f"<b>{GLib.markup_escape_text(model)}</b> ({role}; {how})")
     label = Gtk.Label(xalign=0, wrap=True, max_width_chars=90)
     label.set_markup(
-        f"<b>{'🔐' if privacy.all_sealed else '🔒'} Privacy Mode</b> — this goes only to "
+        f"<b>{'🔐' if all(map(privacy_module.is_private_mode, chosen)) else '🔒'} "
+        f"Privacy Mode</b> — this goes only to "
         + " and ".join(models)
         + ", each attested before anything is sent to it. Web search is off, and the "
           "conversation stays private until it is closed.")
@@ -148,7 +153,9 @@ class ReviewRoute:
         return (getattr(self, "_chosen_language", None)
                 or getattr(self, "_default_language", None))
 
-    def _build_route(self, header, config, web_search_default):
+    def _build_route(self, header, config, web_search_default, offer_search=True):
+        """`offer_search` False: no search box at all, for a request with nothing to
+        search for (OCR's transcription); follow-ups have the chat window's."""
         self.header = header
         self.config = config
         self.privacy_slot = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -156,6 +163,10 @@ class ReviewRoute:
         self.plan.get_style_context().add_class("capture-meta")
         self.plan.set_no_show_all(True)
         self.search_check = web_search_toggle(config, web_search_default)
+        self._offer_search = offer_search
+        if not offer_search:
+            self.search_check.set_active(False)
+            self.search_check.set_no_show_all(True)
         self._search_wanted = self.search_check.get_active()
         self.search_check.connect("toggled", self._on_search_toggled)
 
@@ -174,21 +185,34 @@ class ReviewRoute:
 
         for child in self.privacy_slot.get_children():
             self.privacy_slot.remove(child)
-        note = refused_note(refused) if refused else privacy_note(privacy)
+        note = refused_note(refused) if refused else privacy_note(
+            privacy, self._planned_models())
         if note is not None:
             self.privacy_slot.pack_start(note, False, False, 0)
             note.show_all()
 
-        # Private, or not to be sent: no search, whatever was ticked. Back to ordinary,
-        # the box is as the user last left it.
-        closed = bool(privacy or refused)
+        # Private, not to be sent, or no search able to run (switched off in Settings,
+        # or no NanoGPT key): no search, whatever was ticked - not ticked, planned or
+        # read for, only to be skipped at Send. Back to ordinary, the box is as the
+        # user last left it.
+        cannot = None if (privacy or refused) else websearch.unavailable(self.config)
+        closed = bool(privacy or refused or cannot or not self._offer_search)
         self.search_check.set_sensitive(not closed)
         self.search_check.set_active(False if closed else self._search_wanted)
         self.search_check.set_tooltip_text(
             "Off in Privacy Mode: the search query would carry your text outside the "
-            "attested enclave" if closed else
-            "Look things up online before answering this request")
+            "attested enclave" if privacy or refused else
+            cannot or "Look things up online before answering this request")
         self._show_plan()
+
+    def _planned_models(self):
+        """The models the plan names, as it stands: for the privacy note. A private
+        request never searches, so a plan that turns on the search box is read
+        unticked."""
+        plan = getattr(self, "route_plan", None)
+        if callable(plan):
+            plan = plan(False)
+        return [model for model, _job in plan or []]
 
     def _show_plan(self):
         plan = getattr(self, "route_plan", None)
@@ -236,10 +260,14 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
     def __init__(self, image, operation, config, on_confirm,
                  ask_prompt=False, on_recrop=None, prompt_label="Your question",
                  web_search_default=None, privacy=None, plan=None, language=None,
-                 prompt_default=None):
+                 prompt_default=None, offer_search=True):
         """`plan` is [(model, what it does)], in order (Assistant._capture_plan), so the
         models are known before anything goes; set_route keeps it current. It may be a
-        function of whether the search box is ticked, called again as it is."""
+        function of whether the search box is ticked, called again as it is.
+
+        on_recrop(image, state) is given the review as it stands - {"prompt",
+        "web_search", "language"} - for the dialog made after the crop to start from:
+        the question typed, the search ticked and the language chosen are not lost."""
         super().__init__(title=operation)
         self.image = image
         self.config = config
@@ -257,7 +285,7 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
 
         header = Gtk.HeaderBar(show_close_button=True, title=operation)
         self.set_titlebar(header)
-        self._build_route(header, config, web_search_default)
+        self._build_route(header, config, web_search_default, offer_search)
 
         cancel = Gtk.Button.new_with_label("Cancel")
         cancel.connect("clicked", lambda _w: self.destroy())
@@ -385,8 +413,10 @@ class CaptureReviewDialog(ReviewRoute, Gtk.Window):
             return
         self._done = True
         image = self.image
+        state = {"prompt": self._prompt_text(), "web_search": self._search_wanted,
+                 "language": self.target_language()}
         self.destroy()
-        self.on_recrop(image)
+        self.on_recrop(image, state)
 
     def _confirm(self):
         if self._done:

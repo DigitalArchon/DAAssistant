@@ -96,6 +96,7 @@ class StubAssistant:
     _answer_role = Assistant._answer_role
     _ocr = Assistant._ocr
     _capture_plan = Assistant._capture_plan
+    _capture_uses = Assistant._capture_uses
     _watch_review = Assistant._watch_review
     _offer_lookups = Assistant._offer_lookups
     look_up_selection = Assistant.look_up_selection
@@ -120,12 +121,12 @@ class StubAssistant:
 
     def _open_chat(self, title, prompt, display, image_base64=None, first_model=None,
                    image_first=True, web_search=None, preflight=None, system=None,
-                   privacy=None, screenshot=None):
+                   privacy=None, screenshot=None, plain_display=None):
         self.opened = {"title": title, "prompt": prompt, "display": display,
                        "image": image_base64, "first_model": first_model,
                        "image_first": image_first, "preflight": preflight,
                        "system": system, "privacy": privacy,
-                       "screenshot": screenshot}
+                       "screenshot": screenshot, "plain_display": plain_display}
 
     def notify(self, message, urgency="low"):
         pass
@@ -288,10 +289,10 @@ class ATextModelThatSeesImages(ImageQueryCase):
         self.assertEqual(opened["image"], "IMAGEDATA",
                          "the image itself must be sent, not a reading of it")
         self.assertIsNone(opened["first_model"])
-        self.assertEqual(opened["system"],
+        self.assertEqual(opened["system"](True),
                          prompts.query_image_system(self.config.default_language,
                                                     transcribed=False))
-        self.assertNotIn("transcription", opened["system"].lower(),
+        self.assertNotIn("transcription", opened["system"](True).lower(),
                          "no transcription goes with it, so none should be promised")
         self.assertEqual(opened["prompt"], CaptureDialogStub.prompt)
 
@@ -310,9 +311,10 @@ class ATextModelThatSeesImages(ImageQueryCase):
         the image only holds in its pixels, and goes beside the question too, where it
         keeps an error code exact. One cheap call."""
         opened = self._confirm(web_search=True)
-        self.assertEqual(opened["system"],
+        self.assertEqual(opened["system"](True),
                          prompts.query_image_system(self.config.default_language))
-        update = opened["preflight"](threading.Event(), lambda _m: None)
+        update = opened["preflight"](threading.Event(), lambda _m: None,
+                                     web_search=True)
         self.assertIn(TRANSCRIPTION, update["content"])
         self.assertIn(CaptureDialogStub.prompt, update["content"])
         self.assertEqual(update["display"], CaptureDialogStub.prompt)
@@ -325,7 +327,8 @@ class ATextModelThatSeesImages(ImageQueryCase):
     def test_an_image_with_no_text_is_sent_as_it_was(self):
         self.client.transcription = "NO TEXT FOUND"
         opened = self._confirm(web_search=True)
-        self.assertIsNone(opened["preflight"](threading.Event(), lambda _m: None),
+        self.assertIsNone(opened["preflight"](threading.Event(), lambda _m: None,
+                                              web_search=True),
                           "an unreadable image should not rewrite the question")
 
     def test_the_model_gets_the_whole_reading_and_the_search_gets_an_excerpt(self):
@@ -335,7 +338,8 @@ class ATextModelThatSeesImages(ImageQueryCase):
         wall = "\n".join(f"line {i} of a dense stack trace" for i in range(200))
         self.client.transcription = wall
         opened = self._confirm(web_search=True)
-        update = opened["preflight"](threading.Event(), lambda _m: None)
+        update = opened["preflight"](threading.Event(), lambda _m: None,
+                                     web_search=True)
 
         self.assertIn("line 0 of a dense stack trace", update["content"])
         self.assertIn("line 150 of a dense stack trace", update["content"],
@@ -361,8 +365,13 @@ class ATextModelThatCannotSeeImages(ImageQueryCase):
         self.assertFalse(opened["image_first"], "the text model cannot be sent the image")
         self.assertEqual(opened["image"], "IMAGEDATA",
                          "the capture stays with the conversation for later models")
-        self.assertEqual(opened["system"],
+        self.assertEqual(opened["system"](False),
                          prompts.query_described_system(self.config.default_language))
+        # Moved to a model that sees, the conversation is told it can: the image goes
+        # with its requests, and the reading in its question is the transcription.
+        self.assertEqual(opened["system"](True),
+                         prompts.query_image_system(self.config.default_language))
+        self.assertEqual(opened["plain_display"], CaptureDialogStub.prompt)
 
         update = opened["preflight"](threading.Event(), lambda _m: None)
         passes = [c for c in self.client.calls if c["kind"] == "complete"]
@@ -462,15 +471,35 @@ class PrivacyModeImageQueries(ImageQueryCase):
         self.assertCountEqual(session.models(), [self.PRIVATE_TEXT, self.PRIVATE_VISION])
         self.assertEqual(self.asked[-1], self.PRIVATE_TEXT)       # at Send
         self.assertFalse(opened["image_first"])
-        opened["preflight"](threading.Event(), lambda _m: None)
+        opened["preflight"](threading.Event(), lambda _m: None, privacy=session)
         read = self.client.calls[0]
         self.assertEqual(read["model"], self.PRIVATE_VISION)
         self.assertIs(read["privacy"], session)
         self.assertEqual(read["prompt"], prompts.IMAGE_BRIEF)
 
+    def test_a_reading_made_again_after_going_private_is_private(self):
+        """A reading that failed or was stopped is made again with the next request,
+        and the window may have gone private since: the capture must then go to the
+        session's vision model, attested, not to the ordinary one it was first meant
+        for. It went in the clear while the window said the conversation was private."""
+        from assistant.privacy import PrivacySession
+        self.sees_images = False
+        self.config.privacy_mode = False
+        opened = self._confirm()
+        self.assertIsNone(opened["privacy"])
+        self.config.privacy_mode = True
+        session = PrivacySession.start(self.config, uses=("text", "vision"))
+        opened["preflight"](threading.Event(), lambda _m: None, privacy=session)
+        [read] = self.client.calls
+        self.assertEqual(read["model"], self.PRIVATE_VISION)
+        self.assertIs(read["privacy"], session)
+
     def test_a_private_text_model_that_sees_is_given_the_image(self):
         self.sees_images = True
         opened = self._confirm()
+        # A private request never searches, so nothing reads the capture first: the
+        # vision model is not among the models the request goes to.
+        self.assertEqual(opened["privacy"].models(), [self.PRIVATE_TEXT])
         self.assertTrue(opened["image_first"])
         self.assertEqual(opened["image"], "IMAGEDATA")
         self.assertEqual(self.asked[-1], self.PRIVATE_TEXT)       # at Send
@@ -556,10 +585,30 @@ class AConversationFollowsItsModelMenu(unittest.TestCase):
         finally:
             window.destroy()
 
-    def test_a_model_that_cannot_see_is_given_one_reading_of_the_image(self):
+    def test_after_ocr_a_model_that_cannot_see_works_from_the_transcription(self):
+        """OCR's first answer is the capture's text, in the conversation: a model that
+        cannot see works from it, and the capture is not sent to be read again."""
         window = self._window(first_model=OCR_MODEL, autostart=True)
         try:
             self.assertTrue(self._answered(window, 1))
+            self._follow_up(window, "what does it mean?")
+            self.assertTrue(self._answered(window, 2))
+            self.assertEqual([c for c in self.client.calls if c["kind"] == "complete"], [])
+            for call in self.streams()[1:]:
+                self.assertFalse(call["image"])
+                self.assertEqual(call["model"], TEXT_MODEL)
+            self.assertEqual(window.reading, "It is a permissions error.")
+        finally:
+            window.destroy()
+
+    def test_a_model_that_cannot_see_is_given_one_reading_of_the_image(self):
+        # A question a model that sees answered, then the conversation moved to one
+        # that cannot: the vision model reads the capture for it once, not per message.
+        window = self._window(autostart=True)
+        try:
+            self.assertTrue(window._choose("premium"))
+            self.assertTrue(self._answered(window, 1))
+            self.assertTrue(window._choose("text"))
             self._follow_up(window, "what does it mean?")
             self.assertTrue(self._answered(window, 2))
             self._follow_up(window, "and then?")
@@ -644,43 +693,71 @@ class AConversationFollowsItsModelMenu(unittest.TestCase):
         finally:
             window.destroy()
 
-    def test_a_reading_made_again_sends_the_capture_only_to_a_model_that_sees(self):
-        # A question put to a model that sees: the capture goes with the first request,
-        # and the OCR model's reading beside it. That reading failed; asked again of a
-        # model that cannot see, the capture is read for it instead of sent to it.
+    def test_a_reading_for_the_search_that_fails_leaves_the_answer_to_go(self):
+        # A question put to a model that sees, searched: the OCR model reads the capture
+        # for the search. That reading failed - the vision model's provider down - and
+        # the answer goes all the same, with the image, searched for the question alone:
+        # the model answering never needed the reading, only the search did.
         from assistant.llm import LLMError
 
-        class FailsFirstReading(RecordingClient):
-            failed = False
-
+        class FailsReading(RecordingClient):
             def complete(self, model, messages, **kwargs):
-                if not self.failed:
-                    self.failed = True
-                    raise LLMError("HTTP 503: overloaded", model=model)
-                return super().complete(model, messages, **kwargs)
+                raise LLMError("HTTP 503: overloaded", model=model)
 
-        self.client = self.app.client = FailsFirstReading(
-            transcription="## Text\nOK\n\n## Description\nA dialog")
+        self.config.use_premium = True
+        self.client = self.app.client = FailsReading()
         question = "what is this?"
         window = ChatWindow(self.app, "Query image", [
             {"role": "user", "content": prompts.query_image(question), "display": question}],
-            image_base64="IMAGEDATA", autostart=True,
+            image_base64="IMAGEDATA", autostart=True, web_search=True,
             preflight=self.app._read_preflight(
                 "IMAGEDATA",
                 lambda q, extracted=None: (prompts.query_image(q, extracted), q),
                 question))
         try:
-            self.assertTrue(self._run_until(lambda: window._cancel is None
-                                            and window.conversation[-1].get("error")))
-            self.assertEqual(self.streams(), [])
-            window._ask_again("text")
             self.assertTrue(self._answered(window, 1))
             [answer] = self.streams()
-            self.assertEqual(answer["model"], TEXT_MODEL)
-            self.assertFalse(answer["image"])
-            self.assertEqual([c["prompt"] for c in self.client.calls
-                              if c["kind"] == "complete"][-2:].count(prompts.IMAGE_BRIEF), 1)
-            self.assertIn("A dialog", window.reading)
+            self.assertEqual(answer["model"], PREMIUM_MODEL)
+            self.assertTrue(answer["image"])
+            self.assertEqual(answer["messages"][-1]["content"], question)
+            self.assertFalse(any(t.get("error") for t in window.conversation))
+            self.assertIsNone(window._preflight, "not made again for the next message")
+        finally:
+            window.destroy()
+
+    def test_a_reading_made_again_for_a_request_not_searched_is_not_made(self):
+        # The reading for the search was stopped; the magnifier is switched off and the
+        # question asked again: there is nothing to read for, and the capture goes only
+        # to the model that sees it.
+        question = "what is this?"
+        self.config.use_premium = True
+        stalled = threading.Event()
+
+        class Stalls(RecordingClient):
+            def complete(self, model, messages, cancel=None, **kwargs):
+                self.calls.append({"kind": "complete", "model": model})
+                stalled.set()
+                cancel.wait(10)
+                return None
+
+        self.client = self.app.client = Stalls()
+        window = ChatWindow(self.app, "Query image", [
+            {"role": "user", "content": prompts.query_image(question), "display": question}],
+            image_base64="IMAGEDATA", autostart=True, web_search=True,
+            preflight=self.app._read_preflight(
+                "IMAGEDATA",
+                lambda q, extracted=None: (prompts.query_image(q, extracted), q),
+                question))
+        try:
+            self.assertTrue(self._run_until(stalled.is_set))
+            window._stop()
+            window.search_toggle.set_active(False)
+            window._ask_again("premium")
+            self.assertTrue(self._answered(window, 1))
+            [answer] = self.streams()
+            self.assertTrue(answer["image"])
+            self.assertEqual(len([c for c in self.client.calls
+                                  if c["kind"] == "complete"]), 1)
         finally:
             window.destroy()
 

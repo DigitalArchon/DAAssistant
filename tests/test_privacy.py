@@ -2272,6 +2272,30 @@ class Sealed(unittest.TestCase):
         self.assertEqual(direct, [])
         self.assertEqual(seen, ["CONNECT nano-gpt.com:443 HTTP/1.1"])
 
+    def test_nothing_ehbp_did_not_seal_is_sent_to_the_enclave(self):
+        """EHBP passes a request it finds no body in on as it came, unsealed, and the
+        transport under it sent that too. It refuses anything without EHBP's
+        encapsulated key now, as DA Vibe Manager's does; what EHBP sealed goes."""
+        import httpx
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        key = X25519PrivateKey.generate().public_key().public_bytes_raw().hex()
+        sent = []
+
+        def network(_transport, request):
+            sent.append((request.headers, request.read()))
+            return httpx.Response(500, text="stop here")
+
+        url = sealed.relay_url(API_URL) + "/v1/chat/completions"
+        with mock.patch.object(httpx.HTTPTransport, "handle_request", network), \
+                httpx.Client(transport=sealed._sealing_transport(key)) as client:
+            client.post(url, json={"messages": [{"role": "user", "content": "my secret"}]})
+            with self.assertRaisesRegex(PrivacyError, "was not sealed, so it was refused"):
+                client.post(url, content=b"")
+        self.assertEqual(len(sent), 1, "the unsealed request was sent")
+        headers, body = sent[0]
+        self.assertIn("Ehbp-Encapsulated-Key", headers)
+        self.assertNotIn(b"my secret", body)
+
     def stream_privately(self, session):
         llm = LLMClient(Config(os.path.join(tempfile.mkdtemp(), "c.json")))
         return llm.stream(self.MODEL, [{"role": "user", "content": "my secret question"}],

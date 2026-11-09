@@ -1168,6 +1168,10 @@ class ChatWindow(Gtk.Window):
         settings = self.webview.get_settings()
         settings.set_enable_developer_extras(False)
         settings.set_enable_write_console_messages_to_stdout(False)
+        # Scripts are the app's alone - the user scripts above and run_javascript - and
+        # none of the page's: a <script> or an onclick= in its markup is dropped as it is
+        # parsed, whatever got past the sanitiser and the page's policy.
+        settings.set_enable_javascript_markup(False)
         bg = Gdk.RGBA()
         bg.parse("#1e1f22" if self.dark else "#ffffff")
         self.webview.set_background_color(bg)

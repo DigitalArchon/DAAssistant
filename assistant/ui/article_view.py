@@ -124,7 +124,10 @@ class ArticlePane(Gtk.Box):
             settings = self.webview.get_settings()
             settings.set_enable_developer_extras(False)
             # Left on: WebKit's own controls for films are scripts. The page's policy
-            # (encyclopedia_html.CSP) allows it none of its own.
+            # (encyclopedia_html.CSP) allows it none of its own, and its markup can have
+            # none either: a <script> or an onclick= is dropped as the page is parsed.
+            # The selection script above is the app's, and runs all the same.
+            settings.set_enable_javascript_markup(False)
             settings.set_enable_write_console_messages_to_stdout(False)
             colour = Gdk.RGBA()
             colour.parse("#1e1f22" if self.dark else "#ffffff")

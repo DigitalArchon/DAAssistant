@@ -277,50 +277,75 @@ class DictzipFile:
         two kilobytes is every chunk but the last one or two, and was nothing. More
         than the file may unpack to (limit) is never returned, and raises TooLarge.
         """
-        with self._lock:
-            self.cut_short = None
-            data = bytearray()
-            wanted = self.limit if most is None else min(most, self.limit)
-            if self._offsets is None:
+        data = bytearray()
+        for piece in self.pieces(most):
+            data += piece
+        return data
+
+    def pieces(self, most=None):
+        """What read_all() returns, a piece at a time - a chunk, or what is inflated at
+        once - for a reader that need not hold it all: a DSL is indexed a window at a
+        time (see dsl.DSL.headwords), and a 600 MB one unpacked whole was 600 MB more
+        for as long as it was indexed, and 2 GB for one made to unpack to the limit.
+
+        The same bounds hold. Where the file ends early, or will not inflate past some
+        point, the pieces stop, and cut_short says why once the last has been given;
+        and as soon as they would come to more than limit, TooLarge is raised - after
+        the pieces before it, which whoever reads them is to let go of."""
+        self.cut_short = None
+        wanted = self.limit if most is None else min(most, self.limit)
+        given = 0
+        if self._offsets is None:
+            with self._lock:
                 self._ends_early = False
-                pieces = self._pieces(self._places[0])
+            inflated = self._pieces(self._places[0])
+            try:
+                while True:
+                    # A piece at a time under the lock, which read() takes too: both
+                    # keep places to read from as they go (see _pieces).
+                    with self._lock:
+                        found = next(inflated, None)
+                    if found is None:
+                        break
+                    piece = found[1]
+                    room = wanted - given
+                    given += len(piece)
+                    if room > 0:
+                        yield piece if len(piece) <= room else piece[:room]
+                    if most is not None and given >= most:
+                        break
+            except TooLarge:
+                raise
+            except DictzipError as e:
+                self.cut_short = str(e)
+            finally:
+                inflated.close()
+            if self._ends_early and self.cut_short is None and given < wanted:
+                self.cut_short = "the file ends before its compressed data does"
+            return
+        count = len(self._offsets) - 1
+        # More than limit is refused, as it is without the RA field, unless no more is
+        # wanted than that: an .idx.gz, read to its end, that went on past its limit
+        # was cut off there, and indexed that far with nothing said.
+        whole = most is None or most > self.limit
+        # Every chunk but the last is chunk_length bytes, whatever they compress to.
+        if whole and (count - 1) * self.chunk_length >= self.limit:
+            raise self._too_large()
+        with open_file(self.path) as f:
+            for index in range(count):
+                if most is not None and given >= most:
+                    break
                 try:
-                    for _start, piece in pieces:
-                        data += piece
-                        if most is not None and len(data) >= most:
-                            break
-                except TooLarge:
-                    raise
+                    chunk, complete = self._inflate(f, index)
                 except DictzipError as e:
-                    self.cut_short = str(e)
-                finally:
-                    pieces.close()
-                if self._ends_early and self.cut_short is None and len(data) < wanted:
-                    self.cut_short = "the file ends before its compressed data does"
-                del data[wanted:]
-                return data
-            count = len(self._offsets) - 1
-            # More than limit is refused, as it is without the RA field, unless no more
-            # is wanted than that: an .idx.gz, read to its end, that went on past its
-            # limit was cut off there, and indexed that far with nothing said.
-            whole = most is None or most > self.limit
-            # Every chunk but the last is chunk_length bytes, whatever they compress to.
-            if whole and (count - 1) * self.chunk_length >= self.limit:
-                raise self._too_large()
-            with open_file(self.path) as f:
-                for index in range(count):
-                    if most is not None and len(data) >= most:
-                        break
-                    try:
-                        chunk, complete = self._inflate(f, index)
-                    except DictzipError as e:
-                        self.cut_short = f"{e}, of {count}"
-                        break
-                    data += chunk
-                    if index == count - 1 and not complete \
-                            and not self._trailer_records(len(data)):
-                        self.cut_short = f"its last chunk, {index}, is cut short"
-            if whole and len(data) > self.limit:
-                raise self._too_large()
-            del data[wanted:]
-            return data
+                    self.cut_short = f"{e}, of {count}"
+                    break
+                room = wanted - given
+                given += len(chunk)
+                if whole and given > self.limit:
+                    raise self._too_large()
+                if index == count - 1 and not complete \
+                        and not self._trailer_records(given):
+                    self.cut_short = f"its last chunk, {index}, is cut short"
+                if room > 0:
+                    yield chunk if len(chunk) <= room else chunk[:room]

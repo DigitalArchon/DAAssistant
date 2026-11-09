@@ -604,6 +604,110 @@ class DslEncodings(unittest.TestCase):
         self.assertIn("\u0a20\u0100 here", entries["café"])
 
 
+class DslDzWindows(unittest.TestCase):
+    """A .dsl.dz is indexed a window of its text at a time, as it is unpacked, rather
+    than unpacked whole first - and finds what the same text mapped whole finds,
+    wherever the windows fall."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def made_up(self, seed, letter, awkward=""):
+        """A DSL's text with everything the scan tells apart, at random: headwords,
+        groups of them, body lines, blank lines, comments, and lines in column 0 too
+        long to be headwords - with MAX_HEADWORD made 6, most of the long ones."""
+        import random
+        rng = random.Random(seed)
+        lines = ['#NAME "Windows"', '#INDEX_LANGUAGE "English"', ""]
+        for i in range(500):
+            roll = rng.random()
+            if roll < 0.1:
+                lines.append("")
+            elif roll < 0.13:
+                lines.append("{{a comment of its own}}")
+            elif roll < 0.25:
+                lines.append("x" * rng.randrange(1, 60))
+            elif roll < 0.6:
+                lines.append(f"w{i}" + letter * rng.randrange(0, 4))
+            else:
+                lines.append("\t[m1]" + "body " * rng.randrange(0, 12) + awkward)
+        return "\n".join(lines)
+
+    def test_every_window_finds_what_the_whole_text_does(self):
+        cases = {
+            # U+0A20 U+0100 is 20 0A 00 01: a newline and a NUL at an odd offset.
+            "utf-16-le": dsl_bytes(self.made_up(1, "é", "ਠĀ")),
+            "utf-16-be": self.made_up(2, "é", "ਠĀ").encode("utf-16-be"),
+            "utf-8": self.made_up(3, "é").encode("utf-8"),
+            "cp1251": ('#SOURCE_CODE_PAGE "Cyrillic"\n'
+                       + self.made_up(4, "д")).encode("cp1251"),
+        }
+        for name, data in cases.items():
+            plain = os.path.join(self.dir, f"{name}.dsl")
+            with open(plain, "wb") as f:
+                f.write(data)
+            chunked = os.path.join(self.dir, f"{name}-chunked.dsl.dz")
+            write_dictzip(chunked, data, chunk=7)
+            gzipped = os.path.join(self.dir, f"{name}-gzip.dsl.dz")
+            with open(gzipped, "wb") as f:
+                f.write(gzip.compress(data))
+            with mock.patch.object(dsl, "MAX_HEADWORD", 6):
+                self.assertEqual(dsl.DSL(plain).encoding.name, name)
+                whole = list(dsl.DSL(plain).headwords())
+                self.assertGreater(len(whole), 150)
+                for window in (1, 5, 64, 1000, 1 << 20):
+                    with mock.patch.object(dsl, "WINDOW", window), \
+                            mock.patch.object(dzmodule, "PIECE", 13), \
+                            mock.patch.object(dzmodule, "STEP", 5):
+                        for path in (chunked, gzipped):
+                            with self.subTest(name=name, window=window, path=path):
+                                self.assertEqual(list(dsl.DSL(path).headwords()), whole)
+
+    def test_a_large_one_is_never_held_whole(self):
+        import tracemalloc
+        body = "\t[m1]" + "an invented sense of the word, " * 300 + "\n"
+        data = dsl_bytes('#NAME "Large"\n\n'
+                         + "".join(f"word{i}\n{body}" for i in range(950)))
+        self.assertGreater(len(data), 16 << 20)
+        path = os.path.join(self.dir, "large.dsl.dz")
+        write_dictzip(path, data, chunk=60000)
+        # It packs to far less than a dictionary does: allowed, for this.
+        with mock.patch.object(dzmodule, "RATIO", 100_000), \
+                mock.patch.object(dsl, "WINDOW", 1 << 20):
+            d = dsl.DSL(path)
+            tracemalloc.start()
+            try:
+                count = sum(1 for _found in d.headwords())
+                _now, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+        self.assertEqual(count, 950)
+        self.assertEqual(d.problems, [])
+        # A window, the one before it, a chunk and zlib's own: not the 16 MB of text.
+        self.assertLess(peak, 6 << 20)
+
+    def test_one_cut_short_or_too_large_says_so_as_it_did(self):
+        data = dsl_bytes('#NAME "Short"\n\n' + "".join(
+            f"glorp{i}\n\t[m1]invented sense {i}\n" for i in range(300)))
+        path = os.path.join(self.dir, "short.dsl.dz")
+        write_dictzip(path, data, chunk=1000)
+        with open(path, "r+b") as f:
+            f.truncate(os.path.getsize(path) - 2000)
+        with mock.patch.object(dsl, "WINDOW", 100):
+            d = dsl.DSL(path)
+            found = list(d.headwords())
+        self.assertTrue(found)
+        problem, = d.problems
+        unpacked = int(problem.split(" bytes")[0].rsplit(" ", 1)[1].replace(",", ""))
+        self.assertEqual(unpacked % 1000, 0)
+        self.assertIn(f"read as far as it goes, {unpacked:,} bytes unpacked: ", problem)
+        # Its last entry runs to where the text read ends, as it did read whole.
+        self.assertEqual(sum(found[-1][1:]), unpacked)
+
+
 class StarDictFiles(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

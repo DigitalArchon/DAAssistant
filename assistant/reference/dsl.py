@@ -41,6 +41,9 @@ MAX_TRIES = 16
 # four bytes a character, even decoded: a line of a hundred megabytes cost as much
 # again as a string, and every spelling of it as much again.
 MAX_HEADWORD = 512
+# How much of a .dsl.dz's text is held at a time as it is indexed: it is read through a
+# window of this at a time, each read as a mapped .dsl is read.
+WINDOW = 4 << 20
 
 
 class Encoding:
@@ -226,81 +229,132 @@ class DSL:
 
     # ---- index ------------------------------------------------------------
 
-    def _line_end(self, data, start):
-        """Where the line starting at `start` ends: its newline, or the end of data."""
+    def _line_end(self, data, start, stop):
+        """Where the line starting at `start` ends, its newline, if that is before
+        `stop`; -1 if it is not."""
         enc = self.encoding
         position = start
         while True:
-            end = data.find(enc.newline, position)
-            if end == -1:
-                return len(data)
-            if (end - start) % enc.unit == 0:
+            end = data.find(enc.newline, position, stop)
+            if end == -1 or (end - start) % enc.unit == 0:
                 return end
             position = end + 1          # the bytes of two characters, not a newline
 
-    def _starts(self, data):
-        """Byte offsets of every line in column 0 that is not blank."""
+    def _starts(self, data, base, after, before, first):
+        """Where in the text the lines in column 0 begin that follow a newline from
+        `after` up to `before`; `data` holds the text from `base` on, and the text's
+        own first line begins at `first`."""
         enc = self.encoding
-        first = len(enc.bom) if data[:len(enc.bom)] == enc.bom else 0
-        yield first
-        for match in enc.line_start.finditer(data, first):
-            if (match.start() - first) % enc.unit == 0:
-                yield match.start() + len(enc.newline)
+        for match in enc.line_start.finditer(data, max(after, first) - base):
+            at = base + match.start()
+            if at >= before:
+                return
+            if (at - first) % enc.unit == 0:
+                yield at + len(enc.newline)
 
     def headwords(self):
         """Every (headword, offset, size): one per spelling, the entry's bytes shared
         by all the headword lines that introduce it. What could not be read of the
-        file, where it is cut short, is in `problems` once they are all given."""
+        file, where it is cut short, is in `problems` once they are all given.
+
+        A .dsl is mapped, and read as it lies; a .dsl.dz is read as it is unpacked, a
+        WINDOW of its text at a time. It was unpacked whole first: 600 MB of UTF-16
+        held for as long as it was indexed, and more again as it grew."""
         self.problems = []
         if self.compressed:
-            data = self._dz.read_all()
+            unpacked = [0]
+
+            def pieces():
+                for piece in self._dz.pieces():
+                    unpacked[0] += len(piece)
+                    yield piece
+
+            yield from self._scan(self._windows(pieces()))
             if self._dz.cut_short:
-                self.problems.append(f"read as far as it goes, {len(data):,} bytes "
+                self.problems.append(f"read as far as it goes, {unpacked[0]:,} bytes "
                                      f"unpacked: {self._dz.cut_short}")
-            yield from self._scan(data)
             return
         with open_file(self.path) as f:
             if os.fstat(f.fileno()).st_size == 0:
                 return
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                yield from self._scan(data)
+                yield from self._scan([(data, 0, len(data), True)])
 
-    def _scan(self, data):
+    def _windows(self, pieces):
+        """The text that `pieces` make, as _scan reads it: (a buffer of it, where in
+        the text that begins, where the lines that buffer is read for begin before,
+        whether it ends the text).
+
+        Each buffer reaches far enough past the last line it is read for to see that
+        line's end, or that it has none before a headword's longest; and the
+        character after the newline before it, which says whether it is a headword's
+        line at all. The next buffer begins where those lines end, a new one: the
+        scan may still hold on to the last."""
         enc = self.encoding
+        margin = 4 * MAX_HEADWORD + 2 * len(enc.newline) + enc.unit
+        buf, base = bytearray(), 0
+        for piece in pieces:
+            buf += piece
+            if len(buf) >= WINDOW + margin:
+                before = base + len(buf) - margin
+                yield buf, base, before, False
+                buf, base = buf[before - base:], before
+        yield buf, base, base + len(buf), True
+
+    def _scan(self, windows):
+        """Every (headword, offset, size) in the text that `windows` give (see
+        _windows): a mapped file is one, its own end."""
+        enc = self.encoding
+        newline = len(enc.newline)
+        # How far past a line's start its newline is looked for: past a headword's
+        # longest, the line is none (see MAX_HEADWORD).
+        reach = 4 * MAX_HEADWORD + newline
         group, group_start, previous_end = [], None, None
         in_header = True
-        for start in self._starts(data):
-            end = self._line_end(data, start)
-            if end - start > 4 * MAX_HEADWORD:
-                # Too long to be a headword (see MAX_HEADWORD): it ends the entry
-                # before it, and begins none.
-                for word in group:
-                    yield word, group_start, start - group_start
-                group, previous_end = [], None
-                continue
-            line = bytes(data[start:end]).decode(enc.name, "replace")
-            line = line.lstrip("\ufeff").rstrip("\r")
-            if not line.strip():
-                continue
-            if line[0] in "\t ":
-                continue                # the first line of the file, when it is body
-            if in_header and line.startswith("#"):
-                continue
-            if line.startswith("{{") and line.rstrip().endswith("}}"):
-                continue                # a comment on a line of its own
-            in_header = False
-            follows = previous_end is not None and start == previous_end + len(enc.newline)
-            if group and not follows:
-                for word in group:
-                    yield word, group_start, start - group_start
-                group = []
-            if not group:
-                group_start = start
-            group.append(line)
-            previous_end = end
+        first, after, length = None, 0, 0
+        for data, base, before, _last in windows:
+            if first is None:
+                first = len(enc.bom) if data[:len(enc.bom)] == enc.bom else 0
+                starts = itertools.chain((first,),
+                                         self._starts(data, base, after, before, first))
+            else:
+                starts = self._starts(data, base, after, before, first)
+            for start in starts:
+                at = start - base
+                end = self._line_end(data, at, at + reach)
+                if end == -1:
+                    end = len(data)     # the text's end, or further than any headword
+                if end - at > 4 * MAX_HEADWORD:
+                    # Too long to be a headword (see MAX_HEADWORD): it ends the entry
+                    # before it, and begins none.
+                    for word in group:
+                        yield word, group_start, start - group_start
+                    group, previous_end = [], None
+                    continue
+                line = bytes(data[at:end]).decode(enc.name, "replace")
+                line = line.lstrip("\ufeff").rstrip("\r")
+                if not line.strip():
+                    continue
+                if line[0] in "\t ":
+                    continue            # the first line of the file, when it is body
+                if in_header and line.startswith("#"):
+                    continue
+                if line.startswith("{{") and line.rstrip().endswith("}}"):
+                    continue            # a comment on a line of its own
+                in_header = False
+                follows = previous_end is not None and start == previous_end + newline
+                if group and not follows:
+                    for word in group:
+                        yield word, group_start, start - group_start
+                    group = []
+                if not group:
+                    group_start = start
+                group.append(line)
+                previous_end = base + end
+            after, length = before, base + len(data)
         if group:
             for word in group:
-                yield word, group_start, len(data) - group_start
+                yield word, group_start, length - group_start
 
     # ---- articles ---------------------------------------------------------
 

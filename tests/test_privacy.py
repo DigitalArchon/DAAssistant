@@ -1987,10 +1987,11 @@ class Receipts(unittest.TestCase):
                          privacy.FAILED)
 
     def test_a_model_whose_streams_nano_gpt_rebuilds_is_checked_by_signature_alone(self):
-        client, server = self.client(model="TEE/gemma-4-31b-it")
-        state, detail = self.check(client, server, body_hash=stream_hash(b"rebuilt"))
-        self.assertEqual(state, privacy.SIGNED)
-        self.assertIn("nano-gpt rebuilds this model's stream", detail)
+        for model in ("TEE/gemma-4-31b-it", "tee/gemma-4-31b-it"):     # however written
+            client, server = self.client(model=model)
+            state, detail = self.check(client, server, body_hash=stream_hash(b"rebuilt"))
+            self.assertEqual(state, privacy.SIGNED, model)
+            self.assertIn("nano-gpt rebuilds this model's stream", detail)
 
     def test_a_receipt_whose_upstream_was_not_verified_fails(self):
         client, server = self.client(upstream="failed")

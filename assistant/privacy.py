@@ -989,7 +989,9 @@ class TeeClient:
         if signer.lower() != self.signing_address.lower():
             return FAILED, f"signed by {signer}, not the attested {self.signing_address}"
         request_hash, _colon, response_hash = text.partition(":")
-        compared = bool(body_hash) and self.model not in REBUILT_STREAMS
+        # However the model is written, as is_tee reads it.
+        rebuilt = str(self.model).strip().lower() in {m.lower() for m in REBUILT_STREAMS}
+        compared = bool(body_hash) and not rebuilt
         if compared and f"sha256:{response_hash.lower()}" != body_hash:
             return FAILED, (f"the attested key {self.signing_address} signed a record of "
                             f"other bytes than the reply that came")
@@ -1006,7 +1008,7 @@ class TeeClient:
         if compared:
             return VERIFIED, (f"signed by the attested key {self.signing_address}, for "
                               f"the exact bytes that came{held}")
-        why = ("nano-gpt rebuilds this model's stream" if self.model in REBUILT_STREAMS
+        why = ("nano-gpt rebuilds this model's stream" if rebuilt
                else "the reply did not arrive whole")
         return SIGNED, (f"signed by the attested key {self.signing_address}{held}; its "
                         f"text was not compared with the record: {why}")

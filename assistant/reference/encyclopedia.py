@@ -921,8 +921,11 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
     """Build the database from the DVD folder `dvd`. Returns what it holds.
 
     `progress(fraction, message)` is called as it goes; `cancel`, a threading.Event,
-    stops it. The database is built beside its final name and moved into place only
-    when complete, so an import stopped half way leaves the previous one in use.
+    stops it - at the next article, the next caption, or within whatever the database
+    is doing, the search index's last optimisation too, which takes a while of its
+    own. The database is built beside its final name, and moved into place only when
+    complete: an import stopped half way, or that fails, leaves the previous one in
+    use, and what it had built is removed.
     """
     dest = dest or os.path.join(DATA_DIR, DATABASE)
     progress = progress or (lambda fraction, message: None)
@@ -932,6 +935,13 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
     if os.path.exists(building):
         os.unlink(building)
 
+    def stopped():
+        return cancel is not None and cancel.is_set()
+
+    def go_on():
+        if stopped():
+            raise EncyclopediaError("Import cancelled")
+
     tables = {lib: Table(dvd, "ARTICLE_DATA", f"articledb/{lib}") for lib, _ in LIBRARIES}
     pictures = Table(dvd, "IMAGE_DATA", "imagedb/IMAGE")
     if pictures.lob_path() is None:
@@ -940,6 +950,9 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
 
     db = sqlite3.connect(building)
     try:
+        # A statement running as the import is stopped is interrupted: it raises
+        # OperationalError, which is said below to be the stop it is.
+        db.set_progress_handler(stopped, 10000)
         db.executescript("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")
         _create(db)
         counts = {}
@@ -948,6 +961,7 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
         rows = pictures.rows()
         db.executemany("INSERT INTO images VALUES (?, ?, ?)", rows)
         counts["images"] = len(rows)
+        go_on()
 
         # Escaped: a folder named "... [2015]" was a pattern, and matched no film.
         found = sorted(glob.glob(os.path.join(glob.escape(dvd), "MEDIA*_DATA",
@@ -959,10 +973,14 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
         progress(0.01, "Reading pictures' and films' captions…")
         for kind, name in (("image", "ASSEMBLY"), ("media", "MULTIMEDIAASSEMBLY")):
             table = Table(dvd, "INSTALL_DATA", f"installdb/{name}")
-            batch = [_assembly_row(key, kind, value) for key, value in table.values()]
+            batch = []
+            for key, value in table.values():
+                go_on()
+                batch.append(_assembly_row(key, kind, value))
             db.executemany("INSERT INTO assemblies VALUES (?, ?, ?, ?, ?, ?, ?, ?)", batch)
             counts[name.lower()] = len(batch)
 
+        go_on()
         planned = {lib: table.rows() for lib, table in tables.items()}
         total = sum(length for rows in planned.values() for _k, _o, length in rows) or 1
         done, section_id = 0, 0
@@ -971,8 +989,7 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
             articles, sections, text = [], [], []
             count = 0
             for key, value in tables[library].values(planned[library]):
-                if cancel is not None and cancel.is_set():
-                    raise EncyclopediaError("Import cancelled")
+                go_on()
                 page = unpack(value)
                 title = title_of(page)
                 parts = sections_of(page)
@@ -1003,10 +1020,13 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
         db.executemany("INSERT INTO meta VALUES (?, ?)",
                        [(k, str(v)) for k, v in meta.items()])
         db.commit()
-    except BaseException:
+        go_on()
+    except BaseException as e:
         db.close()
         if os.path.exists(building):
             os.unlink(building)
+        if stopped() and not isinstance(e, EncyclopediaError):
+            raise EncyclopediaError("Import cancelled") from e
         raise
     db.close()
     os.replace(building, dest)
@@ -1046,6 +1066,11 @@ class Encyclopedia:
         self._db = None
         self._meta = None
         self.importing = None       # (fraction, message) while an import runs
+        # The import running: the event that stops it, and one set once it has ended
+        # and cleaned up after itself (see stop_import).
+        self._stop = None
+        self._ended = threading.Event()
+        self._ended.set()
 
     # ---- the database -----------------------------------------------------
 
@@ -1108,16 +1133,30 @@ class Encyclopedia:
             return self._connection().execute(sql, args).fetchall()
 
     def dvd(self):
+        """The DVD folder its pictures and films are read from: the one the import was
+        made from, while it is there - and the one Settings names, once it is not.
+
+        Settings' came first: an import made from another folder typed there, and
+        Settings then cancelled, had its pictures and films looked for in the folder
+        before. A copy of the DVD moved since, and Settings pointed at it, is found
+        where it now is."""
+        meta = self._meta if self._meta is not None else self.status()
+        imported = (meta or {}).get("dvd", "")
+        if imported and os.path.isdir(imported):
+            return imported
         return os.path.expanduser(getattr(self.config, "encyclopedia_dir", "") or
-                                  (self._meta or {}).get("dvd", ""))
+                                  imported)
 
     def import_from(self, dvd, progress=None, cancel=None):
-        """Import the DVD at `dvd`, replacing any earlier import once it is complete."""
+        """Import the DVD at `dvd`, replacing any earlier import once it is complete.
+        `cancel`, a threading.Event, stops it; so does stop_import()."""
         def report(fraction, message):
             self.importing = (fraction, message)
             if progress:
                 progress(fraction, message)
 
+        self._stop = cancel = cancel or threading.Event()
+        self._ended.clear()
         try:
             report(0.0, "Starting…")
             meta = import_dvd(dvd, self.path + ".new", report, cancel)
@@ -1126,6 +1165,25 @@ class Encyclopedia:
             return meta
         finally:
             self.importing = None
+            self._stop = None
+            self._ended.set()
+
+    def stop_import(self, wait=10):
+        """Stop the import running, if one is, and wait as long as `wait` seconds for
+        it to remove what it had built - for the app to quit. A thread left to run as
+        the app quit was stopped in the middle, and left a database of gigabytes half
+        built, .new.importing, until the next import. One that has not stopped by then
+        has its file removed all the same: it writes on to a file that is no longer
+        there, and that goes with it as the app ends."""
+        stop = self._stop
+        if stop is None:
+            return
+        stop.set()
+        if not self._ended.wait(wait):
+            try:
+                os.unlink(self.path + ".new.importing")
+            except OSError:
+                pass
 
     # ---- articles ---------------------------------------------------------
 

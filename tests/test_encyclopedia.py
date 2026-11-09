@@ -358,6 +358,91 @@ class Import(DvdCase):
             encyclopedia.import_from(self.dvd, cancel=cancel)
         self.assertFalse(encyclopedia.available())
 
+    def _import_held(self, encyclopedia, hold):
+        """An import of the DVD on a thread of its own, held where it reads its first
+        caption until hold() returns; (the thread, what it raised, the event set once
+        it is held there)."""
+        from assistant.reference import encyclopedia as module
+        held, raised, caption = threading.Event(), [], module._assembly_row
+
+        def holding(*args):
+            held.set()
+            hold()
+            return caption(*args)
+
+        def run():
+            try:
+                encyclopedia.import_from(self.dvd)
+            except BaseException as e:
+                raised.append(e)
+
+        patch = mock.patch.object(module, "_assembly_row", holding)
+        patch.start()
+        self.addCleanup(patch.stop)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(held.wait(10), "the import never got as far as the captions")
+        return thread, raised
+
+    def test_quitting_stops_an_import_and_removes_what_it_had_built(self):
+        # An import left running as the app quit was stopped in the middle, and its
+        # half-built database of gigabytes stayed on disk until the next import.
+        encyclopedia = Encyclopedia(self.config, data_dir=self.data)
+        partial = encyclopedia.path + ".new.importing"
+        thread, raised = self._import_held(encyclopedia,
+                                           lambda: encyclopedia._stop.wait(10))
+        self.assertTrue(os.path.exists(partial))
+        encyclopedia.stop_import()
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual([str(e) for e in raised], ["Import cancelled"])
+        self.assertEqual(os.listdir(self.data), [])
+        self.assertIsNone(encyclopedia.importing)
+        encyclopedia.stop_import()                  # with none running: nothing
+
+    def test_and_removes_it_even_from_an_import_that_does_not_stop_in_time(self):
+        encyclopedia = Encyclopedia(self.config, data_dir=self.data)
+        release = threading.Event()
+        thread, raised = self._import_held(encyclopedia, lambda: release.wait(10))
+        started = time.monotonic()
+        encyclopedia.stop_import(wait=0.2)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(os.listdir(self.data), [])
+        release.set()
+        thread.join(10)
+        self.assertEqual([str(e) for e in raised], ["Import cancelled"])
+        self.assertEqual(os.listdir(self.data), [])
+
+    def test_one_stopped_within_the_databases_own_work_is_stopped_too(self):
+        # The search index's last optimisation is one statement, and a long one.
+        encyclopedia = Encyclopedia(self.config, data_dir=self.data)
+        cancel = threading.Event()
+
+        def progress(_fraction, message):
+            if message.startswith("Optimising"):
+                cancel.set()
+
+        with self.assertRaisesRegex(EncyclopediaError, "Import cancelled"):
+            encyclopedia.import_from(self.dvd, progress, cancel)
+        self.assertEqual(os.listdir(self.data), [])
+
+    def test_pictures_and_films_come_from_the_folder_imported_from(self):
+        # Imported from a folder typed in Settings, which was then cancelled: the
+        # pictures were looked for in the folder Settings had before.
+        before = os.path.join(self.dir, "before")
+        os.makedirs(before)
+        encyclopedia = Encyclopedia(types.SimpleNamespace(encyclopedia_dir=before),
+                                    data_dir=self.data)
+        encyclopedia.import_from(self.dvd)
+        self.assertEqual(encyclopedia.dvd(), self.dvd)
+        self.assertEqual(encyclopedia.image(77), (GIF, "image/gif"))
+        self.assertTrue(encyclopedia.media_path("12.flv").startswith(self.dvd))
+        # Moved since, to where Settings now says it is, it is found there.
+        os.rmdir(before)
+        os.rename(self.dvd, before)
+        self.assertEqual(encyclopedia.dvd(), before)
+        self.assertEqual(encyclopedia.image(77), (GIF, "image/gif"))
+
     def test_a_dvd_folder_named_with_brackets_finds_its_films(self):
         # Searched for as a pattern, "[2015]" stood for one of four characters, and
         # no film was found.

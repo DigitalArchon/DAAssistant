@@ -1272,6 +1272,9 @@ class Assistant:
         webkitguard.note_clean_exit()
         self.hotkeys.stop()
         self.service.release()
+        # An encyclopedia import still running is stopped, and its half-built
+        # database removed: cut off as the app ended, it stayed, gigabytes of it.
+        self.encyclopedia.stop_import()
         if Notify is not None:
             try:
                 Notify.uninit()

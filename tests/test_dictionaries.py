@@ -33,7 +33,7 @@ collector.install()
 
 from assistant import prompts
 from assistant.config import Config
-from assistant.reference import dictionaries, dsl, markup, stardict
+from assistant.reference import dictionaries, dsl, files, markup, stardict
 from assistant.reference import dictzip as dzmodule
 from assistant.reference.dictionaries import Library, fold, stems
 from assistant.reference.dictzip import DictzipFile
@@ -1522,6 +1522,97 @@ class LinksOutOfTheFolder(unittest.TestCase):
                                                 "a link to a file outside its folder"):
             StarDict(ifo)
         self.assertEqual(self.library.available(), [])
+
+
+class Pipes(unittest.TestCase):
+    """A pipe can have any name. One named X.dsl, X.dsl.dz or X.ifo in the dictionaries
+    folder was opened to be read as a Look up window or Settings listed the dictionaries,
+    on the main loop - and opening a pipe waits for something to write to it, for ever."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        os.makedirs(self.folder)
+        self.good = os.path.join(self.folder, "good.dsl")
+        write_dsl(self.good)
+        self.pipes = []
+        for name in ("pipe.dsl", "pipe.dsl.dz", "pipe.ifo", "PIPE.DSL"):
+            self.pipe(os.path.join(self.folder, name))
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+
+    def tearDown(self):
+        # Whatever waits on one of them, should a test fail, is let go.
+        for path in self.pipes:
+            try:
+                os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+            except OSError:
+                pass
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def pipe(self, path):
+        os.mkfifo(path)
+        self.pipes.append(path)
+        return path
+
+    def soon(self, function, *args):
+        """function(*args), or a failure if it is still waiting after five seconds."""
+        outcome = []
+
+        def run():
+            try:
+                outcome.append((True, function(*args)))
+            except BaseException as e:
+                outcome.append((False, e))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(5)
+        self.assertFalse(thread.is_alive(), f"{function.__name__} waited on a pipe")
+        returned, value = outcome[0]
+        if not returned:
+            raise value
+        return value
+
+    def test_a_pipe_is_no_dictionary(self):
+        self.assertEqual(dictionaries.discover(self.folder), [("dsl", self.good)])
+        library = Library(self.config, cache_dir=os.path.join(self.dir, "cache"))
+        self.assertEqual(self.soon(library.available),
+                         [(self.good, "Invented Dictionary")])
+        self.assertEqual([listed[0] for listed in self.soon(library.listing)], [self.good])
+        found = self.soon(library.look_up, "glorp")
+        self.assertEqual(len(found["results"]), 1)
+        # Nor is a link to one, within the folder.
+        os.symlink("pipe.dsl", os.path.join(self.folder, "link.dsl"))
+        self.assertEqual(dictionaries.discover(self.folder), [("dsl", self.good)])
+
+    def test_nor_is_one_opened_as_one_should_it_take_a_files_place(self):
+        # Found as a file, a pipe by the time it is opened: what is opened is asked too.
+        for path, reader in ((os.path.join(self.folder, "pipe.dsl"), dsl.DSL),
+                             (os.path.join(self.folder, "pipe.dsl.dz"), dsl.DSL),
+                             (os.path.join(self.folder, "pipe.ifo"), StarDict)):
+            with self.assertRaises(files.NotAFile):
+                self.soon(reader, path)
+        d = dsl.DSL(self.good)
+        os.unlink(self.good)
+        self.pipe(self.good)
+        with self.assertRaises(files.NotAFile):
+            self.soon(d.read, 0, 10)
+        with self.assertRaises(files.NotAFile):
+            self.soon(list, d.headwords())
+        with self.assertRaises(files.NotAFile):
+            self.soon(files.open_file, self.folder)          # nor a folder
+
+    def test_nor_a_picture_or_an_annotation_that_is_one(self):
+        ifo = write_stardict(self.folder, "sd", [("alpha", b"<img src='1A.png'> a")])
+        os.makedirs(os.path.join(self.folder, "res"))
+        self.pipe(os.path.join(self.folder, "res", "1A.png"))
+        d = StarDict(ifo)
+        self.assertIsNone(self.soon(d.picture, "1A.png"))
+        (word, offset, size), = d.headwords()
+        self.assertEqual(self.soon(d.render, word, d.read(offset, size))[0], " a")
+        self.pipe(os.path.join(self.folder, "good.ann"))
+        self.assertEqual(self.soon(dsl.DSL(self.good).about), "")
 
 
 class Ordering(unittest.TestCase):

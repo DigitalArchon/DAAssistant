@@ -25,6 +25,8 @@ import threading
 import zlib
 from collections import OrderedDict
 
+from .files import open_file
+
 FTEXT, FHCRC, FEXTRA, FNAME, FCOMMENT = 1, 2, 4, 8, 16
 CACHED_CHUNKS = 16
 # How many times its own size a file may unpack to. A dictionary's text deflates to a
@@ -102,11 +104,11 @@ class DictzipFile:
         self.path = path
         self._lock = threading.Lock()
         self._cache = OrderedDict()
-        self.limit = limit(os.path.getsize(path))
         # Why read_all() returned less than the whole file, when it did: the file ends
         # early, or there is a chunk of it that will not inflate.
         self.cut_short = None
-        with open(path, "rb") as f:
+        with open_file(path) as f:
+            self.limit = limit(os.fstat(f.fileno()).st_size)
             self.chunk_length, sizes, start = _header(f)
         if self.chunk_length is None:
             self._offsets = None
@@ -161,10 +163,10 @@ class DictzipFile:
         and its trailer is what shows it whole. A file that lost its end has some other
         bytes where the trailer was."""
         try:
-            with open(self.path, "rb") as f:
+            with open_file(self.path) as f:
                 f.seek(-4, os.SEEK_END)
                 recorded = struct.unpack("<I", f.read(4))[0]
-        except (OSError, struct.error):
+        except (OSError, ValueError, struct.error):
             return False
         return recorded == size & 0xFFFFFFFF
 
@@ -187,7 +189,7 @@ class DictzipFile:
         one kept. A gzip file may be several, one after another, and is read through."""
         out, position, tail, inflater = place
         inflater = inflater.copy()
-        with open(self.path, "rb") as f:
+        with open_file(self.path) as f:
             f.seek(position)
             while True:
                 if not tail:
@@ -255,7 +257,7 @@ class DictzipFile:
             last = min((offset + max(size, 1) - 1) // self.chunk_length,
                        len(self._offsets) - 2)
             chunks = []
-            with open(self.path, "rb") as f:
+            with open_file(self.path) as f:
                 for index in range(first, last + 1):
                     try:
                         chunks.append(self._chunk(f, index))
@@ -305,7 +307,7 @@ class DictzipFile:
             # Every chunk but the last is chunk_length bytes, whatever they compress to.
             if whole and (count - 1) * self.chunk_length >= self.limit:
                 raise self._too_large()
-            with open(self.path, "rb") as f:
+            with open_file(self.path) as f:
                 for index in range(count):
                     if most is not None and len(data) >= most:
                         break

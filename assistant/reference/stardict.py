@@ -20,6 +20,7 @@ from collections import OrderedDict
 from . import markup
 from .dictzip import DictzipFile
 from .dsl import MAX_HEADWORD, companion, icon_beside, inside
+from .files import open_file
 
 LINKS = ("http:", "https:", "mailto:", markup.LOOKUP_SCHEME)
 
@@ -45,7 +46,7 @@ LARGEST_OFFSET = (1 << 63) - 1
 
 def read_ifo(path):
     info = {}
-    with open(path, "rb") as f:
+    with open_file(path) as f:
         for raw in f.read(MAX_IFO).decode("utf-8", "replace").splitlines()[1:]:
             key, sep, value = raw.partition("=")
             if sep:
@@ -112,7 +113,7 @@ class StarDict:
             more = len(data) > MAX_INDEX
             del data[MAX_INDEX:]
         else:
-            with open(self.idx_path, "rb") as f:
+            with open_file(self.idx_path) as f:
                 data, more = f.read(MAX_INDEX), bool(f.read(1))
         if more:
             self.problems.append(f"its .idx goes on past {MAX_INDEX >> 20} MB, further "
@@ -150,7 +151,7 @@ class StarDict:
                                  f"or point past the end of any file, and are left out")
 
         if self.syn_path:
-            with open(self.syn_path, "rb") as f:
+            with open_file(self.syn_path) as f:
                 syn = f.read(MAX_INDEX)
             position = 0
             while position < len(syn):
@@ -173,7 +174,7 @@ class StarDict:
             if self._dict is None:
                 self._dict = DictzipFile(self.dict_path)
             return self._dict.read(offset, size)
-        with open(self.dict_path, "rb") as f:
+        with open_file(self.dict_path) as f:
             f.seek(offset)
             return f.read(size)
 
@@ -272,12 +273,14 @@ class StarDict:
         if not path.startswith(res + os.sep) or not inside(res, os.path.dirname(self.path)):
             return None
         try:
-            if os.path.getsize(path) > MAX_PICTURE:
-                return None
-            with open(path, "rb") as f:
-                data = f.read()
-        except OSError:
+            with open_file(path) as f:
+                if os.fstat(f.fileno()).st_size > MAX_PICTURE:
+                    return None
+                data = f.read(MAX_PICTURE + 1)
+        except (OSError, ValueError):       # ValueError: not a file (files.NotAFile)
             return None
+        if len(data) > MAX_PICTURE:
+            return None                     # grown since it was asked its size
         return f"data:{kind};base64,{base64.b64encode(data).decode('ascii')}"
 
 

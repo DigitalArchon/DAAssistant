@@ -27,6 +27,7 @@ from array import array
 
 from . import markup
 from .dictzip import DictzipFile
+from .files import open_file
 
 # How many spellings one headword's optional parts may expand to.
 MAX_VARIANTS = 8
@@ -196,9 +197,9 @@ class DSL:
         if annotation is None:
             return ""
         try:
-            with open(annotation, "rb") as f:
+            with open_file(annotation) as f:
                 data = f.read(64 * 1024)
-        except OSError:
+        except (OSError, ValueError):
             return ""
         # An 8-bit dictionary's annotation is in its code page, unless it names another.
         eight = self.encoding not in (UTF16LE, UTF16BE, UTF8)
@@ -209,7 +210,7 @@ class DSL:
     def _read(self, offset, size):
         if self._dz is not None:
             return self._dz.read(offset, size)
-        with open(self.path, "rb") as f:
+        with open_file(self.path) as f:
             f.seek(offset)
             return f.read(size)
 
@@ -258,7 +259,7 @@ class DSL:
                                      f"unpacked: {self._dz.cut_short}")
             yield from self._scan(data)
             return
-        with open(self.path, "rb") as f:
+        with open_file(self.path) as f:
             if os.fstat(f.fileno()).st_size == 0:
                 return
             with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:

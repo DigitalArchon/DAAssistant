@@ -25,6 +25,7 @@ from .. import errors, paths
 from . import markup
 from .dictzip import DictzipError
 from .dsl import DSL, inside, spellings
+from .files import is_file
 from .stardict import StarDict
 
 CACHE_DIR = paths.CACHE_DIR
@@ -197,7 +198,9 @@ def discover(folder):
     is a link to one outside the folder: a dictionary is downloaded, and an X.DSL
     unpacked from one as a link to a file of the user's would be read as a dictionary,
     its lines as headwords, and given to the model with the next question. (Folders in
-    it that are links are not looked in at all, as os.walk() has it.)
+    it that are links are not looked in at all, as os.walk() has it.) Nor is anything
+    that is not a file of its own: a pipe named X.dsl, opened to be read, waited for a
+    writer for ever, on the main loop (see files.py).
     """
     found = []
     if not folder or not os.path.isdir(folder):
@@ -216,7 +219,7 @@ def discover(folder):
                 kind = "dsl"
             else:
                 continue
-            if inside(path, folder):
+            if is_file(path) and inside(path, folder):
                 found.append((kind, path))
     return found
 

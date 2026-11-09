@@ -49,6 +49,10 @@ SEARCH_CONTEXT_HEADER = ("Use these web search results where they are relevant. 
 # a two-kilobyte request is just ceremony. Level 6 is where the curve flattens.
 # A search query, not an essay: enough room for a quoted fragment and no more.
 QUERY_TOKENS = 120
+# Why nothing was searched when the query could not be written: the turn itself is not sent in
+# its place (LLMClient.search).
+QUERY_NOT_WRITTEN = ("no search query could be written for it, and the message itself - with "
+                     "whatever was pasted or read from a picture - is not searched instead")
 
 # Room to think, on top of max_tokens, for a model asked for a reasoning effort. The
 # limit is a ceiling, not a charge: only what is used is billed. Without it, a model
@@ -744,7 +748,7 @@ class LLMClient:
         a subject. Measured, that exact query failed outright while the exception name
         and the identifiers found the answer. A cheap text model does this well.
 
-        Returns None if it cannot, and the caller keeps the mechanical query.
+        Returns None if it cannot, and then nothing is searched (LLMClient.search).
         """
         material = (material or "").strip()
         if not material:
@@ -785,7 +789,15 @@ class LLMClient:
         if query and getattr(self.config, "web_search_craft_query", True):
             # Crafted from the whole turn, not from the trimmed query: the material is
             # what carries the exception name or the distinctive phrase.
-            query = self.craft_query(websearch.material_from(messages), cancel) or query
+            crafted = self.craft_query(websearch.material_from(messages), cancel)
+            if cancel is not None and cancel.is_set():
+                return "", [], None, ""
+            if not crafted:
+                # The turn as it is was searched instead: a stack trace, a page pasted in, the
+                # text read from a capture - anything, sent to the search provider in the clear,
+                # when the settings said a model would write the query. Not any more.
+                return "", [], QUERY_NOT_WRITTEN, ""
+            query = crafted
         if cancel is not None and cancel.is_set():
             return "", [], None, ""
         try:

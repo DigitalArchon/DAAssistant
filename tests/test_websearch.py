@@ -278,10 +278,26 @@ class TheCraftedQuery(unittest.TestCase):
         client = self._client('"deadlock detected" psycopg2')
         self.assertEqual(client.craft_query("m"), '"deadlock detected" psycopg2')
 
-    def test_a_failure_leaves_the_mechanical_query(self):
+    def test_a_failure_writes_no_query(self):
         from assistant.llm import LLMError
         client = self._client(LLMError("provider down"))
         self.assertIsNone(client.craft_query("material"))
+
+    def test_when_no_query_can_be_written_nothing_is_searched_and_the_answer_says_so(self):
+        """The turn as it was used to be searched instead: a stack trace, a pasted page, the
+        text read from a capture, sent to the search provider in the clear."""
+        from assistant.llm import QUERY_NOT_WRITTEN, LLMError
+        for answer in (LLMError("provider down"), "Sure! Here is a good query: " + "x" * 500):
+            client = self._client(answer)
+            searched = []
+            websearch_run = websearch.run
+            websearch.run = lambda q, *a, **k: searched.append(q) or []
+            try:
+                context, sources, failure, _notice = client.search(self.TURN, web_search=True)
+            finally:
+                websearch.run = websearch_run
+            self.assertEqual((searched, context, sources), ([], "", []))
+            self.assertEqual(failure, QUERY_NOT_WRITTEN)
 
     def test_it_can_be_turned_off(self):
         client = self._client("crafted", web_search_craft_query=False)

@@ -301,7 +301,10 @@ provider's list does not say which do; then all are listed, and the browser says
 
 A `private/` model is end-to-end encrypted, and is only ever sent sealed, in a private
 conversation: chosen here, outside Privacy Mode, it is refused before anything is sent,
-web search included. Use it under **Settings > Privacy** instead.
+web search included. Use it under **Settings > Privacy** instead. That holds however it
+is written - `Private/…`, or with a space before it - wherever the app judges it:
+Settings and the model browser count it end-to-end encrypted, and a private conversation
+seals it. (Up to 4.2.0 only the refusal here read it so; Settings called it *not TEE*.)
 
 The vision model runs on every capture, so it is worth keeping cheap. Whether a question
 about an image is answered from the picture itself comes down to the answering model:
@@ -414,13 +417,15 @@ first step's and its answering model's, then any chosen along the way.
 - **`private/` models** are nano-gpt's Private Mode: **end-to-end encrypted**. The body is
   sealed on this machine to a key only the attested enclave holds (Tinfoil's router,
   measured by AMD SEV-SNP or Intel TDX, its release checked against Sigstore), and the
-  reply comes back sealed. Only a successful (2xx) reply is opened; any other, a
-  redirect included, is refused unread. What nano-gpt's relay writes in an error is never
-  sealed, so an error quotes it as the relay's, on one short line, without line breaks
-  or characters you could not see: it cannot pass for the model's answer. The enclave is attested again before a message
+  reply comes back sealed. Nothing goes to the enclave that the encryption did not seal:
+  a request it would pass on as it came is refused before it is sent. Only a successful
+  (2xx) reply is opened; any other, a redirect included, is refused unread. What
+  nano-gpt's relay writes in an error is never sealed, so an error quotes it as the
+  relay's, on one short line, without line breaks or characters you could not see: it
+  cannot pass for the model's answer. The enclave is attested again before a message
   once its attestation is five minutes old, time asleep included. nano-gpt relays
-  ciphertext: it sees your account, the model,
-  timing, sizes and cost, never the text. It costs 5% more than the `TEE/` twin.
+  ciphertext: it sees your account, the model, timing, sizes and cost, never the text.
+  It costs 5% more than the `TEE/` twin.
 
 The defaults are end-to-end encrypted: `private/deepseek-v4-1-flash` answers and reads
 images, and `private/glm-5-3` answers when **Use premium text model** is ticked. They need
@@ -565,8 +570,11 @@ tools/install-private-mode.sh --remove  # and to take it out again
 ```
 
 That installs Tinfoil's SDK and what it depends on - exactly the wheels
-`packaging/private-mode.lock` pins by sha256, nothing else - into
-`~/.local/share/da-assistant/private-mode`, which the app puts first on its path. It does
+`packaging/private-mode.lock` pins by sha256, nothing else, from PyPI over https,
+whatever this machine's pip settings say - into
+`~/.local/share/da-assistant/private-mode`, which the app puts first on its path. (Up to
+4.2.0 an index or an insecure host set for pip - `PIP_INDEX_URL`, `PIP_TRUSTED_HOST`, a
+`pip.conf` - applied to it; the hashes held all the same.) It does
 not touch system packages, and it runs no code from nano-gpt: nano-gpt's own client is a
 Node proxy run with `npx …@latest`, which would let the party the encryption keeps out
 update the code that holds your plaintext. `--probe` and **Diagnostics** say whether it is
@@ -1100,9 +1108,12 @@ backslash, a space or a control character in it is refused outright: Python's pa
 the one requests uses do not agree on where its host ends. So is a plain `http://` name
 with a `%` escape in it, other than an IPv6 address's zone: requests decodes it, and up
 to 3.4.0 `http://127.0.0.1%2eexample.com` passed as this machine and went, unencrypted,
-to `127.0.0.1.example.com`. A redirect is followed only to
-an address that could have been used in the first place, and never from https to plain
-http; a refused one sends nothing further, and says where it pointed. So is every fetch
+to `127.0.0.1.example.com`. A redirect is followed only to an address that could have
+been used in the first place, never from https to plain http, and never from a server
+on the internet into this machine or its network - the router's admin page, a printer, a
+model server of your own - over https or not (up to 4.2.0 one over https was); a server
+on your network may still send a request on to another there. A refused redirect sends
+nothing further, and says where it pointed. So is every fetch
 Tinfoil's client makes for a `private/` model's attestation - the release and its
 Sigstore bundle, AMD's and Intel's certificates - which by itself followed a redirect
 anywhere, plain http included. (Up to 4.1.0 it did.)

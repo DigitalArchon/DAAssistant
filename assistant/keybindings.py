@@ -828,7 +828,8 @@ def _hyprland_live(run):
     `hyprctl binds -j`; None when Hyprland cannot be asked, or answers with something
     that is not a list of binds. Ours are left out: in a Lua config they are described
     "DA Assistant: ...", in hyprland.conf they run the app with --action=. Mouse binds
-    and keys given by code are left out too: none is one of the app's."""
+    are left out: none is one of the app's. Binds by keycode are read from the plain
+    output (_hyprland_live_codes)."""
     code, output = run(["hyprctl", "binds", "-j"])
     if code != 0:
         return None
@@ -839,25 +840,67 @@ def _hyprland_live(run):
     if not isinstance(binds, list):
         return None
     live = {}
+    by_code = False
     for bind in binds:
         if not isinstance(bind, dict) or bind.get("mouse") or bind.get("submap"):
             continue
         key = str(bind.get("key") or "")
-        description = str(bind.get("description") or "")
-        argument = str(bind.get("arg") or "")
-        if not key or description.startswith(f"{NAME}:") or "--action=" in argument:
+        if not key:
+            by_code = True              # a bind by keycode: see _hyprland_live_codes
             continue
-        try:
-            mask = int(bind.get("modmask") or 0)
-        except (TypeError, ValueError):
-            continue
-        mods = frozenset(name for bit, name in _HYPRLAND_MASK if mask & bit)
-        dispatcher = str(bind.get("dispatcher") or "")
-        what = description or (f"{dispatcher} {argument}".strip()
-                               if dispatcher and dispatcher != "__lua"
-                               else "a bind in its config")
-        live.setdefault((mods, key.lower()), what)
+        _hyprland_live_add(live, bind, key)
+    if by_code:
+        _hyprland_live_codes(run, live)
     return live
+
+
+def _hyprland_live_add(live, bind, key):
+    """Put `bind`, on the key named `key`, into `live` - unless it is one of ours."""
+    description = str(bind.get("description") or "")
+    argument = str(bind.get("arg") or "")
+    if description.startswith(f"{NAME}:") or "--action=" in argument:
+        return
+    try:
+        mask = int(bind.get("modmask") or 0)
+    except (TypeError, ValueError):
+        return
+    mods = frozenset(name for bit, name in _HYPRLAND_MASK if mask & bit)
+    dispatcher = str(bind.get("dispatcher") or "")
+    what = description or (f"{dispatcher} {argument}".strip()
+                           if dispatcher and dispatcher != "__lua"
+                           else "a bind in its config")
+    live.setdefault((mods, key.lower()), what)
+
+
+_HYPRLAND_CODE = re.compile(r"(?:^|\+)\s*code:(\d+)\s*$")
+
+
+def _hyprland_live_codes(run, live):
+    """The binds made by keycode - "SUPER + code:10", as Omarchy binds its workspaces -
+    which `hyprctl binds -j` gives with an empty key and keycode 0 (measured on 0.56.2:
+    59 of Omarchy's 225 binds), so that Super+1 was taken for free, written, and one
+    press switched workspace and ran the app's action. The plain `hyprctl binds` still
+    names the code in its key line; the code is named as the keyboard has it
+    (_keycode_name). Its blocks: a line naming the kind of bind, then one indented
+    "field: value" a line."""
+    code, output = run(["hyprctl", "binds"])
+    if code != 0 or not isinstance(output, str):
+        return
+    blocks, block = [], None
+    for line in output.split("\n"):
+        if line and not line[0].isspace():
+            block = {}
+            blocks.append(block)
+        elif block is not None and ":" in line:
+            field, _, value = line.strip().partition(":")
+            block[field.strip()] = value.strip()
+    for bind in blocks:
+        found = _HYPRLAND_CODE.search(bind.get("key", ""))
+        if not found or bind.get("submap") or bind.get("mouse") == "true":
+            continue
+        name = _keycode_name(found.group(1))
+        if name:
+            _hyprland_live_add(live, bind, name)
 
 
 def _lua_code(lines):

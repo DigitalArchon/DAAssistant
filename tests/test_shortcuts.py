@@ -2375,6 +2375,44 @@ class TheUsersOwnConfig(TempDir):
             "query_image": "already bound in Hyprland: Close window",
             "ocr_only": "already bound in Hyprland: Terminal"})
 
+    def test_a_key_hyprland_binds_by_keycode_clashes_too(self):
+        """hyprctl binds -j gives a bind by keycode - Omarchy's "SUPER + code:10",
+        workspace 1 - an empty key and keycode 0 (0.56.2): Super+1 was taken for free,
+        and one press switched workspace and ran the app's action. The plain output
+        still names the code."""
+        plain = "\n".join([
+            "bindd", "\tmodmask: 64", "\tsubmap: ", "\tkey: SUPER + code:10",
+            "\tkeycode: 0", "\tcatchall: false",
+            "\tdescription: Switch to workspace 1", "\tdispatcher: __lua", "\targ: 71",
+            "", "bindd", "\tmodmask: 65", "\tsubmap: ", "\tkey: SUPER + SHIFT + code:11",
+            "\tkeycode: 0", "\tdescription: Move window to workspace 2",
+            "\tdispatcher: __lua", "\targ: 73",
+            "", "bindd", "\tmodmask: 64", "\tsubmap: ", "\tkey: SUPER + code:12",
+            "\tkeycode: 0", "\tdescription: DA Assistant: Ask anything",
+            "\tdispatcher: __lua", "\targ: 9", ""])
+        by_code = {"modmask": 64, "submap": "", "key": "", "keycode": 0, "mouse": False,
+                   "description": "Switch to workspace 1", "dispatcher": "__lua",
+                   "arg": "71"}
+        json_run = self.omarchy_binds(by_code)
+
+        def run(args):
+            if args == ["hyprctl", "binds"]:
+                return 0, plain
+            return json_run(args)
+
+        self.put("hypr/hyprland.lua", HyprlandLuaConfig.OMARCHY)
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}), \
+                mock.patch.object(keybindings, "_keycode_name",
+                                  lambda code: keybindings._US_KEYCODES.get(int(code))):
+            writer = keybindings.ConfigFileKeybindings("hyprland", run)
+            found = writer.clashes({"query_text": "<Super>1",
+                                    "ocr_only": "<Shift><Super>2",
+                                    "ask_anything": "<Super>3",
+                                    "query_image": "<Super>4"})
+        self.assertEqual(found, {
+            "query_text": "already bound in Hyprland: Switch to workspace 1",
+            "ocr_only": "already bound in Hyprland: Move window to workspace 2"})
+
     def test_a_bind_the_files_name_but_hyprland_does_not_have_is_free(self):
         # Read off the page, but not in force - behind an if, say: Hyprland's answer
         # decides. One it has in force that the files also name is named by its line.

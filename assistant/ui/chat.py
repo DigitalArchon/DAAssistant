@@ -2097,12 +2097,12 @@ class ChatWindow(Gtk.Window):
                         GLib.idle_add(self._on_stream_done, None, cancel)
                         return
                     if privacy is not None:
-                        # The transcription was a reply too: if its signature failed,
+                        # The transcription was a reply too: if its check failed,
                         # the question built from it says so.
                         read = privacy.pop_receipt()
-                        if read is not None and read.state == privacy_module.MISMATCH:
+                        if read is not None and read.state == privacy_module.FAILED:
                             GLib.idle_add(self._badge_question, (
-                                "⚠ Transcription · signature mismatch", "bad",
+                                "⚠ Transcription · check failed", "bad",
                                 read.detail))
                     if update and update.get("content"):
                         turns[at]["content"] = update["content"]
@@ -2196,14 +2196,14 @@ class ChatWindow(Gtk.Window):
 
     def _note_reading_receipt(self, privacy, what):
         """A private reading of a picture was a reply too, and what the answer is given
-        to work from: if its signature failed, the question says so, as it does for the
+        to work from: if its check failed, the question says so, as it does for the
         first request's transcription. Called from the worker."""
         if privacy is None:
             return
         read = privacy.pop_receipt()
-        if read is not None and read.state == privacy_module.MISMATCH:
+        if read is not None and read.state == privacy_module.FAILED:
             GLib.idle_add(self._badge_question, (
-                f"⚠ {what} · signature mismatch", "bad", read.detail))
+                f"⚠ {what} · check failed", "bad", read.detail))
 
     def _request_system(self, model=None):
         """The instructions for this request, then the reference material the

@@ -12,6 +12,7 @@ Details that matter:
 """
 
 import gzip
+import hashlib
 import json
 import time
 
@@ -1006,8 +1007,9 @@ class LLMClient:
           - its enclave is attested (privacy.PrivacySession.ensure), or nothing is sent;
           - a private/ model's body is sealed to that enclave's key (sealed.py) and
             never goes anywhere unsealed; a TEE/ model's goes to the ordinary endpoint.
-        Afterwards the reply is checked - a TEE reply's signature against the attested
-        key - and the receipt left on the session for the window to show.
+        Afterwards the reply is checked - a TEE reply against the record the attested
+        key signed, for the exact bytes its stream carried - and the receipt left on the
+        session for the window to show.
 
         The web is never searched: the query, crafted by a model or not, is made from
         the conversation and would leave the enclave in the clear, bound for a search
@@ -1031,6 +1033,7 @@ class LLMClient:
         model = str(model)
         payload = self._payload(model, messages, image_base64, True, system=system,
                                 max_tokens=max_tokens, status=say)
+        record = {}             # what a TEE reply's stream says of itself, for its check
         if kind == privacy_module.E2EE:
             try:
                 client = privacy.sealed_client()
@@ -1059,16 +1062,60 @@ class LLMClient:
                 return None
             privacy.note_sent(model)
             say("Receiving from the attested enclave…")
+            # The reply's record names the hash of the exact bytes its stream carried:
+            # every one is hashed as it is read, [DONE] and whatever follows it too.
+            digest = hashlib.sha256()
+            lines = self._hashed_lines(response, digest)
             try:
-                result = self._consume(response.iter_lines(), cancel, on_delta, [])
+                result = self._consume(lines, cancel, on_delta, [])
+                whole = (result is not None and result["done"]
+                         and self._read_to_the_end(lines))
             finally:
                 response.close()
             if result is None:
                 return None
+            headers = response.headers
+            record = {"receipt_id": (headers.get("X-Receipt-Id")
+                                     or headers.get("X-TEE-Signature-Id")),
+                      "route": headers.get("X-TEE-Verification-Route"),
+                      # A stream that broke or was cut short has no whole to compare.
+                      "body_hash": "sha256:" + digest.hexdigest() if whole else None}
             say("Checking the reply's signature…")
-        privacy.check_reply(model, result["id"])
+        privacy.check_reply(model, result["id"], **record)
         return self._ending(result["text"].strip(), result["finish_reason"], model,
                             payload.get("max_tokens"), result["done"], result["error"])
+
+    @staticmethod
+    def _hashed_lines(response, digest):
+        """A stream's lines, as requests' iter_lines gives them, every byte fed to
+        `digest` as it is read, decoded of any content encoding: a TEE reply's record
+        names the hash of the exact bytes the stream carried (privacy.TeeClient.
+        check_reply). As SealedLore's stream reads them (openai_compat._lines, Nov
+        2026)."""
+        pending = None
+        for chunk in response.iter_content(chunk_size=512):     # iter_lines' own size
+            digest.update(chunk)
+            if pending is not None:
+                chunk = pending + chunk
+            lines = chunk.splitlines()
+            if lines and lines[-1] and chunk and lines[-1][-1] == chunk[-1]:
+                pending = lines.pop()
+            else:
+                pending = None
+            yield from lines
+        if pending is not None:
+            yield pending
+
+    @staticmethod
+    def _read_to_the_end(lines):
+        """Read what is left of a stream after its [DONE], so that its hash is of every
+        byte it carried. Whether it could be."""
+        try:
+            for _rest in lines:
+                pass
+        except requests.exceptions.RequestException:
+            return False
+        return True
 
     def _check_other_providers(self, answered, reply):
         """The rest of a connection test, when the premium or vision model is asked of

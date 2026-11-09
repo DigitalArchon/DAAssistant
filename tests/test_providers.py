@@ -245,10 +245,11 @@ class WhichProviderAModelIsAskedOf(Case):
         another provider does not get to carry the conversation there."""
         self.config.text_provider, self.config.text_model = "ollama", "TEE/glm-5.3"
         client = self.client()
-        stream = mock.Mock(status_code=200)
-        stream.iter_lines.return_value = [
-            b'data: {"id": "c1", "choices": [{"delta": {"content": "hi"}}]}',
-            b"data: [DONE]"]
+        # A TEE reply's bytes, as requests reads them: hashed for the reply's check.
+        stream = mock.Mock(status_code=200, headers={})
+        stream.iter_content.return_value = [
+            b'data: {"id": "c1", "choices": [{"delta": {"content": "hi"}}]}\n\n',
+            b"data: [DONE]\n\n"]
         client.session.post.side_effect = [stream]
         session = mock.Mock()
         # As PrivacySession.start takes them, and the request then goes by them.

@@ -74,7 +74,7 @@ def _pygments_css(dark):
 # The only classes a model's HTML keeps: Pygments' token classes and codehilite's own,
 # which the stylesheet colours code by. Any other would be one of the transcript's -
 # "turn user", "role", "privacy ok" - and let an answer draw a question nobody asked,
-# or a green "signed by attested enclave" badge under a reply whose signature failed.
+# or a green "TEE · verified" badge under a reply whose check failed.
 CODE_CLASSES = frozenset(c for c in STANDARD_TYPES.values() if c) | {
     "codehilite", "hll", "linenos", "lineno", "filename"}
 

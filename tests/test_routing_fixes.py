@@ -416,7 +416,7 @@ class TheChatWindowAfterSettings(unittest.TestCase):
 
     def test_a_private_reading_whose_signature_failed_is_said_on_the_question(self):
         class Receipt:
-            state, detail = privacy_module.MISMATCH, "signed by another key"
+            state, detail = privacy_module.FAILED, "signed by another key"
 
         class Session:
             def pop_receipt(self):

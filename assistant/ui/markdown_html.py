@@ -315,6 +315,13 @@ body {{
   font-size: 11px; font-weight: 700; letter-spacing: .07em;
   text-transform: uppercase; color: {muted}; margin-bottom: 6px;
 }}
+/* The page's own chrome - a turn's label with its badges and Copy, a code block's Copy
+   (a <pre>'s only button: an answer can write none), the screenshot's buttons, the
+   streaming cursor - is not part of what was said: a selection dragged across it, then
+   Ctrl+C, copied "ASSISTANT deepseek-v3 Copy" and "Copy" between the answers. */
+.role, .role *, pre > button, .shot-actions, .cursor {{
+  -webkit-user-select: none; user-select: none;
+}}
 .role .copy-answer {{
   float: right; font: 11px system-ui; letter-spacing: 0; text-transform: none;
   padding: 1px 8px; border-radius: 6px; border: 1px solid rgba(128,128,128,.4);

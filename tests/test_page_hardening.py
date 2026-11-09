@@ -1,9 +1,10 @@
-"""The pages the app shows run no script of their own.
+"""The pages the app shows run no script of their own, and copy no chrome.
 
 The chat transcript and an article run the app's user scripts and its run_javascript,
 and nothing in their markup: a <script> or an onclick= that got past the sanitiser and
 the page's policy is dropped as the page is parsed. Everything the views do is the
-app's scripts', and goes on working.
+app's scripts', and goes on working. And a selection dragged across a turn copies what
+was said, not its label, its badges or its Copy buttons.
 """
 
 import os
@@ -67,6 +68,26 @@ class NoScriptInThePage(WindowCase):
         window._render(full=True)
         self.assertTrue(run_until(lambda: "Redrawn." in (self.page(
             window, "document.body.innerText") or "")))
+
+
+@unittest.skipUnless(chat.WebKit2 is not None, "needs WebKitGTK")
+class CopyingTakesNoChrome(WindowCase):
+    def test_a_selection_across_the_turns_copies_only_what_was_said(self):
+        window = self.window(TURNS)
+        settle()
+        selected = self.page(window, "(function () { var r = document.createRange();"
+                                     " r.selectNodeContents(document.body);"
+                                     " var s = getSelection(); s.removeAllRanges();"
+                                     " s.addRange(r); return s.toString(); })()")
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text("untouched", -1)
+        window.webview.execute_editing_command(chat.WebKit2.EDITING_COMMAND_COPY)
+        self.assertTrue(run_until(lambda: clipboard_text() != "untouched"))
+        for copied in (selected, clipboard_text()):
+            self.assertIn("First line of the answer.", copied)
+            self.assertIn("code here", copied)
+            self.assertIn("Last line.", copied)
+            for chrome in ("You", "YOU", "Assistant", "ASSISTANT", "some-model", "Copy"):
+                self.assertNotIn(chrome, copied)
 
 
 if __name__ == "__main__":

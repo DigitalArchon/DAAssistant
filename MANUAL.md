@@ -65,7 +65,8 @@ or F3 goes to the next and Shift+Enter to the one before, Escape closes it. In S
 Encyclopedia it searches the article when that is where you were reading.
 Drag the bar above the message box to give it more room or less; the height you leave it
 at is kept for the next window, as is the window's own size. Each answer has a **Copy** of its own, copying it as the
-Markdown it was. **Ctrl+plus** and **Ctrl+minus** (or Ctrl and the wheel) make the text
+Markdown it was; a selection copied with Ctrl+C takes what was said, without the turns'
+labels, badges and Copy buttons. **Ctrl+plus** and **Ctrl+minus** (or Ctrl and the wheel) make the text
 larger or smaller, **Ctrl+0** puts it back, and the size is kept for the next window;
 **Ctrl+W** closes the window, and **Escape** stops an answer, as Stop does. A stopped
 answer keeps what had come, marked as cut short, and the conversation carries on from it.

@@ -18,6 +18,7 @@ import re
 import sqlite3
 import struct
 import threading
+import time
 import unicodedata
 import zlib
 
@@ -50,6 +51,10 @@ MAX_SUGGESTIONS = 24
 # The most rows one key is read from in one dictionary, to choose those entries from: a
 # real one files a few dozen under a key at most, a made one a million, each looked up.
 MAX_ROWS = 100 * MAX_ENTRIES
+# How long ago a folder must have changed for what was found in it to be kept (see
+# Library._discover): a change within a moment of the last may leave it with the same
+# modification time - kept to a tick of the clock, and on a FAT drive to two seconds.
+SETTLED_NS = 2 * 10 ** 9
 
 # What text copied from a web page or a PDF has where a dictionary has the plain
 # character: typographic apostrophes, quotation marks and dashes.
@@ -189,7 +194,7 @@ def stems(word):
     return out
 
 
-def discover(folder):
+def discover(folder, folders=None):
     """Every dictionary under `folder`, as unopened (kind, path) pairs.
 
     Abbreviation lists - the *_abrv files Lingvo dictionaries ship beside themselves -
@@ -201,12 +206,26 @@ def discover(folder):
     it that are links are not looked in at all, as os.walk() has it.) Nor is anything
     that is not a file of its own: a pipe named X.dsl, opened to be read, waited for a
     writer for ever, on the main loop (see files.py).
+
+    The folders of pictures and sounds beside a dictionary are not looked in: a
+    StarDict's res, beside its .ifo, and a DSL's X.dsl.files, as GoldenDict names it.
+    They can hold tens of thousands of files, and no dictionary.
+
+    `folders`, a dict, is given every folder looked in and its modification time, as
+    it was before it was looked in, for Library to tell when to look again.
     """
     found = []
+    if folders is not None:
+        folders[folder] = _mtime(folder)
     if not folder or not os.path.isdir(folder):
         return found
     for root, dirs, files in os.walk(folder):
-        dirs.sort()
+        if dirs:
+            names = {name.lower() for name in files}
+            dirs[:] = sorted(name for name in dirs if not _resources(name, names))
+        if folders is not None:
+            for name in dirs:
+                folders[os.path.join(root, name)] = _mtime(os.path.join(root, name))
         for name in sorted(files):
             lower = name.lower()
             stem = lower.split(".")[0]
@@ -222,6 +241,29 @@ def discover(folder):
             if is_file(path) and inside(path, folder):
                 found.append((kind, path))
     return found
+
+
+def _resources(name, beside):
+    """Whether the folder `name`, beside the files named `beside` (in lower case),
+    holds a dictionary's pictures and sounds: res beside a StarDict's .ifo, or
+    X.dsl.files (X.dsl.dz.files) beside X.dsl or X.dsl.dz."""
+    lower = name.lower()
+    if lower == "res":
+        return any(file.endswith(".ifo") for file in beside)
+    if lower.endswith(".files"):
+        owner = lower[:-len(".files")]
+        return owner.endswith((".dsl", ".dsl.dz")) and bool(
+            {owner, owner + ".dz"} & beside)
+    return False
+
+
+def _mtime(path):
+    """A folder's modification time - which changes as a file in it comes, goes or is
+    renamed - or None for one that is not there."""
+    try:
+        return os.stat(path).st_mtime_ns
+    except (OSError, ValueError):
+        return None
 
 
 def open_dictionary(kind, path):
@@ -271,6 +313,13 @@ class Library:
         # without waiting for it. Set and read whole, so without a lock.
         self._problems = {}
         self._tidied = False            # of dictionaries no longer there, this run
+        # What discover() found when last asked: (the folder, every folder it looked in
+        # and its modification time then, what it found). Set and read whole.
+        self._found = None
+        # path -> (the signature of its files when it was opened, what it says of
+        # itself): about() for listing(), which every lookup asks for again. Forgotten
+        # whenever the folder is looked in again.
+        self._abouts = {}
 
     # ---- the index --------------------------------------------------------
 
@@ -351,12 +400,32 @@ class Library:
     def folder(self):
         return os.path.expanduser(getattr(self.config, "dictionaries_dir", "") or "")
 
+    def _discover(self):
+        """discover(), but looked in again only once Settings names another folder, or
+        once something in it has come, gone or been renamed: once one of the folders
+        looked in is no longer as it was. Every lookup looked through the whole folder
+        twice - once on the main loop, as the window's bar was brought up to date after
+        it - and its folders of pictures and sounds too, tens of thousands of files.
+        What a dictionary's own files hold, changed in place, _open() sees."""
+        folder = self.folder()
+        known = self._found
+        if known is not None and known[0] == folder and all(
+                _mtime(path) == mtime for path, mtime in known[1].items()):
+            return known[2]
+        folders, started = {}, time.time_ns()
+        found = discover(folder, folders)
+        settled = all(mtime is None or mtime < started - SETTLED_NS
+                      for mtime in folders.values())
+        self._found = (folder, folders, found) if settled else None
+        self._abouts = {}
+        return found
+
     def _all(self):
         """Every dictionary in the folder that opens, in the user's order - the ones
         Settings has placed, as placed, then the rest by name - as (dictionary, the
         signature of its files when it was opened)."""
         found = []
-        for kind, path in discover(self.folder()):
+        for kind, path in self._discover():
             dictionary, opened_as = self._open(kind, path)
             if not isinstance(dictionary, Exception):
                 found.append((dictionary, opened_as))
@@ -373,10 +442,18 @@ class Library:
     def listing(self):
         """[(path, name, icon path or None, about)] of the enabled dictionaries, in
         order - the dictionary window's bar, which shows `about` on hover: what the
-        dictionary says of itself, and what went wrong indexing it, if anything did."""
+        dictionary says of itself, and what went wrong indexing it, if anything did.
+
+        Asked on the main loop, after every lookup: nothing is read again that has not
+        changed (see _discover)."""
         out = []
-        for d, opened_as in self._enabled():
-            about = d.about()
+        enabled = self._enabled()
+        abouts = self._abouts               # as _discover() left it
+        for d, opened_as in enabled:
+            said = abouts.get(d.path)
+            if said is None or said[0] != opened_as:
+                said = abouts[d.path] = (opened_as, d.about())
+            about = said[1]
             known = self._problems.get(d.path)
             if known and known[0] == opened_as:
                 note = ("Not indexed: " if known[2] else "Indexed in part: ") + known[1]

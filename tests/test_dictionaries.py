@@ -1311,6 +1311,127 @@ class Lookups(unittest.TestCase):
                       dictionaries.as_markdown(nothing))
 
 
+def settle(*folders):
+    """Make `folders` look as if they last changed a minute ago: what is found in a
+    folder changed within the last moment is not kept (dictionaries.SETTLED_NS)."""
+    then = time.time() - 60
+    for folder in folders:
+        os.utime(folder, (then, then))
+
+
+class Walks(unittest.TestCase):
+    """What the dictionaries folder holds is looked for once, and again only once it
+    changes. Every lookup looked through it twice, once on the main loop - its folders
+    of pictures and sounds too, which can hold tens of thousands of files."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.folder = os.path.join(self.dir, "dicts")
+        self.sub = os.path.join(self.folder, "sub")
+        os.makedirs(self.sub)
+        write_dsl(os.path.join(self.folder, "made-up.dsl"))
+        with open(os.path.join(self.folder, "made-up.ann"), "w") as f:
+            f.write("What the made-up dictionary is.\n")
+        write_stardict(self.sub, "sd", [("glorp", b"<b>Glorp</b>: a stardict view")])
+        self.config = types.SimpleNamespace(dictionaries_dir=self.folder,
+                                            dictionaries_disabled=[])
+        self.library = Library(self.config, cache_dir=os.path.join(self.dir, "cache"))
+        self.walks, self.abouts = [], []
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def counted(self):
+        """Count the walks through a folder, and what each DSL is asked of itself."""
+        walk, about = os.walk, dsl.DSL.about
+
+        def walking(top, *args, **kwargs):
+            self.walks.append((top, threading.current_thread()))
+            return walk(top, *args, **kwargs)
+
+        def asked(dictionary):
+            self.abouts.append(dictionary.path)
+            return about(dictionary)
+
+        return (mock.patch.object(dictionaries.os, "walk", walking),
+                mock.patch.object(dsl.DSL, "about", asked))
+
+    def names(self):
+        return sorted(name for _path, name, _icon, _about in self.library.listing())
+
+    def test_resource_folders_are_not_looked_in(self):
+        for folder in ("res", "made-up.dsl.files", "other.dsl.dz.files"):
+            os.makedirs(os.path.join(self.sub if folder == "res" else self.folder,
+                                     folder))
+        write_dictzip(os.path.join(self.folder, "other.dsl.dz"), dsl_bytes(
+            '#NAME "Other"\n\nglorp\n\t[m1]another'))
+        for folder in (os.path.join(self.sub, "res"),
+                       os.path.join(self.folder, "made-up.dsl.files"),
+                       os.path.join(self.folder, "other.dsl.dz.files")):
+            write_dsl(os.path.join(folder, "trap.dsl"), '#NAME "Trap"\n\nglorp\n\tno')
+        # But a folder of that name that is no dictionary's is looked in like any.
+        for folder in ("res", "notes.files", "gone.dsl.files"):
+            os.makedirs(os.path.join(self.folder, "more", folder))
+            write_dsl(os.path.join(self.folder, "more", folder, "found.dsl"))
+        found = [os.path.relpath(path, self.folder)
+                 for _kind, path in dictionaries.discover(self.folder)]
+        self.assertEqual(found, ["made-up.dsl", "other.dsl.dz",
+                                 os.path.join("more", "gone.dsl.files", "found.dsl"),
+                                 os.path.join("more", "notes.files", "found.dsl"),
+                                 os.path.join("more", "res", "found.dsl"),
+                                 os.path.join("sub", "sd.ifo")])
+
+    def test_the_folder_is_looked_through_again_only_once_it_changes(self):
+        settle(self.folder, self.sub)
+        walking, asking = self.counted()
+        with walking, asking:
+            self.assertEqual(self.names(), ["Invented Dictionary", "Made-up StarDict"])
+            self.assertEqual(len(self.walks), 1)
+            self.assertEqual(len(self.abouts), 1)
+            for word in ("glorp", "cafe", "glorp"):
+                self.library.look_up(word)
+                listing = self.library.listing()
+            self.assertEqual(len(self.walks), 1)
+            # Nor its annotation read again: listing() is asked after every lookup.
+            self.assertEqual(len(self.abouts), 1)
+            self.assertIn("What the made-up dictionary is.",
+                          [about for _path, _name, _icon, about in listing])
+
+            # A dictionary added, deep down, is found at the next lookup.
+            deeper = os.path.join(self.sub, "deeper")
+            os.makedirs(deeper)
+            write_dsl(os.path.join(deeper, "new.dsl"), '#NAME "Newcomer"\n\nzib\n\tnew')
+            self.assertEqual(len(self.library.look_up("zib")["results"]), 2)
+            self.assertIn("Newcomer", self.names())
+            # And one taken away goes, from a folder that settled after it was found.
+            settle(deeper, self.sub)
+            self.library.listing()
+            os.unlink(os.path.join(deeper, "new.dsl"))
+            self.assertNotIn("Newcomer", self.names())
+            # A dictionary's file changed in place is opened again, as it was, and what
+            # it says of itself asked again.
+            asked = len(self.abouts)
+            path = os.path.join(self.folder, "made-up.dsl")
+            write_dsl(path, DSL_TEXT.replace("Invented Dictionary", "Revised"))
+            os.utime(path, (1, 1))
+            self.assertIn("Revised", self.names())
+            self.assertGreater(len(self.abouts), asked)
+
+    def test_another_folder_in_settings_is_looked_through_at_once(self):
+        settle(self.folder, self.sub)
+        self.assertEqual(len(self.names()), 2)
+        other = os.path.join(self.dir, "other")
+        os.makedirs(other)
+        write_dsl(os.path.join(other, "o.dsl"), '#NAME "Elsewhere"\n\nglorp\n\tthere')
+        self.config.dictionaries_dir = other
+        self.assertEqual(self.names(), ["Elsewhere"])
+        # And a folder that is not there yet is looked for again until it is.
+        self.config.dictionaries_dir = os.path.join(self.dir, "later")
+        self.assertEqual(self.names(), [])
+        os.rename(other, os.path.join(self.dir, "later"))
+        self.assertEqual(self.names(), ["Elsewhere"])
+
+
 class ReplacedFiles(unittest.TestCase):
     """A dictionary replaced while the app runs - a newer edition copied over it - is
     read afresh, not through what was read of the old one as it opened."""
@@ -2288,6 +2409,35 @@ class DictionaryWindow(unittest.TestCase):
                                  "Invented Dictionary\n\nNot indexed: OSError: not just now")
             finally:
                 window.destroy()
+
+    def test_after_a_lookup_the_bar_is_brought_up_to_date_without_a_walk(self):
+        # After every lookup the bar's hover texts are made again, on the main loop:
+        # that looked through the whole dictionaries folder, and read every .ann.
+        folder = self.config.dictionaries_dir
+        with open(os.path.join(folder, "made-up.ann"), "w") as f:
+            f.write("What it is.\n")
+        settle(folder)
+        window = chat.ChatWindow(StubApp(self.config, self.client), "Look up", [],
+                                 web_search=False, lookup=self.library.look_up,
+                                 dictionary_list=self.library.listing)
+        walks, abouts = [], []
+        walk, about = os.walk, dsl.DSL.about
+        try:
+            with mock.patch.object(dictionaries.os, "walk",
+                                   lambda *a, **k: walks.append(a) or walk(*a, **k)), \
+                    mock.patch.object(dsl.DSL, "about",
+                                      lambda d: abouts.append(d) or about(d)):
+                for word in ("glorp", "zib"):
+                    window._look_up(word)
+                    self._looked_up(window, 1)
+            self.assertEqual(window.conversation[0]["word"], "zib")
+            self.assertEqual((walks, abouts), ([], []))
+            button, = [child.get_child()
+                       for child in window.dictionary_bar.get_children()]
+            self.assertEqual(button.get_tooltip_text(),
+                             "Invented Dictionary\n\nWhat it is.")
+        finally:
+            window.destroy()
 
     def _looked_up(self, window, count):
         self.assertTrue(self._run_until(lambda: not window._looking and len(

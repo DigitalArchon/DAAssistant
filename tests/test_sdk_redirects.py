@@ -136,6 +136,15 @@ class RedirectsOffHttpsAreRefused(FakeSdk):
         self.assertIsInstance(refused.exception, requests.RequestException)
         self.assertEqual(self.sent, [self.URL])
 
+    def test_nor_is_one_into_this_machine_or_its_network(self):
+        """As the other apps' guard of the SDK refuses it (Nov 2026): over https, to
+        the router's address."""
+        sealed.guard_sdk_requests()
+        self.answers[self.URL] = "https://192.168.1.1/release"
+        with self.assertRaises(netguard.RedirectRefused):
+            self.module("github").fetch_latest_release("owner/repo")
+        self.assertEqual(self.sent, [self.URL])
+
     def test_a_redirect_that_stays_on_https_is_followed(self):
         sealed.guard_sdk_requests()
         self.answers[self.URL] = "https://objects.example/release"

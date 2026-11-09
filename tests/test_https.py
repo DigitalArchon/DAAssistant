@@ -294,6 +294,37 @@ class RedirectsKeepToTheRule(unittest.TestCase):
         session.post("http://localhost:11434/v1/chat/completions", data=b"x")
         self.assertEqual(sent[1][0], "http://localhost:11434/v2/chat/completions")
 
+    def test_a_server_elsewhere_cannot_send_a_request_into_this_machine_or_its_network(self):
+        """Over https as readily as over http: a provider, or anything answering at its
+        address, sent the request - a 307's body, the conversation - on to the router's
+        admin page or a model server here. From SealedLore (Nov 2026)."""
+        onion = "http://" + "a" * 56 + ".onion/v1/chat/completions"
+        for source, location in (
+                ("https://api.example/v1/chat/completions", "https://192.168.1.1/admin"),
+                ("https://api.example/v1/chat/completions", "https://localhost:8080/x"),
+                ("https://api.example/v1/chat/completions", "https://[fd00::5]/v1"),
+                ("https://api.example/v1/chat/completions", "https://printer.local/"),
+                (onion, "http://10.0.0.1/admin"),
+                (onion, "http://127.0.0.1:11434/v1/chat/completions")):
+            session, sent = self.session(location)
+            with self.subTest(location):
+                with self.assertRaises(netguard.RedirectRefused) as refused:
+                    session.post(source, data=b"the conversation")
+                self.assertEqual(len(sent), 1, f"the body went on to {location}")
+                self.assertIn("on this machine or its network, which was not followed",
+                              str(refused.exception))
+
+    def test_a_server_on_this_network_may_send_one_on_to_another_there(self):
+        for source, location in (
+                ("http://192.168.1.10:7860/v1/x", "http://192.168.1.20:7860/v1/x"),
+                ("https://box.local/v1/x", "https://127.0.0.1:8443/v1/x"),
+                ("http://localhost:11434/v1/x", "https://api.example/v1/x"),
+                ("http://" + "a" * 56 + ".onion/v1/x", "https://api.example/v1/x")):
+            session, sent = self.session(location)
+            with self.subTest(source):
+                self.assertEqual(session.post(source, data=b"x").status_code, 200)
+                self.assertEqual(sent[1][0], location)
+
     def test_a_chat_request_stops_at_a_refused_redirect_without_retrying(self):
         directory = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, directory, True)

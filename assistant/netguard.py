@@ -26,7 +26,8 @@ it is refused outright, because Python's parser and urllib3's do not agree on wh
 host ends - `http://evil.com\\@localhost` is localhost to one and evil.com to the other.
 
 A redirect is held to the same rule (session()): followed only to an address that could
-have been used in the first place, and never from https to plain http.
+have been used in the first place, never from https to plain http, and never from a
+server elsewhere into this machine or its network.
 """
 
 import ipaddress
@@ -250,7 +251,14 @@ def check(url):
 
 
 def redirect_problem(source, target):
-    """Why a redirect from `source` to `target` may not be followed, or None."""
+    """Why a redirect from `source` to `target` may not be followed, or None.
+
+    Into this machine or its network, only from a server there itself. Held to the rule
+    for addresses alone, a provider out on the internet - or anything answering at its
+    address - could send a request on to the router's admin page, a printer or a model
+    server here, a 307's body, the conversation, along with it, over https as readily as
+    over http. A server on this network may still send a request on to another there;
+    an onion service is not on this network. (SealedLore's rule, Nov 2026.)"""
     found = problem(target)
     if found:
         return (f"The server sent the request on to {shown(target)}, which was not "
@@ -260,12 +268,21 @@ def redirect_problem(source, target):
         return (f"The server sent the request on from https to {shown(target)}, which "
                 f"was not followed: an https request is never carried on over plain "
                 f"http.")
+    try:
+        from_here = is_local(urlparse(source).hostname)
+    except ValueError:              # an address that cannot be read is no local one
+        from_here = False
+    if is_local(urlparse(target).hostname) and not from_here:
+        return (f"The server sent the request on to {shown(target)}, on this machine or "
+                f"its network, which was not followed: a server elsewhere never sends a "
+                f"request in there.")
     return None
 
 
 def session():
     """A requests Session that follows a redirect only where netguard would have let the
-    request go in the first place, and never from https to plain http.
+    request go in the first place, never from https to plain http, and never from a
+    server elsewhere into this machine or its network (redirect_problem).
 
     requests follows redirects by itself, and a 307 or 308 carries the body along: the
     whole conversation, captures and all. It takes the Authorization header off when the

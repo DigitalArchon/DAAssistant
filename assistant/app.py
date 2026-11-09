@@ -1098,7 +1098,8 @@ class Assistant:
             if target is not None:
                 reader.open(target, highlight)
             else:
-                reader.present()
+                reader.offer(self._word_from_clipboard(
+                    limit=120, strip=" \"'()[]{}«»“”‘’"))
             return
         privacy = self._start_privacy((self._answer_role(),))
         if privacy is False:

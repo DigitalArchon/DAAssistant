@@ -1468,6 +1468,46 @@ class SearchWindow(EncyclopediaWindowCase):
         finally:
             window.destroy()
 
+    def test_asked_for_again_the_new_word_waits_in_the_box_too(self):
+        # With the window open, Search Encyclopedia only brought it forward: the word
+        # copied since was left out.
+        window = self._window(query="Zorblax")
+        try:
+            window.offer("quuxland")
+            self.assertEqual(window.search_entry.get_text(), "quuxland")
+            self.assertEqual(window.search_entry.get_selection_bounds(), (0, 8))
+            window.offer(None)                      # nothing on the clipboard
+            self.assertEqual(window.search_entry.get_text(), "quuxland")
+        finally:
+            window.destroy()
+
+    def test_enter_during_a_search_searches_for_the_new_words_next(self):
+        # It was ignored, and nothing said.
+        window = self._window()
+        release, search, searched = threading.Event(), self.encyclopedia.search, []
+
+        def slow(query, limit=10):
+            searched.append(query)
+            if len(searched) == 1:
+                release.wait(10)
+            return search(query, limit=limit)
+
+        try:
+            with mock.patch.object(self.encyclopedia, "search", slow):
+                window._search("Zorblax")
+                window._search("glimmer")
+                window._search("quuxland")
+                self.assertEqual(window.status.get_text(),
+                                 "Still searching for “Zorblax” - “quuxland” next")
+                release.set()
+                self.assertTrue(self._run_until(lambda: not window._looking
+                                                and window.pane.current is not None))
+            self.assertEqual(searched, ["Zorblax", "quuxland"])
+            self.assertEqual(window.pane.current, ("article", 2))
+        finally:
+            release.set()
+            window.destroy()
+
     def test_the_best_match_is_read_and_the_rest_wait_under_results(self):
         window = self._window()
         try:

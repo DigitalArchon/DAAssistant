@@ -131,6 +131,17 @@ class SearchEncyclopediaWindow(ChatWindow):
             if search_now and query:
                 self._search(query)
 
+    def offer(self, query):
+        """Search Encyclopedia asked for again with its window open: `query`, the
+        word on the clipboard, waits in the search box, selected, as it does in a new
+        window - Enter takes it, typing replaces it. The window was only brought
+        forward, and the word left out. With none, the box keeps what it had."""
+        if query:
+            self.search_entry.set_text(query)
+        self.present()
+        self.search_entry.grab_focus()
+        self.search_entry.select_region(0, -1)
+
     def _zoom_views(self):
         views = super()._zoom_views()
         if getattr(self, "pane", None) is not None and self.pane.webview is not None:
@@ -143,6 +154,9 @@ class SearchEncyclopediaWindow(ChatWindow):
         self._tags = []                     # article ids, in the order tagged
         self._titles = {}
         self._result_rows = []
+        # What the search running is for, and what was asked for since, to search for
+        # once it is done.
+        self._searching = self._next_search = None
         self.pane = ArticlePane(self._encyclopedia, on_change=self._on_pane_change)
         self.pane.offer_lookups(self.config, self._look_up_elsewhere)
         if self.pane.webview is not None:
@@ -246,9 +260,17 @@ class SearchEncyclopediaWindow(ChatWindow):
         """Search for `query` off the main loop; the best match is read at once, and
         the rest wait under Results."""
         query = " ".join((query or "").split())
-        if not query or self._looking:
+        if not query:
+            return
+        if self._looking:
+            # Enter again before the search ends: what was asked for last is searched
+            # for next. It was nothing, and nothing said.
+            self._next_search = query
+            self.status.set_text(f"Still searching for “{self._searching}” - "
+                                 f"“{query}” next")
             return
         self._looking = True
+        self._searching = query
         self.status.set_text(f"Searching the encyclopedia for “{query}”…")
 
         def worker():
@@ -265,6 +287,10 @@ class SearchEncyclopediaWindow(ChatWindow):
         if self._destroyed:
             return False
         self._looking = False
+        following, self._next_search = self._next_search, None
+        if following is not None and following != query:
+            self._search(following)         # these results are no longer the ones wanted
+            return False
         if failure:
             self.status.set_text(f"Search failed: {failure}")
             return False

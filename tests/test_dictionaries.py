@@ -2727,6 +2727,34 @@ class DictionaryWindow(unittest.TestCase):
             window._cancel = None
             window.destroy()
 
+    def test_a_lookup_during_another_keeps_what_that_one_says(self):
+        # Indexing can go on for minutes, and "Wait for the answer to finish", there
+        # being no answer, took the place of what it said it was doing.
+        release = threading.Event()
+
+        def look_up(word, status):
+            status("Indexing Invented Dictionary (1 of 1)… (once only)")
+            release.wait(10)
+            return self.library.look_up(word)
+
+        window = chat.ChatWindow(StubApp(self.config, self.client), "Look up", [],
+                                 web_search=False, lookup=look_up)
+        try:
+            window._look_up("glorp")
+            self.assertTrue(self._run_until(
+                lambda: "Indexing" in window.status.get_text()))
+            window._look_up("zib")
+            window._look_up("zib")
+            self.assertEqual(window.status.get_text(),
+                             "Indexing Invented Dictionary (1 of 1)… (once only) - the "
+                             "lookup is still running: try again once it is done")
+            release.set()
+            self._looked_up(window, 1)
+            self.assertEqual([turn["word"] for turn in window.conversation], ["glorp"])
+        finally:
+            release.set()
+            window.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

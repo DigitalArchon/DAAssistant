@@ -2230,8 +2230,18 @@ class ChatWindow(Gtk.Window):
     def _busy(self):
         """Whether a lookup or search may not start now: one is already running, or
         an answer is - a turn arriving mid-answer would take its placeholder's place."""
-        if self._cancel is not None or self._looking:
+        if self._cancel is not None:
             self.status.set_text("Wait for the answer to finish, then try again")
+            return True
+        if self._looking:
+            # What the lookup says it is doing stays, and this after it: "Wait for the
+            # answer to finish", there being none, took the place of "Indexing …
+            # (once only)", which can go on for minutes.
+            running = self.status.get_text()
+            note = "the lookup is still running: try again once it is done"
+            if note not in running:
+                self.status.set_text(f"{running} - {note}" if running
+                                     else note.capitalize())
             return True
         return False
 

@@ -237,6 +237,21 @@ class TheAppOpensAWindowOfItsOwn(Configured):
         self.assertIs(type(app._reader), Reader)
         self.assertEqual(len(made), 2, "a new window, not the kept one")
 
+    def test_asked_again_the_kept_reader_is_given_the_clipboard(self):
+        # It was only brought forward, the word copied since left out.
+        offered = []
+
+        class Reader:
+            _destroyed = False
+
+            def offer(self, query):
+                offered.append(query)
+
+        app = self.app()
+        app._reader = Reader()
+        app.search_encyclopedia()
+        self.assertEqual(offered, ["clipboard"])
+
 
 if __name__ == "__main__":
     unittest.main()

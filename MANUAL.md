@@ -1072,7 +1072,10 @@ with a `%` escape in it, other than an IPv6 address's zone: requests decodes it,
 to 3.4.0 `http://127.0.0.1%2eexample.com` passed as this machine and went, unencrypted,
 to `127.0.0.1.example.com`. A redirect is followed only to
 an address that could have been used in the first place, and never from https to plain
-http; a refused one sends nothing further, and says where it pointed.
+http; a refused one sends nothing further, and says where it pointed. So is every fetch
+Tinfoil's client makes for a `private/` model's attestation - the release and its
+Sigstore bundle, AMD's and Intel's certificates - which by itself followed a redirect
+anywhere, plain http included. (Up to 4.1.0 it did.)
 
 **A proxy** (Settings > Advanced > Proxy) takes every request the app makes - the
 models, the web search, the model lists, the attestation services, Tinfoil's client -

@@ -45,6 +45,7 @@ import hashlib
 import json
 import secrets
 import threading
+import types
 from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -164,6 +165,109 @@ def _around_the_proxy():
                            f"around it: {refused}")
 
 
+class _GuardedRequests(types.ModuleType):
+    """requests, as Tinfoil's SDK is given it: its functions each send through a session
+    of netguard's (netguard.session()), and Session is that session's class; everything
+    else - its exceptions, Response, the rest - is requests' own."""
+
+    def __init__(self, real):
+        super().__init__(real.__name__, real.__doc__)
+        self._real = real
+        with netguard.session() as made:
+            self.Session = type(made)
+
+    def __getattr__(self, name):
+        if name == "_real":
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+    def request(self, method, url, **kwargs):
+        with netguard.session() as session:
+            return session.request(method=method, url=url, **kwargs)
+
+    def get(self, url, params=None, **kwargs):
+        return self.request("get", url, params=params, **kwargs)
+
+    def options(self, url, **kwargs):
+        return self.request("options", url, **kwargs)
+
+    def head(self, url, **kwargs):
+        kwargs.setdefault("allow_redirects", False)
+        return self.request("head", url, **kwargs)
+
+    def post(self, url, data=None, json=None, **kwargs):
+        return self.request("post", url, data=data, json=json, **kwargs)
+
+    def put(self, url, data=None, **kwargs):
+        return self.request("put", url, data=data, **kwargs)
+
+    def patch(self, url, data=None, **kwargs):
+        return self.request("patch", url, data=data, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request("delete", url, **kwargs)
+
+
+# What a module may have taken from requests by name, as well as requests itself.
+_REQUESTS_NAMES = ("request", "get", "options", "head", "post", "put", "patch", "delete",
+                   "Session")
+
+
+def guard_sdk_requests(package="tinfoil"):
+    """Have Tinfoil's SDK fetch through netguard's session: a redirect then goes only
+    where a request could have gone in the first place, and never from https to plain
+    http. Returns the names of the modules given it.
+
+    The SDK fetches with bare requests.get and .post - the router's latest release and
+    its Sigstore bundle from GitHub's proxy (tinfoil.github), AMD's VCEK and Intel's
+    collateral (attestation.verify_sev, .collateral_tdx), an enclave's report
+    (attestation.attestation) - and requests follows a redirect anywhere, https to http
+    included: a 30x from any of them, or from whatever answered at their address, and
+    the next fetch went in the clear, through no check of the app's.
+
+    It is not changed on disk. Each of its modules loaded is handed a stand-in for
+    requests (_GuardedRequests) in place of the real one, and for any of its functions
+    taken by name. Every module of the package is loaded first, so that one the SDK
+    would import only when it needs it - another version may - is not missed; one that
+    cannot be loaded is left, as the SDK could not use it either."""
+    import importlib
+    import pkgutil
+    import sys
+
+    import requests
+
+    root = sys.modules.get(package)
+    if root is None:
+        return []
+    try:
+        for found in pkgutil.walk_packages(getattr(root, "__path__", []), package + ".",
+                                           onerror=lambda _name: None):
+            if found.name not in sys.modules:
+                try:
+                    importlib.import_module(found.name)
+                except Exception:
+                    pass
+    except Exception:           # a package that cannot be walked: what is loaded is
+        pass                    # still guarded below
+    guarded, given = None, []
+    for name, module in list(sys.modules.items()):
+        if module is None or not (name == package or name.startswith(package + ".")):
+            continue
+        changed = False
+        if getattr(module, "requests", None) is requests:
+            guarded = guarded or _GuardedRequests(requests)
+            module.requests = guarded
+            changed = True
+        for attribute in _REQUESTS_NAMES:
+            if getattr(module, attribute, None) is getattr(requests, attribute):
+                guarded = guarded or _GuardedRequests(requests)
+                setattr(module, attribute, getattr(guarded, attribute))
+                changed = True
+        if changed or isinstance(getattr(module, "requests", None), _GuardedRequests):
+            given.append(name)
+    return sorted(given)
+
+
 def tinfoil_verify(relay, cache_secret):
     """Attest Tinfoil's router through nano-gpt's relay (network; worker thread)."""
     _around_the_proxy()
@@ -172,6 +276,7 @@ def tinfoil_verify(relay, cache_secret):
     from tinfoil import SecureClient
     from tinfoil.github import fetch_latest_release
     proxy.let_tuf_use_socks()
+    guard_sdk_requests()
 
     # The secret is passed explicitly, or the SDK would create one in ~/.tinfoil; this
     # client only verifies, it never sends a request.

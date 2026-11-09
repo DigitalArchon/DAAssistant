@@ -397,6 +397,12 @@ class PortalHotkeys:
         self.labels = labels or LABELS
         self.triggers = {}                  # action -> the desktop's description
         self.failed = {}
+        # action -> the key the desktop kept for it, which is not the one asked for
+        # (GNOME, which keeps a key it was once given): see _take.
+        self.kept = {}
+        # Whether the desktop has answered: BindShortcuts' response, or CreateSession's
+        # refusal. Both come after start() has returned.
+        self.answered = False
         self.bus = None
         self.session_handle = None
         self._subs = []
@@ -469,6 +475,7 @@ class PortalHotkeys:
             if code != 0:
                 print(f"[hotkeys] GlobalShortcuts session refused (code {code})")
                 self.failed = {action: "refused by the desktop" for action in self.wanted}
+                self.answered = True
                 self.on_change()
                 return
             self.session_handle = results.get("session_handle")
@@ -506,6 +513,7 @@ class PortalHotkeys:
             if code != 0:
                 self.failed = {action: "not confirmed in the desktop's dialog"
                                for action in self.wanted}
+            self.answered = True
             self._take(results.get("shortcuts") or [])
 
         self._on_response(token, bound)
@@ -518,7 +526,15 @@ class PortalHotkeys:
             GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, None, None)
 
     def _take(self, listed):
-        """Note what the desktop says each shortcut is bound to."""
+        """Note what the desktop says each shortcut is bound to.
+
+        And, on GNOME, whether that is the key asked for. GNOME keeps the key it was
+        first given and is not asked again (see shift_lost), so a key changed in
+        Settings > Shortcuts does not reach it: the old one goes on working, and is the
+        one shown, but nothing said the change had not taken. GNOME names its keys in
+        GTK's syntax, which can be compared with the one asked for; KDE's own names
+        cannot, and there a key other than the one asked for is the user's choice in
+        KDE's dialog anyway."""
         from . import session
         gnome = session.desktop() == "gnome"
         for name, props in listed:
@@ -526,6 +542,7 @@ class PortalHotkeys:
                 said = (props or {}).get("trigger_description")
                 trigger = readable_trigger(said)
                 self.triggers[name] = trigger
+                self.kept.pop(name, None)
                 if not trigger:
                     self.failed[name] = "not assigned by the desktop"
                 elif gnome and shift_lost(self.wanted[name], said):
@@ -534,6 +551,9 @@ class PortalHotkeys:
                                          f"DA Assistant")
                 else:
                     self.failed.pop(name, None)
+                    held = [shortcuts.canonical(key) for key in described_keys(said)]
+                    if gnome and held and self.wanted[name] not in held:
+                        self.kept[name] = trigger
         self.on_change()
 
     def _on_changed(self, _c, _s, _p, _i, _sig, params):
@@ -599,6 +619,11 @@ def _log(what):
 class HotkeyManager:
     """Binds config.hotkeys by the mechanism choose() picks, and says how it went."""
 
+    # How often the session is looked at again, and how many times, when the portal had
+    # not answered as the shortcuts were set up - two minutes in all: see _recheck.
+    RECHECK_SECONDS = 10
+    RECHECKS = 12
+
     def __init__(self, config, dispatch, on_change=None, run=keybindings.run_host):
         self.config = config
         self.dispatch = dispatch
@@ -611,6 +636,9 @@ class HotkeyManager:
         self.problems = {}                  # action -> why it is not bound as asked
         self.error = None                   # the desktop could not be written
         self._settled = False               # see _start
+        self._on_answer = []                # see when_answered
+        self._recheck_source = None
+        self._rechecks = 0
         # capture(action, accel) -> bool, while Settings > Shortcuts waits for a key:
         # see captured().
         self.capture = None
@@ -667,8 +695,14 @@ class HotkeyManager:
         # start() runs again whenever the shortcuts change, so nothing may be left
         # over from last time.
         self.impl, self.problems, self.error = None, {}, None
+        self._on_answer = []
+        self._cancel_recheck()
         self.mode, self.detail = choose(self.config)
         self.wanted = bindings(self.config) if self.mode != "off" else {}
+        asked = (getattr(self.config, "hotkey_mode", None) or "auto").lower()
+        if self.mode != "x11" and asked != "off" and bindings(self.config) \
+                and not session.portal_answered():
+            self._recheck_later()
         desktop = session.desktop()
         if desktop == "kde":
             try:
@@ -740,16 +774,25 @@ class HotkeyManager:
         Where they go is the file, for Hyprland: once the user moves to hyprland.lua,
         hyprland.conf is not read, and with a record that did not say which file it
         was, the block was never written into the new one - while Settings said it
-        was, and the menu showed the keys."""
+        was, and the menu showed the keys.
+
+        A key that is bound there already (the writer's clashes) is not written: it
+        would fire both, and on Sway ours, last in the file, would silently replace the
+        user's own. It is a problem instead, said as an X11 grab's "taken by another
+        program" is. The record holds what was written, so a key that clashed is looked
+        at again at every start, and written once it is free."""
         found = keybindings.writer(desktop, self.run)
         named = labels(self.config)
-        record = {"mechanism": target, "bindings": self.wanted,
+        self.problems = self._clashes(found)
+        bind = {action: key for action, key in self.wanted.items()
+                if action not in self.problems}
+        record = {"mechanism": target, "bindings": bind,
                   "launcher": keybindings.launcher(), "into": found.describe(),
-                  "labels": {action: named[action] for action in self.wanted}}
+                  "labels": {action: named[action] for action in bind}}
         if (getattr(self.config, "hotkeys_installed", None) or {}) == record:
             return
         try:
-            found.apply(self.wanted, named, action_names(), self._settled)
+            found.apply(bind, named, action_names(), self._settled)
         except (OSError, ValueError) as e:
             self.error = str(e)
             return
@@ -757,11 +800,98 @@ class HotkeyManager:
         self._record(dict(record, unfinished=True) if getattr(found, "unfinished", False)
                      else record)
 
+    def _clashes(self, found):
+        """{action: what has its key already} in the desktop `found` writes into. Only
+        advice: whatever goes wrong in finding out is logged, and nothing clashes."""
+        check = getattr(found, "clashes", None)
+        if check is None or not self.wanted:
+            return {}
+        try:
+            return dict(check(self.wanted))
+        except (OSError, ValueError) as e:
+            print(f"[hotkeys] the desktop's own shortcuts could not be read: {e}")
+        except Exception:
+            _log("Reading the desktop's own shortcuts failed:")
+        return {}
+
     def _portal_changed(self):
         """From the portal's signals, which arrive on the main loop."""
         if self.impl is not None:
             self.problems = dict(self.impl.failed)
         self.on_change()
+        if self.answered() and self._on_answer:
+            waiting, self._on_answer = self._on_answer, []
+            for callback in waiting:
+                callback()
+
+    def answered(self):
+        """Whether how the shortcuts went is known. Not yet, where the portal binds them,
+        until the desktop has answered - which it does after start() has returned, and
+        after the user has answered its dialog, if it shows one."""
+        return not (self.mode == "portal" and self.impl is not None
+                    and not self.impl.answered)
+
+    def when_answered(self, callback):
+        """callback() once how the shortcuts went is known: now, or as the portal's
+        answer arrives. Only once, and not at all for shortcuts set up again before
+        then."""
+        if self.answered():
+            callback()
+        else:
+            self._on_answer.append(callback)
+
+    def report(self):
+        """What to tell the user of the shortcuts just set up, or None when every key
+        went as asked: which were not bound, and why - and where the desktop kept
+        another key than the one asked for (PortalHotkeys.kept)."""
+        if self.error:
+            return f"Shortcuts not saved: {self.error}"
+        said = []
+        problems = [f"{shortcuts.label(self.wanted[name])} ({problem})"
+                    for name, problem in self.problems.items() if name in self.wanted]
+        if problems:
+            said.append("Not bound: " + "; ".join(problems) + ".")
+        kept = getattr(self.impl, "kept", None) if self.mode == "portal" else None
+        if kept:
+            named = labels(self.config)
+            said.append("GNOME kept the key it had: " + "; ".join(
+                f"{trigger} for {named.get(name, name)}, not "
+                f"{shortcuts.label(self.wanted[name])}"
+                for name, trigger in kept.items() if name in self.wanted)
+                + ". Change it in GNOME's Settings > Apps > DA Assistant.")
+        return " ".join(said) or None
+
+    def _recheck_later(self):
+        self._rechecks = 0
+        self._recheck_source = GLib.timeout_add_seconds(self.RECHECK_SECONDS,
+                                                        self._recheck)
+
+    def _cancel_recheck(self):
+        if self._recheck_source is not None:
+            GLib.source_remove(self._recheck_source)
+            self._recheck_source = None
+
+    def _recheck(self):
+        """Set the shortcuts up again once the portal answers, if that changes how.
+
+        Started at login, the app may ask before xdg-desktop-portal answers. The answer
+        it did not get was once kept for the whole run, and the shortcuts were written
+        into GNOME's keybindings where its portal would have bound them; now the portal
+        is asked again (session.PROBE_RETRY), and this looks for its answer, every
+        RECHECK_SECONDS for a while. A timeout callback."""
+        from . import session
+        if session.portal_answered():
+            self._recheck_source = None
+            if choose(self.config)[0] != self.mode:
+                print("[hotkeys] the portal has answered: shortcuts set up again")
+                self.stop()
+                self.start()
+            return False
+        self._rechecks += 1
+        if self._rechecks >= self.RECHECKS:
+            self._recheck_source = None
+            return False
+        return True
 
     def trigger_label(self, action):
         """The key that runs `action` now, for the menu - or None."""
@@ -785,7 +915,8 @@ class HotkeyManager:
                     "in its own shortcut settings.")
         if self.mode == "desktop":
             return (f"Saved into {self.detail}, each running DA Assistant, when you "
-                    f"press Save. Nothing else there is changed"
+                    f"press Save. A key already bound there is left to what it does, and "
+                    f"marked here. Nothing else there is changed"
                     + ("; a backup is kept." if self.detail.startswith("~") else "."))
         if self.mode == "manual":
             return ("This desktop cannot be set up automatically. Bind these commands to "
@@ -793,6 +924,7 @@ class HotkeyManager:
         return f"Shortcuts are off: {self.detail}."
 
     def stop(self):
+        self._cancel_recheck()
         if self.impl is not None:
             self.impl.stop()
             self.impl = None

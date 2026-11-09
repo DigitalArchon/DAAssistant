@@ -854,8 +854,8 @@ force one if the automatic choice is wrong.
 |---|---|---|
 | X11 - Cinnamon, MATE, XFCE, KDE or GNOME on Xorg | The app grabs the keys itself while it runs | A key another program holds is marked "taken by another program" |
 | Wayland with a GlobalShortcuts portal - KDE Plasma 6, GNOME 48 and later | The desktop binds them. The keys you choose are suggestions; it may ask you to confirm them, and keeps them until you change them in its own shortcut settings | The key the desktop actually bound, beside each action and in the tray menu. **Change in system settings…** opens its dialog where the portal supports that |
-| Wayland on GNOME before 48 or Cinnamon | Written into the desktop's custom keyboard shortcuts as `DA Assistant: …`, each running `run-assistant --action=NAME` | They appear in the desktop's own keyboard settings too |
-| Hyprland, Sway | Written into `~/.config/hypr/hyprland.lua` - Hyprland's configuration from 0.55, where they are `hl.bind` calls - or, with no `hyprland.lua`, `~/.config/hypr/hyprland.conf`; or `~/.config/sway/config`; between `DA Assistant hotkeys` marker lines, and the compositor reloaded. (Hyprland does not read `hyprland.conf` at all once there is a `hyprland.lua`.) A backup of the file is kept beside it as `.da-assistant.bak`; a config that does not exist is not created. A config that is a link (GNU Stow, chezmoi, home-manager) is written through the link and stays one; one that cannot be written, such as home-manager's in the Nix store, is left as it is, and Settings says so. If the marker lines no longer pair up, nothing is written until they do; Settings names the line the block begins on | |
+| Wayland on GNOME before 48 or Cinnamon | Written into the desktop's custom keyboard shortcuts as `DA Assistant: …`, each running `run-assistant --action=NAME` | They appear in the desktop's own keyboard settings too. A key the desktop or one of your own shortcuts already has is marked with what has it |
+| Hyprland, Sway | Written into `~/.config/hypr/hyprland.lua` - Hyprland's configuration from 0.55, where they are `hl.bind` calls - or, with no `hyprland.lua`, `~/.config/hypr/hyprland.conf`; or `~/.config/sway/config`; between `DA Assistant hotkeys` marker lines, and the compositor reloaded. (Hyprland does not read `hyprland.conf` at all once there is a `hyprland.lua`.) A backup of the file is kept beside it as `.da-assistant.bak`; a config that does not exist is not created. A config that is a link (GNU Stow, chezmoi, home-manager) is written through the link and stays one; one that cannot be written, such as home-manager's in the Nix store, is left as it is, and Settings says so. If the marker lines no longer pair up, nothing is written until they do; Settings names the line the block begins on | A key your config already binds is marked with the line that binds it |
 | Anything else | Nothing is written | The commands to bind by hand, with a Copy button |
 
 Hyprland has a portal too, but it binds nothing until you write `global` binds into its
@@ -880,13 +880,26 @@ names it as written, `Shift+Ctrl+9`. Up to 3.4.0 GNOME was sent the symbol too, 
 already holds, so such a key stays until it is changed in GNOME's Settings > Apps > DA
 Assistant. The app says so when it finds one, and Settings > Shortcuts marks it.
 
+The portal answers once you have answered the desktop's dialog, if it shows one, so
+what became of the keys you saved is said then: a key you declined there, one the
+desktop did not assign, or - on GNOME, which keeps the key it was first given for an
+action - a new key that did not take, with where to change it.
+
+A key that is bound there already - one of the desktop's own shortcuts, a custom
+shortcut of yours, or a bind in your Hyprland or Sway config or a file it sources or
+includes - is not written, since it would run both, and on Sway would quietly
+replace yours. Settings > Shortcuts marks it with what has it, the tray menu shows no
+key beside its action, and saving says so; free the key or choose another, and it is
+written at the next save or start.
+
 Only the app's own entries are ever touched - those named `da-assistant-…` (on Cinnamon
 `custom-` and a number, the only names its own keyboard settings can read beside
 theirs), or the block between the markers - and the rest of your shortcuts stay as they
 are. A binding names the `.AppImage` file itself when you run the AppImage, so move the
-file and the next start rewrites them; so it does when you rename one of your own
-actions, or start using a `hyprland.lua`, which gets the block while the one in
-`hyprland.conf` is taken out. When something else takes over - you switch shortcuts
+file and the next start rewrites them; so it does when you start using a
+`hyprland.lua`, which gets the block while the one in `hyprland.conf` is taken out.
+Rename one of your own actions and they are rewritten under its new name when you
+save. When something else takes over - you switch shortcuts
 off, or log into an X11 session after a Wayland one - what was written into the desktop
 is taken back out.
 
@@ -1131,7 +1144,8 @@ shows the dimensions actually sent.
 
 **Shortcuts do nothing.** Confirm the app is running (`--probe` reports it and how
 shortcuts are bound), then open **Settings > Shortcuts**: a key another program holds,
-or one the desktop did not assign, is marked there. On KDE and GNOME's portal, the key
+one your desktop or compositor config binds already, or one the desktop did not assign,
+is marked there. On KDE and GNOME's portal, the key
 the desktop actually bound is shown beside each action, and is the one to press.
 
 **It does not follow the desktop's theme.** `--probe` prints the GTK theme name, where

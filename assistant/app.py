@@ -1164,7 +1164,7 @@ class Assistant:
                     self.notify(f"Settings not saved. {refused}", urgency="normal")
                     return
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
-                          self.config.encyclopedia_enabled)
+                          self.config.encyclopedia_enabled, action_labels(self.config))
                 was_private = bool(self.config.privacy_mode)
                 # Only what changed: a setting set is one save() may write over whatever
                 # the file says now, and a key set is one the keyring is asked to take -
@@ -1206,9 +1206,10 @@ class Assistant:
                 # Only when they changed: tearing the grabs down, asking the portal
                 # for a new session or rewriting the desktop's keybindings is not
                 # free, and most saves are about something else entirely. The
-                # encyclopedia's two keys come and go with it.
+                # encyclopedia's two keys come and go with it, and the user's own
+                # actions' names are what the desktop shows each of theirs under.
                 after = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
-                         self.config.encyclopedia_enabled)
+                         self.config.encyclopedia_enabled, action_labels(self.config))
                 if after != before:
                     self.hotkeys.stop()
                     self.hotkeys.start()
@@ -1218,16 +1219,13 @@ class Assistant:
             dialog.destroy()
 
     def _report_hotkeys(self):
-        """Say which shortcuts could not be bound as asked, if any."""
-        from . import shortcuts
-        if self.hotkeys.error:
-            self.notify(f"Shortcuts not saved: {self.hotkeys.error}", urgency="normal")
-            return
-        problems = [f"{shortcuts.label(self.hotkeys.wanted[name])} "
-                    f"({problem})" for name, problem in self.hotkeys.problems.items()
-                    if name in self.hotkeys.wanted]
-        if problems:
-            self.notify("Not bound: " + "; ".join(problems), urgency="normal")
+        """Say which shortcuts could not be bound as asked, if any - where the portal
+        binds them, once the desktop has answered, which is after start() returns."""
+        def say():
+            message = self.hotkeys.report()
+            if message:
+                self.notify(message, urgency="normal")
+        self.hotkeys.when_answered(say)
 
     def show_diagnostics(self):
         from . import session, theming

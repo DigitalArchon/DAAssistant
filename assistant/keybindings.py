@@ -17,6 +17,12 @@ the user's list: ours are added to it and taken out of it, and the rest stays as
 was. The names and markers are the ones the old script used, or on Cinnamon followed
 from them, so the bindings it installed are taken over, not duplicated.
 
+Nor is a key taken from what has it already. One the desktop or the user's own config
+binds would fire both - and on Sway ours, coming last, silently replaced the user's own
+bindsym - so each writer's clashes() says which keys are bound there already, and to
+what: hotkeys.HotkeyManager writes the rest only, and says so of those, as the X11
+grabs say so of a key another program holds.
+
 KDE Plasma 6 has the portal. What the old script wrote there - a .desktop file per
 action and its kglobalshortcutsrc entry - would fire beside the portal's, so it is
 removed when found (remove_kde_legacy).
@@ -304,6 +310,76 @@ class GSettingsKeybindings:
         if any(self._ours(e) for e in self._current()):
             self.apply({}, {}, actions, settled)
 
+    # The desktop's own keybindings: its window manager's, its shell's, its media keys.
+    BUILT_IN = {
+        "gnome": ("org.gnome.desktop.wm.keybindings", "org.gnome.shell.keybindings",
+                  "org.gnome.mutter.keybindings", "org.gnome.mutter.wayland.keybindings",
+                  "org.gnome.settings-daemon.plugins.media-keys"),
+        "cinnamon": ("org.cinnamon.desktop.keybindings",
+                     "org.cinnamon.desktop.keybindings.wm",
+                     "org.cinnamon.desktop.keybindings.media-keys",
+                     "org.cinnamon.muffin.keybindings",
+                     "org.cinnamon.muffin.wayland.keybindings"),
+    }
+
+    def _listed(self, schema):
+        """[(key, value)] of `schema` - a schema, or SCHEMA:PATH - each value unpacked
+        from gsettings' GVariant text; [] when gsettings cannot list it, as for a schema
+        this version of the desktop does not have."""
+        code, out = self.run(["gsettings", "list-recursively", schema])
+        if code != 0:
+            return []
+        found = []
+        for line in out.splitlines():
+            fields = line.split(" ", 2)
+            if len(fields) != 3:
+                continue
+            try:
+                found.append((fields[1], GLib.Variant.parse(None, fields[2], None,
+                                                            None).unpack()))
+            except GLib.Error:
+                continue
+        return found
+
+    @staticmethod
+    def _keys(value):
+        """The key combinations in a keybinding's value - one string, or a list of them -
+        in the config's spelling. Anything else a value holds, a path or a name, is no
+        usable combination and reads as none."""
+        values = [value] if isinstance(value, str) else \
+            value if isinstance(value, list) else []
+        return {shortcuts.canonical(item) for item in values
+                if isinstance(item, str)} - {None}
+
+    def clashes(self, bindings):
+        """{action: what has its key already} for the keys in `bindings` ({action:
+        accel}) that the desktop binds itself, or that a custom shortcut of the user's
+        has. Only read; a gsettings that cannot be asked finds none."""
+        wanted = {accel: action for action, accel in bindings.items()}
+        found = {}
+        who = "GNOME" if self.desktop == "gnome" else "Cinnamon"
+
+        def note(keys, what):
+            for key in keys:
+                action = wanted.get(key)
+                if action and action not in found:
+                    found[action] = what
+
+        for schema in self.BUILT_IN[self.desktop]:
+            for key, value in self._listed(schema):
+                note(self._keys(value), f"already {who}'s shortcut for “{key}”")
+        try:
+            current = self._current()
+        except OSError:
+            current = []
+        for entry in current:
+            if self._ours(entry) or entry == self.DUMMY:
+                continue
+            item = dict(self._listed(self._item(entry)))
+            name = _comment(str(item.get("name") or "")) or entry
+            note(self._keys(item.get("binding")), f"already your shortcut “{name}”")
+        return found
+
 
 # ---- Hyprland and Sway -------------------------------------------------------------
 
@@ -566,6 +642,310 @@ class ConfigFileKeybindings:
         """Take the block out, and from beside a hyprland.lua the hyprland.conf one;
         nothing is written where there is none."""
         self.apply({}, {}, actions, settled)
+
+    def clashes(self, bindings):
+        """{action: where its key is bound already} for the keys in `bindings` that the
+        user's own config binds: the file outside our block, and the files it brings in
+        - Hyprland's `source`, Sway's `include`, the modules hyprland.lua requires from
+        the config directory. Only read; a file that cannot be read binds nothing."""
+        if not bindings or not os.path.exists(self.path):
+            return {}
+        own = self._outside_block(self._read())
+        if self.lua:
+            bound = _lua_binds(self.path, own)
+        elif self.desktop == "hyprland":
+            bound = _hyprland_binds(self.path, own)
+        else:
+            bound = _sway_binds(self.path, own)
+        found = {}
+        for action, accel in bindings.items():
+            mods, key = shortcuts.parts(accel)
+            where = bound.get((frozenset(mods), key.lower()))
+            if where:
+                path, number, line = where
+                line = " ".join(line.split())
+                if len(line) > 70:
+                    line = line[:69] + "…"
+                found[action] = (f"already bound on line {number} of "
+                                 f"{path.replace(os.path.expanduser('~'), '~', 1)}: {line}")
+        return found
+
+    def _outside_block(self, text):
+        """`text` with the lines of our block - or blocks - left blank, the rest keeping
+        their numbers, which is how a clash names them. Unlike strip, a block with no end
+        is not refused here: apply refuses it, and says so."""
+        out, inside = [], False
+        for line in text.split("\n"):
+            if not inside and line.lstrip().startswith(self.begin):
+                inside = True
+            if inside:
+                out.append("")
+                inside = line.strip() != self.end
+            else:
+                out.append(line)
+        return "\n".join(out)
+
+
+# ---- what the user's own Hyprland or Sway config binds -----------------------------
+#
+# Read as the compositor reads it, as far as a key goes: its variables put in, the
+# files it brings in read too, and an unbind taking a bind back out. Each reader finds
+# {(modifiers, key's name in lower case): (file, line number, line)} for every key
+# bound, at its first bind still in force; the name is compared in lower case, as both
+# compositors look a key up. A modifier the app never binds with - Caps Lock, Mod2,
+# Mod3, Mod5 - makes a combination that is none of the app's ("other").
+
+_INCLUDE_DEPTH = 8          # files brought in by files brought in, at most
+
+
+def _config_lines(path, text=None):
+    """[(number, line)] of the config at `path` - of `text`, when that has been read
+    already - or [] when it cannot be read."""
+    if text is None:
+        try:
+            with open(path, encoding="utf-8", errors="surrogateescape") as f:
+                text = f.read()
+        except OSError:
+            return []
+    return list(enumerate(text.split("\n"), 1))
+
+
+def _brought_in(pattern, folder):
+    """The files a `source`, `include` or `dofile` names: ~ and $VARIABLES read, relative
+    to `folder`, and a glob as both compositors take one, in order."""
+    pattern = os.path.expanduser(os.path.expandvars(pattern.strip().strip("\"'")))
+    if not pattern:
+        return []
+    if not os.path.isabs(pattern):
+        pattern = os.path.join(folder, pattern)
+    return sorted(path for path in glob.glob(pattern) if os.path.isfile(path))
+
+
+def _substitute(text, variables):
+    """`text` with each $variable in it put in, the longest names first, as both
+    compositors do, so that $mod2 is not read as $mod and a 2."""
+    for name in sorted(variables, key=len, reverse=True):
+        text = text.replace("$" + name, variables[name])
+    return text
+
+
+def _visit(path, depth, seen):
+    """Whether `path` is to be read: not one read already - a file sourcing itself, or
+    two each other - and not brought in too deep."""
+    real = os.path.realpath(path)
+    if real in seen or depth > _INCLUDE_DEPTH:
+        return False
+    seen.add(real)
+    return True
+
+
+# Hyprland finds its modifiers anywhere in the field (CKeybindManager::stringToModMask),
+# so that "SUPER_SHIFT", "$mainMod SHIFT" and "CTRLALT" all read.
+_HYPRLAND_MODS = (("SHIFT", "shift"), ("CTRL", "control"), ("CONTROL", "control"),
+                  ("ALT", "alt"), ("MOD1", "alt"), ("SUPER", "super"), ("WIN", "super"),
+                  ("LOGO", "super"), ("MOD4", "super"), ("META", "super"),
+                  ("CAPS", "other"), ("MOD2", "other"), ("MOD3", "other"),
+                  ("MOD5", "other"))
+
+_HYPRLAND_LINE = re.compile(r"(\$?[A-Za-z_][\w:.-]*)\s*=(.*)")
+
+
+def _hyprland_mods(field):
+    field = field.upper()
+    return frozenset(mod for name, mod in _HYPRLAND_MODS if name in field)
+
+
+def _hyprland_binds(path, text=None, bound=None, variables=None, depth=0, seen=None):
+    """What hyprland.conf at `path`, and every file it sources, binds: see above."""
+    bound = {} if bound is None else bound
+    variables = {} if variables is None else variables
+    seen = set() if seen is None else seen
+    if not _visit(path, depth, seen):
+        return bound
+    for number, raw in _config_lines(path, text):
+        # A # begins a comment, and ## is a # of its own.
+        line = raw.replace("##", "\0").split("#", 1)[0].replace("\0", "#").strip()
+        found = _HYPRLAND_LINE.fullmatch(line)
+        if not found:
+            continue
+        keyword, value = found.group(1), found.group(2).strip()
+        if keyword.startswith("$"):
+            variables[keyword[1:]] = _substitute(value, variables)
+            continue
+        if keyword == "source":
+            for other in _brought_in(_substitute(value, variables), os.path.dirname(path)):
+                _hyprland_binds(other, None, bound, variables, depth + 1, seen)
+            continue
+        if keyword != "unbind" and not re.fullmatch(r"bind[a-z]*", keyword):
+            continue
+        fields = [field.strip() for field in _substitute(value, variables).split(",")]
+        if len(fields) < 2 or (keyword != "unbind" and "m" in keyword[4:]):
+            continue                        # a mouse bind's "key" is a button
+        key = fields[1]
+        if not key or key.lower().startswith(("code:", "mouse")):
+            continue
+        combination = (_hyprland_mods(fields[0]), key.lower())
+        if keyword == "unbind":
+            bound.pop(combination, None)
+        else:
+            bound.setdefault(combination, (path, number, raw.strip()))
+    return bound
+
+
+def _lua_code(lines):
+    """[(number, line)] with Lua's comments taken out: from -- to the end of the line,
+    and --[[ ... ]] - or --[==[ ... ]==] - however many lines it takes. A -- inside a
+    string is none."""
+    out, closing = [], None
+    for number, line in lines:
+        code, i = [], 0
+        while i < len(line):
+            if closing is not None:
+                end = line.find(closing, i)
+                if end < 0:
+                    break
+                i, closing = end + len(closing), None
+                continue
+            char = line[i]
+            if char in "\"'":
+                j = i + 1
+                while j < len(line) and line[j] != char:
+                    j += 2 if line[j] == "\\" else 1
+                code.append(line[i:j + 1])
+                i = j + 1
+                continue
+            if line.startswith("--", i):
+                long = re.match(r"--\[(=*)\[", line[i:])
+                if not long:
+                    break
+                closing = "]" + long.group(1) + "]"
+                i += long.end()
+                continue
+            code.append(char)
+            i += 1
+        out.append((number, "".join(code)))
+    return out
+
+
+_LUA_STRING = r"""(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')"""
+_LUA_BIND = re.compile(r"\bhl\.(bind|unbind)\s*\(\s*" + _LUA_STRING)
+_LUA_REQUIRE = re.compile(r"\brequire\s*\(?\s*" + _LUA_STRING)
+_LUA_DOFILE = re.compile(r"\bdofile\s*\(?\s*" + _LUA_STRING)
+
+
+def _lua_binds(path, text=None, bound=None, depth=0, seen=None, folder=None):
+    """What hyprland.lua at `path` binds with a written-out key - hl.bind("SUPER + Q",
+    ...) - and the modules it requires from the config directory, which is where the
+    user's own are: require("hypr.bindings") is ~/.config/hypr/bindings.lua. A module
+    from anywhere else, and a key put together at run time, are not read."""
+    bound = {} if bound is None else bound
+    seen = set() if seen is None else seen
+    if not _visit(path, depth, seen):
+        return bound
+    folder = folder or os.path.dirname(path)            # ~/.config/hypr
+    for number, line in _lua_code(_config_lines(path, text)):
+        for found in _LUA_BIND.finditer(line):
+            keys = [part.strip() for part in
+                    (found.group(2) if found.group(2) is not None
+                     else found.group(3)).split("+")]
+            if not keys[-1]:
+                continue
+            combination = (_hyprland_mods(" ".join(keys[:-1])), keys[-1].lower())
+            if found.group(1) == "unbind":
+                bound.pop(combination, None)
+            else:
+                bound.setdefault(combination, (path, number, line.strip()))
+        for found in _LUA_REQUIRE.finditer(line):
+            module = (found.group(1) if found.group(1) is not None else found.group(2))
+            parts = module.split(".")
+            for base in (os.path.dirname(folder), folder):
+                for candidate in (os.path.join(base, *parts) + ".lua",
+                                  os.path.join(base, *parts, "init.lua")):
+                    if os.path.isfile(candidate):
+                        _lua_binds(candidate, None, bound, depth + 1, seen, folder)
+        for found in _LUA_DOFILE.finditer(line):
+            named = found.group(1) if found.group(1) is not None else found.group(2)
+            for other in _brought_in(named, folder):
+                _lua_binds(other, None, bound, depth + 1, seen, folder)
+    return bound
+
+
+# Sway's modifier names, in any case.
+_SWAY_MODS = {"shift": "shift", "control": "control", "ctrl": "control", "mod1": "alt",
+              "alt": "alt", "mod4": "super", "super": "super"}
+
+
+def _sway_combination(text):
+    names = text.split("+")
+    if not names[-1]:
+        return None
+    return (frozenset(_SWAY_MODS.get(name.lower(), "other") for name in names[:-1]),
+            names[-1].lower())
+
+
+def _joined(lines):
+    """[(number, line)], stripped, with a line that ends in a backslash joined to the
+    next, as Sway joins them, under the first one's number."""
+    held, start = None, None
+    for number, line in lines:
+        line = line.strip()
+        if held is not None:
+            line, number = f"{held} {line}", start
+        if line.endswith("\\"):
+            held, start = line[:-1].rstrip(), number
+            continue
+        held = None
+        yield number, line
+    if held is not None:
+        yield start, held
+
+
+def _sway_binds(path, text=None, bound=None, variables=None, depth=0, seen=None):
+    """What Sway's config at `path`, and every file it includes, binds in the default
+    mode: see above. A bindsym inside a `mode` block works only in that mode, and
+    clashes with nothing of the app's."""
+    bound = {} if bound is None else bound
+    variables = {} if variables is None else variables
+    seen = set() if seen is None else seen
+    if not _visit(path, depth, seen):
+        return bound
+    blocks = []                             # what each { open around the line began
+    for number, line in _joined(_config_lines(path, text)):
+        if not line or line.startswith("#"):
+            continue
+        if line == "}":
+            if blocks:
+                blocks.pop()
+            continue
+        command, _, rest = line.partition(" ")
+        if command == "set" and not blocks:
+            name, _, value = rest.strip().partition(" ")
+            if name.startswith("$"):
+                variables[name[1:]] = _substitute(value.strip(), variables)
+            continue
+        if line.endswith("{"):
+            blocks.append(command)
+            continue
+        if blocks in (["bindsym"], ["unbindsym"]):
+            command, rest = blocks[0], line           # bindsym { Mod4+a exec x }
+        elif blocks:
+            continue
+        rest = _substitute(rest, variables)
+        if command == "include":
+            for other in _brought_in(rest, os.path.dirname(path)):
+                _sway_binds(other, None, bound, variables, depth + 1, seen)
+            continue
+        if command not in ("bindsym", "unbindsym"):
+            continue
+        keys = [word for word in rest.split() if not word.startswith("--")]
+        combination = _sway_combination(keys[0]) if keys else None
+        if combination is None:
+            continue
+        if command == "unbindsym":
+            bound.pop(combination, None)
+        else:
+            bound.setdefault(combination, (path, number, line))
+    return bound
 
 
 def writer(desktop, run=run_host):

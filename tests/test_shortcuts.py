@@ -62,11 +62,19 @@ class FakeHost:
     def sets(self, key):
         return [c for c in self.calls if c[:2] == ["gsettings", "set"] and c[3] == key]
 
+    def writes(self):
+        """The calls that change something: not the reads, which every start makes to
+        look for keys the desktop has bound already (clashes)."""
+        return [c for c in self.calls
+                if c[:2] not in (["gsettings", "get"], ["gsettings", "list-recursively"])]
 
-def session_of(desktop="cinnamon", kind="wayland", portal=False, x11=True):
-    """Patches deciding the session for one test."""
+
+def session_of(desktop="cinnamon", kind="wayland", portal=False, x11=True, answered=True):
+    """Patches deciding the session for one test. `answered`: whether the portal has
+    answered a probe yet - whether it is there or not is `portal`."""
     return [mock.patch.object(session, "desktop", return_value=desktop),
             mock.patch.object(session, "session_type", return_value=kind),
+            mock.patch.object(session, "portal_answered", return_value=answered),
             mock.patch.object(hotkeys.PortalHotkeys, "available",
                               staticmethod(lambda: portal)),
             mock.patch.object(hotkeys.X11Hotkeys, "available",
@@ -1262,9 +1270,9 @@ class Manager(TempDir):
                              f"['custom0', '{cinnamon_name('ocr_only')}', '__dummy__']")
             self.assertEqual(self.config().hotkeys_installed["mechanism"],
                              "desktop:cinnamon")
-            writes = len(host.calls)
+            writes = len(host.writes())
             manager.start()
-            self.assertEqual(len(host.calls), writes)       # same as recorded: no write
+            self.assertEqual(len(host.writes()), writes)    # same as recorded: no write
 
     def test_an_action_renamed_is_written_again_under_its_new_name(self):
         config = self.config()
@@ -1328,9 +1336,9 @@ class Manager(TempDir):
             self.assertEqual(host.listing(), ["custom0", new, "__dummy__"])
             self.assertNotIn("unfinished", self.config().hotkeys_installed)
             self.assertEqual(set(host.ours()), {new})
-            calls = len(host.calls)
+            calls = len(host.writes())
             self.manager(config, host).start()
-            self.assertEqual(len(host.calls), calls)             # done: nothing more
+            self.assertEqual(len(host.writes()), calls)          # done: nothing more
 
     def test_switched_off_with_entries_from_before_they_go_over_two_starts(self):
         config = self.config()
@@ -2041,6 +2049,444 @@ class HyprlandLuaConfig(TempDir):
                     keybindings.LUA_END, ""]))
                 keybindings.ConfigFileKeybindings("hyprland", FakeHost()).remove(NAMES)
                 self.assertEqual(self.read(path), self.OMARCHY)
+
+
+# ---- a key the desktop has already ---------------------------------------------------
+
+GNOME_ITEM = "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
+GNOME_BASE = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings"
+
+
+class FakeDesktopKeys(FakeHost):
+    """gsettings with the desktop's own keybindings in it: `schemas` maps a schema, or
+    SCHEMA:PATH, to the "key value" lines `gsettings list-recursively` prints for it.
+    Any other schema is one this version of the desktop does not have."""
+
+    def __init__(self, listed="@as []", schemas=None):
+        super().__init__(listed)
+        self.schemas = dict(schemas or {})
+
+    def __call__(self, args):
+        if args[:2] == ["gsettings", "list-recursively"]:
+            self.calls.append(list(args))
+            if args[2] not in self.schemas:
+                return 1, f"No such schema “{args[2]}”\n"
+            schema = args[2].split(":", 1)[0]
+            return 0, "".join(f"{schema} {line}\n" for line in self.schemas[args[2]])
+        return super().__call__(args)
+
+
+class TheDesktopsOwnKeys(TempDir):
+    """A key written into GNOME's or Cinnamon's custom shortcuts that the desktop, or a
+    shortcut of the user's own, had already fired both - with nothing said, the menu
+    showing it as working. Such a key is left to what has it, and said to be."""
+
+    WM = "org.gnome.desktop.wm.keybindings"
+
+    def test_a_key_gnome_binds_itself_is_not_taken_and_is_said(self):
+        host = FakeDesktopKeys(schemas={
+            self.WM: ["switch-applications ['<Super>Tab', '<Primary><Shift>5']",
+                      "close @as []"],
+            "org.gnome.shell.keybindings": ["toggle-overview ['<Super>s']"]})
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5",
+                          "query_text": "<Control><Shift>3"}
+        with Patched(session_of(desktop="gnome")):
+            manager = hotkeys.HotkeyManager(config, lambda action: None, run=host)
+            manager.start()
+            self.assertEqual(manager.mode, "desktop")
+            self.assertEqual(manager.problems,
+                             {"ocr_only": "already GNOME's shortcut for "
+                                          "“switch-applications”"})
+            self.assertIsNone(manager.trigger_label("ocr_only"))
+            self.assertEqual(manager.trigger_label("query_text"), "Ctrl+Shift+3")
+            self.assertIn("da-assistant-query_text", host.listed)
+            self.assertNotIn("da-assistant-ocr_only", host.listed)
+            self.assertEqual(manager.report(),
+                             "Not bound: Ctrl+Shift+5 (already GNOME's shortcut for "
+                             "“switch-applications”).")
+            self.assertEqual(self.config().hotkeys_installed["bindings"],
+                             {"query_text": "<Control><Shift>3"})
+            # Freed in GNOME's settings: the next start writes it.
+            host.schemas[self.WM] = ["switch-applications ['<Super>Tab']"]
+            manager.start()
+        self.assertEqual(manager.problems, {})
+        self.assertIn("da-assistant-ocr_only", host.listed)
+        self.assertEqual(manager.trigger_label("ocr_only"), "Ctrl+Shift+5")
+
+    def test_a_custom_shortcut_of_the_users_is_named_and_ours_are_not_clashes(self):
+        theirs = f"{CINNAMON_ITEM}:{CINNAMON_BASE}/custom0/"
+        ours = f"{CINNAMON_ITEM}:{CINNAMON_BASE}/{cinnamon_name('query_text')}/"
+        host = FakeDesktopKeys(
+            f"['custom0', '{cinnamon_name('query_text')}', '__dummy__']",
+            schemas={theirs: ["binding ['<Control><Shift>5']", "command 'xterm'",
+                              "name 'Terminal'"],
+                     ours: ["binding ['<Control><Shift>3']", "name 'DA Assistant: x'"],
+                     "org.cinnamon.desktop.keybindings.media-keys":
+                         ["area-screenshot ['<Shift>Print']",
+                          "calculator ['XF86Calculator']"]})
+        writer = keybindings.GSettingsKeybindings("cinnamon", host)
+        self.assertEqual(writer.clashes({"ocr_only": "<Control><Shift>5",
+                                         "query_text": "<Control><Shift>3"}),
+                         {"ocr_only": "already your shortcut “Terminal”"})
+        self.assertNotIn(ours, [c[2] for c in host.calls if c[1] == "list-recursively"])
+
+    def test_gnomes_custom_shortcuts_are_read_by_their_paths(self):
+        path = f"{GNOME_BASE}/custom0/"
+        host = FakeDesktopKeys(f"['{path}']", schemas={
+            f"{GNOME_ITEM}:{path}": ["binding '<Super>F9'", "name 'Notes'"]})
+        writer = keybindings.GSettingsKeybindings("gnome", host)
+        self.assertEqual(writer.clashes({"ask_anything": "<Super>F9"}),
+                         {"ask_anything": "already your shortcut “Notes”"})
+
+    def test_what_cannot_be_read_stops_nothing_being_written(self):
+        class Unreadable(FakeHost):
+            def __call__(self, args):
+                if args[1] == "list-recursively":
+                    raise RuntimeError("gsettings crashed")
+                return super().__call__(args)
+
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        host = Unreadable()
+        with Patched(session_of(desktop="gnome")), \
+                mock.patch("assistant.errors.record") as record:
+            manager = hotkeys.HotkeyManager(config, lambda action: None, run=host)
+            manager.start()
+        self.assertIsNone(manager.error)
+        self.assertEqual(manager.problems, {})
+        self.assertIn("da-assistant-ocr_only", host.listed)
+        self.assertIn("RuntimeError", record.call_args[0][0])
+
+
+class TheUsersOwnConfig(TempDir):
+    """Hyprland and Sway: a key the user's config binds already. Hyprland fired both,
+    and Sway's bindsym of ours, coming last, silently replaced the user's own."""
+
+    def put(self, relative, text):
+        path = os.path.join(self.dir, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def test_hyprland_conf_its_variables_sources_and_unbinds(self):
+        path = self.put("hypr/hyprland.conf", "\n".join([
+            "$mainMod = SUPER",
+            "source = binds/*.conf",
+            "bind = $mainMod SHIFT, F5, exec, foot  # a terminal",
+            "bind = CTRL SHIFT, 3, exec, kitty",
+            "bindm = CTRL SHIFT, mouse:272, movewindow",
+            "unbind = CTRL SHIFT, 3",
+            "# bind = CTRL SHIFT, 4, exec, commented out",
+            keybindings.BEGIN + " ---",
+            "bind = CTRL SHIFT, 6, exec, /x --action=look_up_word  # Look up word",
+            keybindings.END,
+            "bind = SUPER ALT, F7, exec, after-the-block", ""]))
+        extra = self.put("hypr/binds/extra.conf",
+                         "bindd = CTRL_ALT, Q, Close it, killactive\n")
+        writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost(), path)
+        found = writer.clashes({"ocr_only": "<Shift><Super>F5",
+                                "query_text": "<Control><Shift>3",
+                                "query_image": "<Control><Shift>4",
+                                "look_up_word": "<Control><Shift>6",
+                                "translate_text": "<Control><Alt>q",
+                                "ask_anything": "<Alt><Super>F7"})
+        self.assertEqual(set(found), {"ocr_only", "translate_text", "ask_anything"})
+        self.assertIn("line 3 of ", found["ocr_only"])
+        self.assertIn("line 11 of ", found["ask_anything"])  # numbered as in the file
+        self.assertIn("bind = $mainMod SHIFT, F5, exec, foot", found["ocr_only"])
+        self.assertIn(f"line 1 of {extra}", found["translate_text"])
+
+    def test_sway_in_its_default_mode_and_what_it_includes(self):
+        self.put("sway/config.d/50-apps", "bindsym --to-code Ctrl+Shift+4 exec bar\n")
+        self.put("sway/config", "\n".join([
+            "set $mod Mod4",
+            "bindsym $mod+Shift+5 exec foo",
+            'mode "resize" {',
+            "    bindsym Ctrl+Shift+3 resize shrink width 10px",
+            "}",
+            "bindsym {",
+            "    Ctrl+Alt+q kill",
+            "}",
+            "unbindsym Ctrl+Alt+q",
+            "bindsym Ctrl+Shift+F6 \\",
+            "    exec baz",
+            "include config.d/*", ""]))
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Shift><Super>5", "query_text": "<Control><Shift>3",
+                          "query_image": "<Control><Shift>4",
+                          "translate_text": "<Control><Alt>q",
+                          "look_up_word": "<Control><Shift>F6"}
+        with Patched(session_of(desktop="sway")), \
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            manager = hotkeys.HotkeyManager(config, lambda action: None, run=FakeHost())
+            manager.start()
+        self.assertEqual(set(manager.problems), {"ocr_only", "query_image", "look_up_word"})
+        self.assertIn("line 2 of", manager.problems["ocr_only"])
+        self.assertIn("line 10 of", manager.problems["look_up_word"])
+        self.assertIn("50-apps: bindsym --to-code Ctrl+Shift+4",
+                      manager.problems["query_image"])
+        with open(os.path.join(self.dir, "sway", "config")) as f:
+            text = f.read()
+        block = text[text.index(keybindings.BEGIN):]
+        self.assertIn("--action=query_text", block)        # only in a mode of its own
+        self.assertIn("--action=translate_text", block)    # unbound before
+        for action in ("ocr_only", "query_image", "look_up_word"):
+            self.assertNotIn(f"--action={action}", block)
+        self.assertNotIn("Shift+Mod4+5", text)              # theirs stays the only one
+        self.assertIsNone(manager.trigger_label("ocr_only"))
+        self.assertEqual(manager.trigger_label("query_text"), "Ctrl+Shift+3")
+
+    def test_hyprland_lua_and_the_modules_it_requires(self):
+        path = self.put("hypr/hyprland.lua", HyprlandLuaConfig.OMARCHY)
+        bindings = self.put("hypr/bindings.lua", "\n".join([
+            'hl.bind("CTRL + SHIFT + 5", hl.dsp.exec_cmd("kitty"))',
+            '-- hl.bind("CTRL + SHIFT + 4", hl.dsp.exec_cmd("commented"))',
+            "--[[",
+            'hl.bind("CTRL + SHIFT + 3", hl.dsp.exec_cmd("commented too"))',
+            "]]",
+            "local s = \"-- in a string\" "
+            "hl.bind('SUPER + F9', hl.dsp.exec_cmd('x'))", ""]))
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+            writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost())
+            self.assertEqual(writer.path, path)
+            found = writer.clashes({"ocr_only": "<Control><Shift>5",
+                                    "query_image": "<Control><Shift>4",
+                                    "query_text": "<Control><Shift>3",
+                                    "ask_anything": "<Super>F9"})
+        self.assertEqual(set(found), {"ocr_only", "ask_anything"})
+        self.assertIn(f"line 1 of {bindings}", found["ocr_only"])
+        self.assertIn("line 6 of", found["ask_anything"])
+
+    def test_a_config_that_sources_itself_is_read_once(self):
+        path = self.put("hypr/hyprland.conf",
+                        "source = hyprland.conf\nbind = CTRL SHIFT, 5, exec, kitty\n")
+        writer = keybindings.ConfigFileKeybindings("hyprland", FakeHost(), path)
+        self.assertEqual(list(writer.clashes({"ocr_only": "<Control><Shift>5"})),
+                         ["ocr_only"])
+
+
+# ---- the portal's answer -------------------------------------------------------------
+
+class FakeBus:
+    """Enough of a D-Bus connection for PortalHotkeys._bind: the Response handler it
+    subscribes is kept, for the test to answer as the desktop would."""
+
+    def __init__(self):
+        self.handlers = []
+
+    def get_unique_name(self):
+        return ":1.42"
+
+    def signal_subscribe(self, *args):
+        self.handlers.append(args[-1])
+        return len(self.handlers)
+
+    def signal_unsubscribe(self, _sub):
+        pass
+
+    def call(self, *args):
+        pass
+
+    def answer(self, code, shortcuts=()):
+        results = {"shortcuts": GLib.Variant("a(sa{sv})", [
+            (name, {"trigger_description": GLib.Variant("s", said)})
+            for name, said in shortcuts])}
+        self.handlers.pop()(None, None, None, None, "Response",
+                            GLib.Variant("(ua{sv})", (code, results)))
+
+
+class ThePortalsAnswerIsSaid(TempDir):
+    """The portal answers BindShortcuts after start() has returned, and after its
+    dialog, if it shows one: Settings' report of the keys was made before, with nothing
+    to say, and the answer only refreshed the menu. A key declined in KDE's dialog, or
+    one GNOME kept the old key for, was never said."""
+
+    def app(self, keys, desktop="gnome"):
+        # Not "kde": start() would look for the old script's launchers in the user's
+        # real applications folder.
+        from assistant.app import Assistant
+        config = self.config()
+        config.hotkeys = keys
+        config.hotkey_mode = "portal"
+        app = Assistant.__new__(Assistant)
+        app.config = config
+        app.notices = []
+        app.notify = lambda message, urgency="low": app.notices.append(message)
+        app.hotkeys = hotkeys.HotkeyManager(config, lambda action: None, run=FakeHost())
+        with Patched(session_of(desktop=desktop, portal=True)), \
+                mock.patch.object(hotkeys.PortalHotkeys, "start", return_value=True):
+            app.hotkeys.start()
+        app.hotkeys.impl.bus = self.bus = FakeBus()
+        app.hotkeys.impl.session_handle = "/org/freedesktop/portal/desktop/session/1_42/t"
+        self.patches = Patched(session_of(desktop=desktop, portal=True))
+        self.patches.__enter__()
+        self.addCleanup(self.patches.__exit__)
+        app.hotkeys.impl._bind()
+        return app
+
+    def test_a_key_declined_in_the_desktops_dialog_is_said_once_answered(self):
+        app = self.app({"ocr_only": "<Control><Shift>5"})
+        app._report_hotkeys()                           # as Save does, at once
+        self.assertEqual(app.notices, [])
+        self.bus.answer(1)                              # the user said no
+        self.assertEqual(app.notices, ["Not bound: Ctrl+Shift+5 (not confirmed in the "
+                                       "desktop's dialog)."])
+        app.hotkeys.impl._take([])                      # ShortcutsChanged, later
+        self.assertEqual(len(app.notices), 1)
+
+    def test_gnome_keeping_the_key_it_had_is_said(self):
+        app = self.app({"ocr_only": "F5", "query_text": "<Control><Shift>3"})
+        app._report_hotkeys()
+        self.bus.answer(0, [("ocr_only", "Press <Shift><Control>5"),
+                            ("query_text", "Press <Shift><Control>3")])
+        self.assertEqual(app.notices, [
+            "GNOME kept the key it had: Ctrl+Shift+5 for OCR only, not F5. Change it in "
+            "GNOME's Settings > Apps > DA Assistant."])
+        # It still works, and the menu says which key it is.
+        self.assertEqual(app.hotkeys.trigger_label("ocr_only"), "Ctrl+Shift+5")
+
+    def test_a_key_the_desktop_assigned_none_is_said(self):
+        app = self.app({"ocr_only": "<Control><Shift>5"})
+        app._report_hotkeys()
+        self.bus.answer(0, [("ocr_only", "")])
+        self.assertEqual(app.notices, ["Not bound: Ctrl+Shift+5 (not assigned by the "
+                                       "desktop)."])
+
+    def test_all_bound_as_asked_says_nothing(self):
+        app = self.app({"ocr_only": "<Control><Shift>5"})
+        app._report_hotkeys()
+        self.bus.answer(0, [("ocr_only", "Press <Shift><Control>5")])
+        self.assertEqual(app.notices, [])
+
+
+class APortalStillStarting(TempDir):
+    """Started at login, the app can ask before xdg-desktop-portal answers. The answer
+    it did not get was kept for the whole run, and the shortcuts were written into
+    GNOME's keybindings where its portal would have bound them. The portal is asked
+    again now (test_capture_cli.APortalStillStarting), and once it answers, the
+    shortcuts are set up again where that changes how."""
+
+    def test_the_shortcuts_are_set_up_again_once_it_answers(self):
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        host = FakeHost()
+        manager = hotkeys.HotkeyManager(config, lambda action: None, run=host)
+        self.addCleanup(manager.stop)
+        with Patched(session_of(desktop="gnome", portal=False, answered=False)):
+            manager.start()
+        self.assertEqual(manager.mode, "desktop")
+        self.assertIn("da-assistant-ocr_only", host.listed)
+        self.assertIsNotNone(manager._recheck_source)
+        with Patched(session_of(desktop="gnome", portal=True)), \
+                mock.patch.object(hotkeys.PortalHotkeys, "start", return_value=True):
+            self.assertFalse(manager._recheck())
+        self.assertEqual(manager.mode, "portal")
+        self.assertNotIn("da-assistant-ocr_only", host.listed)  # GNOME's copy taken out
+        self.assertIsNone(manager._recheck_source)
+
+    def test_a_portal_that_never_answers_is_given_up_on(self):
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        manager = hotkeys.HotkeyManager(config, lambda action: None, run=FakeHost())
+        self.addCleanup(manager.stop)
+        with Patched(session_of(desktop="gnome", answered=False)), \
+                mock.patch.object(hotkeys.HotkeyManager, "RECHECKS", 2):
+            manager.start()
+            self.assertTrue(manager._recheck())
+            self.assertFalse(manager._recheck())
+        self.assertEqual(manager.mode, "desktop")
+
+    def test_nothing_is_looked_at_again_where_the_portal_does_not_matter(self):
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        with Patched(session_of(desktop="cinnamon", kind="x11", answered=False)), \
+                mock.patch.object(hotkeys.X11Hotkeys, "start", return_value=[]):
+            manager = hotkeys.HotkeyManager(config, lambda action: None, run=FakeHost())
+            manager.start()
+        self.assertEqual(manager.mode, "x11")
+        self.assertIsNone(manager._recheck_source)
+
+
+class RenamedActionsReachTheDesktop(TempDir):
+    """The desktop shows each of the user's own actions under its name - GNOME's and
+    Cinnamon's entries, Hyprland's comment, the portal's description - and a rename
+    did not set the shortcuts up again, so the old name stayed there until a restart."""
+
+    def save(self, values):
+        from assistant import app as app_module
+        config = self.config()
+        config.custom_actions = [{"slot": 1, "name": "Summarise", "prompt": "Sum up {text}",
+                                  "source": "clipboard"}]
+        config.hotkeys = {"custom_1": "<Control><Shift>7"}
+        app = app_module.Assistant.__new__(app_module.Assistant)
+        app.config, app.client, app.encyclopedia = config, None, None
+        app.hotkeys, app._settings_dialog = mock.Mock(), None
+        app.notify = lambda message, urgency="low": None
+        for name in ("_warm_catalogue", "_refresh_reviews", "_sync_privacy_item",
+                     "_make_open_windows_private", "_release_privacy_holds",
+                     "_sync_encyclopedia_items", "_sync_custom_items",
+                     "_refresh_menu_keys"):
+            setattr(app, name, lambda: None)
+        dialog = mock.Mock()
+        dialog.run.return_value = Gtk.ResponseType.OK
+        dialog.values.return_value = values
+        with mock.patch.object(app_module, "SettingsDialog", return_value=dialog):
+            app.show_settings()
+        return app.hotkeys
+
+    def test_a_rename_sets_them_up_again(self):
+        manager = self.save({"custom_actions": [{"slot": 1, "name": "Summarize",
+                                                 "prompt": "Sum up {text}",
+                                                 "source": "clipboard"}]})
+        manager.stop.assert_called_once()
+        manager.start.assert_called_once()
+
+    def test_a_save_about_something_else_does_not(self):
+        manager = self.save({"default_language": "French"})
+        manager.start.assert_not_called()
+
+
+class SuggestedKeysTakeTheirKeys(TempDir):
+    def test_a_users_action_lets_go_of_a_suggested_key_and_says_so(self):
+        # It held Ctrl+Shift+3; Use suggested keys gave Query clipboard text the same,
+        # and on Save the user's action had none, with nothing said.
+        from assistant.ui.shortcuts import ShortcutsPage
+        config = self.config()
+        config.custom_actions = [{"slot": 1, "name": "Summarise", "prompt": "Sum up {text}",
+                                  "source": "clipboard"}]
+        config.hotkeys = {"custom_1": "<Control><Shift>3"}
+        with mock.patch.object(hotkeys, "choose", return_value=("desktop", "")):
+            page = ShortcutsPage(config)
+        window = Gtk.Window()
+        window.add(page)
+        self.addCleanup(window.destroy)
+        page.use_suggested()
+        chosen = page.values()["hotkeys"]
+        self.assertEqual(chosen["query_text"], "<Control><Shift>3")
+        self.assertNotIn("custom_1", chosen)
+        self.assertEqual(len(set(chosen.values())), len(chosen))
+        self.assertEqual(page.buttons["custom_1"].get_label(), "Disabled")
+        self.assertIn("Ctrl+Shift+3 went to Query clipboard text",
+                      page.notes["custom_1"].get_text())
+        self.assertEqual(page.notes["query_text"].get_text(), "")
+
+    def test_a_problem_keeps_the_case_of_what_it_names(self):
+        from assistant.ui.shortcuts import ShortcutsPage
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        manager = mock.Mock(mode="desktop", error=None, impl=None,
+                            problems={"ocr_only": "already your shortcut “Terminal”"},
+                            wanted={"ocr_only": "<Control><Shift>5"})
+        manager.describe.return_value = ""
+        page = ShortcutsPage(config, manager)
+        window = Gtk.Window()
+        window.add(page)
+        self.addCleanup(window.destroy)
+        self.assertEqual(page.notes["ocr_only"].get_text(),
+                         "Already your shortcut “Terminal”")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

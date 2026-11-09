@@ -284,22 +284,29 @@ class ShortcutsPage(Gtk.Box):
         for name, note in self.notes.items():
             problem = self.manager.problems.get(name)
             if problem and self.staged.get(name) == self.manager.wanted.get(name):
-                note.set_text(problem.capitalize())
+                # Its first letter only: str.capitalize() lowers all the rest, and a
+                # problem names keys, files and shortcuts - "Gnome holds it as ctrl+!".
+                note.set_text(problem[:1].upper() + problem[1:])
             elif self.manager.mode == "portal" and name in self.manager.wanted and \
                     self.manager.impl is not None and self.manager.impl.triggers.get(name):
                 note.set_text(f"Your desktop: {self.manager.impl.triggers[name]}")
 
     def _changed(self, name, accel):
         """A key captured for `name`. One key, one action: another holding it lets go."""
-        for other, key in self.staged.items():
-            if accel and other != name and key == accel:
-                self._set(other, "")
-                self.notes[other].set_text(
-                    f"{shortcuts.label(accel)} went to "
-                    f"{hotkeys.labels(self.config).get(name, name)}")
+        self._take_from_others(name, accel)
         self.staged[name] = accel
         self.notes[name].set_text("")
         self._sync_commands()
+
+    def _take_from_others(self, name, accel):
+        """Whichever other action holds `accel` lets go of it, and says where it went."""
+        for other, key in self.staged.items():
+            if accel and other != name and key == accel:
+                self._set(other, "")
+                if other in self.notes:     # a slot with no action of its own has none
+                    self.notes[other].set_text(
+                        f"{shortcuts.label(accel)} went to "
+                        f"{hotkeys.labels(self.config).get(name, name)}")
 
     def _set(self, name, accel):
         self.staged[name] = accel
@@ -309,8 +316,13 @@ class ShortcutsPage(Gtk.Box):
         self._sync_commands()
 
     def use_suggested(self):
+        """Each of the app's actions its suggested key - taken, as a key pressed for it
+        would be, from whichever of the user's own actions held it. Set alone, as they
+        were, both held it, and on Save bindings() gave it to the first: the user's
+        action was left with none, and nothing said so."""
         for name, _label, key in hotkeys.ACTIONS:
             if key:
+                self._take_from_others(name, key)
                 self._set(name, key)
 
     def clear_all(self):

@@ -16,14 +16,26 @@ The DVD ships most tables inside zip archives (ARTICLE_DATA.zip holds
 ARTICLE_DATA/articledb/EB/...), and the installed product unpacks some of them; either
 is read here. A deflated zip member cannot be read from the middle, so a table in a zip
 is read in one pass in order of offset, which is how the importer wants it anyway.
+
+What the tables say of themselves is not taken on trust: a row's length, and what a page
+unpacks to, are bounded (MAX_VALUE, MAX_PAGE), so that a damaged or made-up DVD is
+refused rather than read into memory. Nothing else of how it is read changes.
 """
 
-import gzip
 import os
 import struct
 import zipfile
+import zlib
 
 ROW = struct.Struct(">iBqi")
+# The most one large object is read as, and what one may unpack to: an article's page
+# is a few tens of kilobytes gzipped and a megabyte or two unpacked, a picture a few
+# megabytes. A row's length is a signed number, and -1 read the whole of the gigabytes
+# after it; gzip says nothing of how much a page unpacks to until it has.
+MAX_VALUE = 64 << 20
+MAX_PAGE = 64 << 20
+# The most a .data file is read as: 17 bytes a row, a few hundred thousand rows.
+MAX_DATA = 64 << 20
 
 
 class AxionError(Exception):
@@ -42,11 +54,28 @@ def parse_rows(data):
     return rows
 
 
-def unpack(value):
-    """A large object as text when it is gzip-compressed HTML, else as it is."""
-    if value[:2] == b"\x1f\x8b":
-        return gzip.decompress(value).decode("utf-8", "replace")
-    return value
+def unpack(value, most=MAX_PAGE):
+    """A large object as text when it is gzip-compressed HTML, else as it is - and
+    AxionError for one that unpacks to more than `most`, or will not unpack. Several
+    gzip members one after another are one page, as gzip.decompress reads them."""
+    if value[:2] != b"\x1f\x8b":
+        return value
+    pages, size, rest = [], 0, value
+    while rest:
+        inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        try:
+            page = inflater.decompress(rest, most - size + 1)
+        except zlib.error as e:
+            raise AxionError(f"a page will not unpack: {e}") from e
+        size += len(page)
+        if size > most:
+            raise AxionError(f"a page unpacks to more than {most >> 20} MB, more than "
+                             f"any article")
+        if not inflater.eof:
+            raise AxionError("a page is cut short")
+        pages.append(page)
+        rest = inflater.unused_data.lstrip(b"\x00")
+    return b"".join(pages).decode("utf-8", "replace")
 
 
 class _Member:
@@ -99,7 +128,11 @@ class Table:
 
     def rows(self):
         with self._open(f"{self.name}.data") as f:
-            return parse_rows(f.read())
+            data = f.read(MAX_DATA + 1)
+        if len(data) > MAX_DATA:
+            raise AxionError(f"{self.name}: its .data file goes on past "
+                             f"{MAX_DATA >> 20} MB, further than any of the DVD's")
+        return parse_rows(data)
 
     def values(self, rows=None):
         """(key, bytes) of every row, read in one pass in order of offset."""
@@ -107,6 +140,9 @@ class Table:
         with self._open("lobs/CACHE_VALUE") as f:
             position = 0
             for key, offset, length in rows:
+                if not 0 <= length <= MAX_VALUE:
+                    raise AxionError(f"{self.name}: key {key} has a length of "
+                                     f"{length:,} bytes")
                 if offset < position:
                     raise AxionError(f"{self.name}: rows overlap at key {key}")
                 skip = offset - position

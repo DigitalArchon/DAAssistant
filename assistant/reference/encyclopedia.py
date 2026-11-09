@@ -34,6 +34,8 @@ import unicodedata
 from collections import Counter
 
 from .axion import AxionError, Table, unpack  # noqa: F401  (AxionError: for callers)
+from .axion import MAX_VALUE
+from .files import open_file
 
 DATA_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or
                         os.path.expanduser("~/.local/share"), "da-assistant")
@@ -1363,7 +1365,10 @@ class Encyclopedia:
         return (rows[0][0] or "") if rows else ""
 
     def image(self, ident):
-        """(bytes, MIME type) of picture `ident`, read from the DVD folder."""
+        """(bytes, MIME type) of picture `ident`, read from the DVD folder - or None
+        where its row does not lie within the file, or is longer than any picture is
+        (MAX_VALUE). Each picture is asked for by the article's page, on the main
+        loop: a row of length -1 read every gigabyte after it there."""
         rows = self._query("SELECT offset, length FROM images WHERE id = ?", (int(ident),))
         if not rows:
             return None
@@ -1371,10 +1376,14 @@ class Encyclopedia:
         path = os.path.join(self.dvd(), "IMAGE_DATA", "imagedb", "IMAGE", "lobs",
                             "CACHE_VALUE")
         try:
-            with open(path, "rb") as f:
+            with open_file(path) as f:
+                size = os.fstat(f.fileno()).st_size
+                if not (0 <= offset <= size and 0 <= length <= min(MAX_VALUE,
+                                                                     size - offset)):
+                    return None
                 f.seek(offset)
                 data = f.read(length)
-        except OSError:
+        except (OSError, ValueError):       # ValueError: not a file (files.NotAFile)
             return None
         return data, _sniff(data)
 

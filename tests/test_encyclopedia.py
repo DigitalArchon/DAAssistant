@@ -196,6 +196,47 @@ class Tables(unittest.TestCase):
         finally:
             shutil.rmtree(root)
 
+    def test_a_row_longer_than_any_is_refused_not_read(self):
+        # A length is a signed number in the row, and read(-1) reads to the end: the
+        # gigabytes of a CACHE_VALUE after it.
+        root = tempfile.mkdtemp()
+        try:
+            for name, data in write_table(root, "G", "db/T", {3: "three"}).items():
+                os.makedirs(os.path.dirname(os.path.join(root, name)), exist_ok=True)
+                with open(os.path.join(root, name), "wb") as f:
+                    f.write(data)
+            for length in (-1, axion.MAX_VALUE + 1):
+                with open(os.path.join(root, "G", "db", "T", "T.data"), "wb") as f:
+                    f.write(struct.pack(">iBqi", 3, 1, 0, length))
+                with self.assertRaisesRegex(axion.AxionError, "key 3 has a length of"):
+                    list(axion.Table(root, "G", "db/T").values())
+        finally:
+            shutil.rmtree(root)
+
+    def test_a_page_is_unpacked_only_so_far(self):
+        import tracemalloc
+        page = "<p>" + "zorblax " * 2000 + "</p>"
+        packed = gzip.compress(page.encode())
+        self.assertEqual(axion.unpack(packed), page)
+        # Several members are one page, as gzip reads them.
+        self.assertEqual(axion.unpack(packed + b"\x00\x00" + gzip.compress(b"more")),
+                         page + "more")
+        self.assertEqual(axion.unpack(b"not gzip"), b"not gzip")
+        for broken in (packed[:-20], packed + b"garbage", packed[:12] + b"\xff" * 40):
+            with self.assertRaises(axion.AxionError):
+                axion.unpack(broken)
+        # One that unpacks to more is refused as soon as it would be: not unpacked
+        # whole first, as gzip.decompress unpacked it.
+        bomb = gzip.compress(b"\x00" * (16 << 20))
+        tracemalloc.start()
+        try:
+            with self.assertRaisesRegex(axion.AxionError, "more than 1 MB"):
+                axion.unpack(bomb, most=1 << 20)
+            _now, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 4 << 20)
+
 
 class Articles(unittest.TestCase):
     def test_sections_split_at_headings_and_leave_out_pictures_and_furniture(self):
@@ -274,6 +315,31 @@ class Import(DvdCase):
         self.assertTrue(encyclopedia.media_path("12.flv").endswith(
             os.path.join("MEDIA2_DATA", "multimedia", "12.flv")))
         self.assertIsNone(encyclopedia.media_path("../12.flv"))
+
+    def test_a_pictures_row_is_read_only_within_its_file(self):
+        import sqlite3
+        from assistant.reference import encyclopedia as module
+        encyclopedia = self.imported()
+        lobs = os.path.join(self.dvd, "IMAGE_DATA", "imagedb", "IMAGE", "lobs",
+                            "CACHE_VALUE")
+        size = os.path.getsize(lobs)
+
+        def row(offset, length):
+            encyclopedia.close()
+            db = sqlite3.connect(encyclopedia.path)
+            db.execute("UPDATE images SET offset = ?, length = ? WHERE id = 77",
+                       (offset, length))
+            db.commit()
+            db.close()
+
+        for offset, length in ((0, -1), (0, size + 1), (size, 1), (-5, 3),
+                               (1 << 40, 10)):
+            row(offset, length)
+            self.assertIsNone(encyclopedia.image(77), (offset, length))
+        row(0, len(GIF))
+        self.assertEqual(encyclopedia.image(77), (GIF, "image/gif"))
+        with mock.patch.object(module, "MAX_VALUE", len(GIF) - 1):
+            self.assertIsNone(encyclopedia.image(77))
 
     def test_a_failed_import_leaves_the_last_one_in_use(self):
         encyclopedia = self.imported()

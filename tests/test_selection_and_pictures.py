@@ -329,5 +329,68 @@ class PastingAPictureIntoAChat(unittest.TestCase):
         self.assertEqual(window._attachments, [])
 
 
+class APictureIsReadOnce(unittest.TestCase):
+    """On Wayland get_text tells a picture from no text only by reading it - wl-paste's
+    PNG, up to 64 MB, and its decoding - and the picture operations then asked for it
+    again at once: all of it done twice."""
+
+    def setUp(self):
+        import io
+        buf = io.BytesIO()
+        Image.new("RGB", (6, 4), (0, 128, 255)).save(buf, "PNG")
+        self.png = buf.getvalue()
+        self.reads = []
+        board = mock.Mock()
+        board.wait_for_text.return_value = None
+        board.wait_is_image_available.return_value = False
+        board.wait_is_uris_available.return_value = False
+        for patch in (mock.patch.object(clipboard.Gtk.Clipboard, "get", return_value=board),
+                      mock.patch.object(clipboard.session, "session_type",
+                                        return_value="wayland"),
+                      mock.patch.object(clipboard.shutil, "which",
+                                        lambda name: "/usr/bin/" + name
+                                        if name == "wl-paste" else None),
+                      mock.patch.object(clipboard, "_run", side_effect=self.run_tool),
+                      mock.patch.object(clipboard, "_focused", return_value=False),
+                      mock.patch.object(clipboard.Gdk, "selection_owner_get",
+                                        return_value=None)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.addCleanup(setattr, clipboard, "_fresh", None)
+
+    def run_tool(self, argv, timeout=3, binary=False):
+        if not binary:
+            return ran("", returncode=1)            # no text on offer
+        self.reads.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout=self.png, stderr=b"")
+
+    def test_the_picture_get_text_found_is_the_one_get_image_gives(self):
+        self.assertEqual(clipboard.get_text(), (None, "image"))
+        image = clipboard.get_image()
+        self.assertEqual(image.size, (6, 4))
+        self.assertEqual(len(self.reads), 1)
+        # Kept for that one call only: the next reads the clipboard as it is now.
+        clipboard.get_image()
+        self.assertEqual(len(self.reads), 2)
+
+    def test_not_for_a_get_image_that_comes_later(self):
+        clipboard.get_text()
+        with mock.patch.object(clipboard.time, "monotonic",
+                               return_value=clipboard.time.monotonic()
+                               + clipboard.FRESH_FOR + 1):
+            clipboard.get_image()
+        self.assertEqual(len(self.reads), 2)
+
+    def test_let_go_of_once_the_main_loop_turns(self):
+        clipboard.get_text()
+        self.assertIsNotNone(clipboard._fresh)
+        context = GLib.MainContext.default()
+        while context.iteration(False):
+            pass
+        self.assertIsNone(clipboard._fresh)
+        clipboard.get_image()
+        self.assertEqual(len(self.reads), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

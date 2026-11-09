@@ -34,6 +34,7 @@ says why.
 import shutil
 import subprocess
 import threading
+import time
 
 from . import gtkcompat  # noqa: F401  (pins GI versions)
 from . import APP_NAME, hostenv, session
@@ -213,10 +214,33 @@ def _limited(what, read, nothing):
         return nothing
 
 
+# The picture get_text read, and decoded, to find that the clipboard holds one - kept
+# for the get_image that follows it at once, as (image, time.monotonic()), or None. See
+# get_image.
+_fresh = None
+FRESH_FOR = 2.0             # seconds
+_reading_text = False       # get_text is running: what get_image reads is kept
+
+
+def _forget(kept):
+    """An idle callback: let go of the picture `kept`, if it is still the one kept - by
+    now get_image has had it, or will not ask."""
+    global _fresh
+    if _fresh is kept:
+        _fresh = None
+    return False
+
+
 def get_text():
     """Return (text, kind) where kind is text/image/file/empty - "empty" too for a
     clipboard holding more than a read takes in, as unreadable_hint then says."""
-    return _limited("the clipboard", _get_text, (None, "empty"))
+    global _fresh, _reading_text
+    _fresh = None
+    _reading_text = True
+    try:
+        return _limited("the clipboard", _get_text, (None, "empty"))
+    finally:
+        _reading_text = False
 
 
 def _get_text():
@@ -331,8 +355,23 @@ def _klipper_answers():
 def get_image():
     """PIL image from the clipboard, or None. On Wayland wl-paste first, and GTK only
     while one of the app's windows has focus, as for text. None too for a picture of
-    more than IMAGE_LIMIT bytes, as unreadable_hint then says."""
-    return _limited("the clipboard", _get_image, None)
+    more than IMAGE_LIMIT bytes, as unreadable_hint then says.
+
+    Read once where get_text has just read it. On Wayland get_text can tell a picture
+    from no text only by reading it - wl-paste's PNG, up to 64 MB, and its decoding -
+    and the picture operations then asked for it again at once, and it was all done
+    twice. So what get_text read is kept, for the call that comes straight after it:
+    let go of at the main loop's next idle moment, and good for FRESH_FOR seconds at
+    most, so that a picture copied since is never taken for it."""
+    global _fresh
+    kept, _fresh = _fresh, None
+    if kept is not None and time.monotonic() - kept[1] < FRESH_FOR:
+        return kept[0]
+    image = _limited("the clipboard", _get_image, None)
+    if _reading_text and image is not None:
+        _fresh = (image, time.monotonic())
+        GLib.idle_add(_forget, _fresh)
+    return image
 
 
 def _get_image():

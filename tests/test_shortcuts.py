@@ -57,6 +57,8 @@ class FakeHost:
         if args[:2] == ["gsettings", "set"] and args[3] in ("custom-list",
                                                            "custom-keybindings"):
             self.listed = args[4]
+        if args[:2] == ["gsettings", "reset"] and args[3] == "custom-keybindings":
+            self.listed = "@as []"                  # GNOME's default
         return 0, ""
 
     def sets(self, key):
@@ -630,6 +632,23 @@ class GSettingsWriter(unittest.TestCase):
         host = FakeHost("@as []")
         keybindings.GSettingsKeybindings("cinnamon", host).remove(NAMES)
         self.assertEqual([c for c in host.calls if c[1] != "get"], [])
+
+    def test_gnome_s_list_is_reset_when_nothing_is_left_in_it(self):
+        # Measured on GNOME 50: the list was unset before anything was bound, and an
+        # explicit empty list written over it after - the same value, but not dconf as
+        # the user had it.
+        host = FakeHost()
+        writer = keybindings.GSettingsKeybindings("gnome", host)
+        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        writer.remove(NAMES)
+        self.assertIn(["gsettings", "reset", "org.gnome.settings-daemon.plugins.media-keys",
+                       "custom-keybindings"], host.calls)
+        self.assertEqual(host.listed, "@as []")
+        host = FakeHost("['/org/gnome/theirs/']")       # theirs stays, as it was
+        writer = keybindings.GSettingsKeybindings("gnome", host)
+        writer.apply({"ocr_only": "F5"}, LABELS, NAMES)
+        writer.remove(NAMES)
+        self.assertEqual(host.listed, "['/org/gnome/theirs/']")
 
     def test_quotes_in_the_users_list_survive(self):
         host = FakeHost("['it\\'s mine']")
@@ -2198,6 +2217,48 @@ class TheUsersOwnConfig(TempDir):
         self.assertIn("line 11 of ", found["ask_anything"])  # numbered as in the file
         self.assertIn("bind = $mainMod SHIFT, F5, exec, foot", found["ocr_only"])
         self.assertIn(f"line 1 of {extra}", found["translate_text"])
+
+    def test_a_sway_bindcode_on_the_key_is_a_clash_too(self):
+        """Measured on Sway 1.11: a bindcode on the physical key took it first, and the
+        app's bindsym on the same key never ran - while Settings showed it working."""
+        path = self.put("sway/config", "\n".join([
+            "bindcode Ctrl+Shift+14 exec theirs",          # 14: the 5 key
+            "bindcode --release Mod4+24 exec q-on-release",  # 24: the q key
+            "bindcode Ctrl+Shift+13 exec gone",             # 13: the 4 key, unbound
+            "unbindcode Ctrl+Shift+13", ""]))
+        writer = keybindings.ConfigFileKeybindings("sway", FakeHost(), path)
+        with mock.patch.object(keybindings, "_keycode_name",
+                               lambda code: keybindings._US_KEYCODES.get(int(code))):
+            found = writer.clashes({"ocr_only": "<Control><Shift>5",
+                                    "query_image": "<Super>q",
+                                    "query_text": "<Control><Shift>4"})
+        self.assertEqual(set(found), {"ocr_only", "query_image"})
+        self.assertIn("line 1 of", found["ocr_only"])
+
+    def test_a_keycode_is_named_as_the_keyboard_has_it(self):
+        self.assertEqual(keybindings._US_KEYCODES[14], "5")
+        self.assertEqual(keybindings._US_KEYCODES[10], "1")
+        self.assertEqual(keybindings._US_KEYCODES[19], "0")
+        self.assertEqual(keybindings._US_KEYCODES[38], "a")
+        self.assertIsNone(keybindings._keycode_name("not-a-number"))
+        self.assertIn(keybindings._keycode_name(14), ("5", "percent", None, "5"))
+
+    def test_line_ends_are_kept_as_they_were(self):
+        """Read with universal newlines, a lone \\r ended a line: "# a\\rb" came back as a
+        comment and a live line "b", and a CRLF config was written back LF."""
+        path = self.put("sway/config", "")
+        with open(path, "w", newline="") as f:
+            f.write("# a comment\rb-not-a-line\r\nbindsym Mod4+t exec foot\r\n")
+        writer = keybindings.ConfigFileKeybindings("sway", FakeHost(), path)
+        writer.apply({"ocr_only": "<Control><Shift>5"}, {"ocr_only": "OCR"}, ["ocr_only"])
+        with open(path, newline="") as f:
+            written = f.read()
+        self.assertTrue(written.startswith(
+            "# a comment\rb-not-a-line\r\nbindsym Mod4+t exec foot\r\n"))
+        writer.remove(["ocr_only"])
+        with open(path, newline="") as f:
+            self.assertEqual(f.read(),
+                             "# a comment\rb-not-a-line\r\nbindsym Mod4+t exec foot\r\n")
 
     def test_sway_in_its_default_mode_and_what_it_includes(self):
         self.put("sway/config.d/50-apps", "bindsym --to-code Ctrl+Shift+4 exec bar\n")

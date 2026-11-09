@@ -304,7 +304,12 @@ class GSettingsKeybindings:
             else:
                 wanted.append(self.DUMMY)
         if wanted != current:
-            self._set(self.list_schema, self.list_key, self._gvariant(wanted))
+            if not wanted and self.desktop == "gnome":
+                # Left as GNOME had it before anything was bound: the key reset to its
+                # default, the empty list, rather than an empty list written over it.
+                self.run(["gsettings", "reset", self.list_schema, self.list_key])
+            else:
+                self._set(self.list_schema, self.list_key, self._gvariant(wanted))
 
     def remove(self, actions, settled=False):
         """Take ours out, leaving the user's own. Nothing is written if none is there."""
@@ -554,7 +559,11 @@ class ConfigFileKeybindings:
         comment written in Latin-1 years ago - and such bytes are carried through to the
         file written back unchanged (surrogateescape). Read strictly, one raised
         UnicodeDecodeError, which nothing expected, and the app stopped at every start."""
-        with open(self.path, encoding="utf-8", errors="surrogateescape") as f:
+        # newline="": no line end translated. Read with Python's universal newlines, a
+        # "\r" on its own ended a line - "# a\rb" came back as a comment and a live
+        # "b", for the compositor to run - and a CRLF file was written back LF.
+        with open(self.path, encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
             return f.read()
 
     def _write(self, text):
@@ -577,7 +586,8 @@ class ConfigFileKeybindings:
         tmp = real + ".da-assistant.tmp"
         try:
             try:
-                with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
+                with open(tmp, "w", encoding="utf-8", errors="surrogateescape",
+                          newline="") as f:
                     f.write(text)
                 os.chmod(tmp, os.stat(real).st_mode & 0o7777)
             except OSError as e:
@@ -933,12 +943,54 @@ _SWAY_MODS = {"shift": "shift", "control": "control", "ctrl": "control", "mod1":
               "alt": "alt", "mod4": "super", "super": "super"}
 
 
-def _sway_combination(text):
+def _sway_combination(text, code=False):
+    """(modifiers, key's name in lower case) for a bindsym's keys - or, with `code`, a
+    bindcode's, whose key is a keycode: see _keycode_name. None for none."""
     names = text.split("+")
     if not names[-1]:
         return None
+    key = _keycode_name(names[-1]) if code else names[-1]
+    if key is None:
+        return None
     return (frozenset(_SWAY_MODS.get(name.lower(), "other") for name in names[:-1]),
-            names[-1].lower())
+            key.lower())
+
+
+# The US layout's keys by XKB keycode (evdev's plus 8, as Sway's bindcode and `wev`
+# number them): what a keycode is taken for where GDK cannot say.
+_US_KEYCODES = {
+    **{10 + i: str((i + 1) % 10) for i in range(10)},
+    **{24 + i: c for i, c in enumerate("qwertyuiop")},
+    **{38 + i: c for i, c in enumerate("asdfghjkl")},
+    **{52 + i: c for i, c in enumerate("zxcvbnm")},
+    **{67 + i: f"F{i + 1}" for i in range(10)}, 95: "F11", 96: "F12",
+    9: "Escape", 22: "BackSpace", 23: "Tab", 36: "Return", 65: "space", 107: "Print",
+    110: "Home", 111: "Up", 112: "Page_Up", 113: "Left", 114: "Right", 115: "End",
+    116: "Down", 117: "Page_Down", 118: "Insert", 119: "Delete"}
+
+
+def _keycode_name(code):
+    """The name of the key at XKB keycode `code` - "5" for 14 - in the keyboard layout
+    in force, as GDK has it, or the US layout's where GDK has no display; None for a
+    keycode that is no number or names no key. A bindcode on a key the app binds by
+    its name took the key first and the app's never ran, while Settings showed the
+    key as working."""
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return None
+    try:
+        from . import gtkcompat  # noqa: F401  (pins GI versions)
+        from gi.repository import Gdk
+        display = Gdk.Display.get_default()
+        if display is not None:
+            found, _keys, keyvals = Gdk.Keymap.get_for_display(
+                display).get_entries_for_keycode(code)
+            if found and keyvals and keyvals[0]:
+                return Gdk.keyval_name(keyvals[0])
+    except Exception:           # no GTK here, or a keymap that cannot say: the table
+        pass
+    return _US_KEYCODES.get(code)
 
 
 def _joined(lines):
@@ -984,7 +1036,7 @@ def _sway_binds(path, text=None, bound=None, variables=None, depth=0, seen=None)
         if line.endswith("{"):
             blocks.append(command)
             continue
-        if blocks in (["bindsym"], ["unbindsym"]):
+        if blocks in (["bindsym"], ["unbindsym"], ["bindcode"], ["unbindcode"]):
             command, rest = blocks[0], line           # bindsym { Mod4+a exec x }
         elif blocks:
             continue
@@ -993,13 +1045,14 @@ def _sway_binds(path, text=None, bound=None, variables=None, depth=0, seen=None)
             for other in _brought_in(rest, os.path.dirname(path)):
                 _sway_binds(other, None, bound, variables, depth + 1, seen)
             continue
-        if command not in ("bindsym", "unbindsym"):
+        if command not in ("bindsym", "unbindsym", "bindcode", "unbindcode"):
             continue
         keys = [word for word in rest.split() if not word.startswith("--")]
-        combination = _sway_combination(keys[0]) if keys else None
+        combination = (_sway_combination(keys[0], code=command.endswith("code"))
+                       if keys else None)
         if combination is None:
             continue
-        if command == "unbindsym":
+        if command.startswith("unbind"):
             bound.pop(combination, None)
         else:
             bound.setdefault(combination, (path, number, line))

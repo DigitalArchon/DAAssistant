@@ -371,6 +371,14 @@ class TheDialog(unittest.TestCase):
         self.ask().response(Gtk.ResponseType.ACCEPT)
         self.assertEqual(self.ran, [True])
 
+    def test_it_goes_unanswered_with_its_window(self):
+        dialog = self.ask()
+        gone = []
+        dialog.connect("destroy", lambda _d: gone.append(True))
+        self.window.destroy()
+        self.assertEqual(gone, [True])
+        self.assertEqual(self.ran, [])
+
 
 @unittest.skipUnless(WebKit2 is not None, "needs WebKitGTK")
 class TheMarkInTheRenderedPage(unittest.TestCase):

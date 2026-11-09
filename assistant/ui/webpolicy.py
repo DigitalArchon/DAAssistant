@@ -64,7 +64,9 @@ def confirm_insecure(parent, uri, then):
     WebKit's handlers, which are not to be held up. Returns the dialog, which a test
     can answer."""
     window = parent if isinstance(parent, Gtk.Window) else None
-    dialog = Gtk.MessageDialog(transient_for=window, modal=True,
+    # Closed with the window it was asked from, unanswered: nothing opens, and nothing
+    # is said to a window that has gone.
+    dialog = Gtk.MessageDialog(transient_for=window, modal=True, destroy_with_parent=True,
                                message_type=Gtk.MessageType.WARNING, text=INSECURE_TITLE)
     dialog.format_secondary_text(INSECURE_TEXT)
     # The address in full, between the question and why: what the link really opens,

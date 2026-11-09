@@ -64,12 +64,14 @@ class X11Backend(ScreenshotBackend):
         return image
 
     def select_region(self, on_done, on_error):
+        """The overlay the region is chosen in, for the chain to bring forward while it
+        is open - or None, on_error told why there is none."""
         try:
             image = self.capture_fullscreen()
             geometry = total_geometry()
         except CaptureError as e:
             on_error(str(e))
-            return
+            return None
         # The grab is in device pixels and the geometry in logical ones; on HiDPI the
         # overlay draws the one at the other's size (_SelectionMixin._scale).
-        FrozenOverlay(image, geometry, on_done, on_error)
+        return FrozenOverlay(image, geometry, on_done, on_error)

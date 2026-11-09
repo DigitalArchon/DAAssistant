@@ -6,8 +6,8 @@ no client-side coordinate guessing. Confirmed present at version 2 on Mint/Cinna
 it is also what KDE and GNOME provide.
 
 Version matters: `interactive` was added in Screenshot v2. On v1 we can only get a
-fullscreen grab, which we then hand to our own crop dialog. The same goes for KDE at any
-version - see supports_region_selection.
+fullscreen grab, which we then hand to our own crop dialog. The same goes for KDE and for
+xdg-desktop-portal-wlr at any version - see supports_region_selection.
 """
 
 import os
@@ -39,8 +39,14 @@ class PortalBackend(ScreenshotBackend):
         return self._bus
 
     def version(self):
+        """The portal's Screenshot version; 1 while it has not answered, which is not
+        kept: a portal still starting when the app did - at login - would otherwise
+        have been taken for one without the region picker for the whole run."""
         if self._version is None:
-            self._version = session.portal_version("Screenshot") or 1
+            found = session.portal_version("Screenshot")
+            if not found:
+                return 1
+            self._version = found
         return self._version
 
     def is_available(self):
@@ -58,8 +64,30 @@ class PortalBackend(ScreenshotBackend):
         user had selected it. Spectacle's own --region picker is the one a KDE user
         expects, so here this rung stands aside for the CLI backend; the portal is
         still used below it for the fullscreen-then-crop fallback.
+
+        Nor where xdg-desktop-portal-wlr takes the screenshots - Sway's portal, and that
+        of the other wlroots compositors that use it. It reads `interactive` and does
+        nothing with it: no picker opens, and it answers with the whole of one output,
+        which, again, would be handed back as the region the user chose. grim+slurp
+        is what picks a region there, and is the rung below; without them the
+        fullscreen-then-crop rung still lets the user choose one, which this rung
+        never does - so it stands aside whether they are installed or not.
+
+        Hyprland keeps this rung, as before: its own portal, xdg-desktop-portal-hyprland,
+        does honour `interactive`, by running slurp itself - the same picker as the
+        grim+slurp rung. Sway is told apart by name, and any other compositor by
+        whether the wlr portal is running (session.portal_backend_running), which also
+        catches a Hyprland left with the wlr portal instead of its own. GNOME's, KDE's
+        and Cinnamon's portals are known not to be it, and are not asked.
         """
-        return self.supports_interactive() and session.desktop() != "kde"
+        if not self.supports_interactive():
+            return False
+        desktop = session.desktop()
+        if desktop in ("kde", "sway"):
+            return False
+        if desktop in ("gnome", "cinnamon"):
+            return True
+        return not session.portal_backend_running("wlr")
 
     def _next_handle(self):
         """Predict the Request object path so we can subscribe before calling.
@@ -98,10 +126,16 @@ class PortalBackend(ScreenshotBackend):
             if not uri:
                 on_error("Screenshot portal returned no image")
                 return
+            # Only the loading is the capture's to fail. What on_done does with the
+            # picture - the review dialog - is not: inside this try, a fault of the
+            # review's went down the chain as a failed capture, and the next rung's
+            # picker came up.
             try:
-                on_done(self._load_uri(uri))
+                image = self._load_uri(uri)
             except Exception as e:
                 on_error(str(e))
+                return
+            on_done(image)
 
         state["sub"] = bus.signal_subscribe(
             PORTAL_BUS, REQUEST_IFACE, "Response", handle, None,

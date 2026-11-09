@@ -140,19 +140,42 @@ def _has_flag(help_text, flag):
     return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", help_text) is not None
 
 
+# What `spectacle --help` said, by the program it was: (path, size, mtime) -> its text.
+_spectacle_help_cache = {}
+
+
+def _spectacle_help():
+    """`spectacle --help`'s text, asked once a run: it was asked at every capture, a
+    process started - and a Qt application at that - before the picker could open.
+    Kept by which file the program is, so that one updated while the app runs is asked
+    again; not kept when that cannot be told, or the program did not answer."""
+    env = hostenv.host_env()
+    program = shutil.which("spectacle", path=(env or os.environ).get("PATH"))
+    try:
+        st = os.stat(program) if program else None
+    except OSError:
+        st = None
+    key = (os.path.realpath(program), st.st_size, st.st_mtime_ns) if st else None
+    if key in _spectacle_help_cache:
+        return _spectacle_help_cache[key]
+    try:
+        result = subprocess.run(["spectacle", "--help"], capture_output=True,
+                                text=True, timeout=10, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    help_text = (result.stdout or "") + (result.stderr or "")
+    if key is not None and help_text.strip():
+        _spectacle_help_cache[key] = help_text
+    return help_text
+
+
 def _spectacle_args(path, region):
     """Build Spectacle arguments that work on both Plasma 5 and Plasma 6.
 
     Plasma 6 renamed/removed several short flags, so ask the binary what it supports
     rather than assuming. Long options are stable across both.
     """
-    help_text = ""
-    try:
-        result = subprocess.run(["spectacle", "--help"], capture_output=True,
-                                text=True, timeout=10, env=hostenv.host_env())
-        help_text = (result.stdout or "") + (result.stderr or "")
-    except (OSError, subprocess.SubprocessError):
-        pass
+    help_text = _spectacle_help()
 
     args = ["spectacle"]
     # --background is what keeps this to the picker alone: no Spectacle window opens,

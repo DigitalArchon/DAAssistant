@@ -986,7 +986,11 @@ desktop — that is the preferred path. Otherwise install your desktop's native 
 KDE Plasma is the exception to "nothing extra": its portal's *Request screenshot* dialog
 offers full screen, current screen and active window, and no rectangular region at all,
 so `spectacle` is what selects a region there. Without it, KDE falls back to grabbing the
-whole screen and cropping it in a window of ours.
+whole screen and cropping it in a window of ours. Sway is the other: its portal,
+`xdg-desktop-portal-wlr` - which other wlroots compositors use too - opens no picker at
+all and hands back a whole screen, so `grim` and `slurp` select the region there, and
+without them the whole screen is cropped in a window of ours. Hyprland's own portal
+selects a region with `slurp`.
 
 On X11 nothing extra is required at all.
 

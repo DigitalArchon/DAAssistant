@@ -519,6 +519,11 @@ class Assistant:
           answer_by_text      the answering model answers a question about the image.
                               See _image_answer.
         """
+        if image is None and self.capture.busy():
+            # A shortcut pressed again while the picker is up: the one open is brought
+            # forward, rather than a second picker opened over it.
+            self.capture.present()
+            return
         if not self._require_api_key():
             return
         uses = self._capture_uses(answer_by_text)

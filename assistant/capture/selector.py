@@ -50,6 +50,7 @@ class _SelectionMixin:
         self.pixbuf = pil_to_pixbuf(image)
         self.start = None
         self.end = None
+        self._dragging = False
         self._finished = False
 
     def _scale(self):
@@ -92,12 +93,28 @@ class _SelectionMixin:
             return False
         self.start = (event.x, event.y)
         self.end = (event.x, event.y)
+        self._dragging = True
         return True
 
     def _on_motion(self, _widget, event):
-        if self.start is not None:
+        """The corner being dragged follows the pointer - only while the button is held.
+
+        The area asks for every motion, held or not, and a selection made in the crop
+        window went on following the pointer after the button was let go: on its way to
+        "Use selection" the rectangle stretched to the area's edge, and that was what
+        was sent."""
+        if self._dragging:
             self.end = (event.x, event.y)
             self.area.queue_draw()
+        return True
+
+    def _end_drag(self, event):
+        """The button was let go: the selection ends where it was released. False if no
+        drag was under way."""
+        if event.button != 1 or not self._dragging:
+            return False
+        self._dragging = False
+        self.end = (event.x, event.y)
         return True
 
     def _draw_selection(self, cr, dim=0.45):
@@ -169,10 +186,17 @@ class FrozenOverlay(Gtk.Window, _SelectionMixin):
 
     fit = False
 
+    # How often the grab is tried again while another client holds the keyboard, and
+    # how many times in all: a second. See _grab.
+    GRAB_RETRY_MS = 50
+    GRAB_ATTEMPTS = 20
+
     def __init__(self, image, geometry, on_done, on_error):
         super().__init__(type=Gtk.WindowType.POPUP)
         self.on_done, self.on_error = on_done, on_error
         self._init_selection(image)
+        self._grab_attempts = 0
+        self._grab_retry = None             # the timeout trying the grab again
 
         self.set_app_paintable(True)
         self.set_decorated(False)
@@ -199,28 +223,52 @@ class FrozenOverlay(Gtk.Window, _SelectionMixin):
         # the drag would go to whatever was focused underneath.
         GLib.idle_add(self._grab)
 
+    @staticmethod
+    def _seat():
+        return Gdk.Display.get_default().get_default_seat()
+
     def _grab(self):
+        """Take the pointer and the keyboard - again a little later while another client
+        holds them, for up to GRAB_ATTEMPTS tries.
+
+        Started by the app's own X11 shortcut, the overlay opens while that shortcut's
+        keys are still down, and X keeps the keyboard with the key grab until they are
+        let go: a grab asked for in the meantime is refused (AlreadyGrabbed). It was
+        asked for once, and its answer never looked at, so Esc went to whatever had
+        focus underneath and the overlay could not be cancelled from the keyboard."""
+        self._grab_retry = None
         window = self.get_window()
-        if window:
-            seat = Gdk.Display.get_default().get_default_seat()
-            seat.grab(window, Gdk.SeatCapabilities.ALL, True, None, None, None, None)
+        if self._finished or window is None:
+            return False
+        if self._grab_attempts == 0:
             cursor = Gdk.Cursor.new_from_name(Gdk.Display.get_default(), "crosshair")
             if cursor:
                 window.set_cursor(cursor)
+        self._grab_attempts += 1
+        status = self._seat().grab(window, Gdk.SeatCapabilities.ALL, True, None, None,
+                                   None, None)
+        if status == Gdk.GrabStatus.SUCCESS:
+            return False
+        if self._grab_attempts < self.GRAB_ATTEMPTS:
+            self._grab_retry = GLib.timeout_add(self.GRAB_RETRY_MS, self._grab)
+        else:
+            print(f"[capture] the overlay could not take the keyboard "
+                  f"({status.value_nick}): Esc may not reach it")
         return False
 
     def _ungrab(self):
-        seat = Gdk.Display.get_default().get_default_seat()
-        seat.ungrab()
+        if self._grab_retry is not None:
+            GLib.source_remove(self._grab_retry)
+            self._grab_retry = None
+        self._seat().ungrab()
 
     def _on_draw(self, _widget, cr):
         self._draw_selection(cr, dim=0.45)
         return False
 
     def _on_release(self, _widget, event):
-        if event.button != 1 or self.start is None:
+        if not self._end_drag(event):
             return False
-        self.end = (event.x, event.y)
         self._ungrab()
         self._finish()
         return True
@@ -293,9 +341,8 @@ class CropDialog(Gtk.Window, _SelectionMixin):
         return False
 
     def _on_release(self, _widget, event):
-        if event.button != 1 or self.start is None:
+        if not self._end_drag(event):
             return False
-        self.end = (event.x, event.y)
         rect = self._to_image_rect()
         self.use_button.set_sensitive(
             bool(rect and rect[2] >= MIN_SELECTION and rect[3] >= MIN_SELECTION))

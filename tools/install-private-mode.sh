@@ -64,14 +64,17 @@ rm -rf "$DEST"
 mv "$staging" "$DEST"
 trap - EXIT
 
-# The same check the app makes (sealed.available), in a fresh interpreter.
-if "$PYTHON" -c "
-import sys; sys.path.insert(0, '$ROOT')
+# The same check the app makes (sealed.available), in a fresh interpreter. The checkout's
+# folder is handed to it as an argument, not written into its code: a folder named with a
+# ' in it broke the check, or ran what followed as Python, and with the new install
+# already in place it said FAILED of one that had worked.
+if "$PYTHON" -c '
+import sys; sys.path.insert(0, sys.argv[1])
 import assistant
 from assistant import sealed, vendored
 ok, message = sealed.available()
-print(('ok: ' if ok else 'FAILED: ') + message + ' from ' + str(vendored.location()))
-sys.exit(0 if ok else 1)"; then
+print(("ok: " if ok else "FAILED: ") + message + " from " + str(vendored.location()))
+sys.exit(0 if ok else 1)' "$ROOT"; then
   echo "Restart the assistant to use end-to-end encrypted models."
 else
   exit 1

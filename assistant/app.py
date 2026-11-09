@@ -90,8 +90,8 @@ class Assistant:
             problems.append(f"The proxy in Settings cannot be used, so nothing is sent "
                             f"until it can, or is taken out: {proxy.refusal()}")
         if self.config.keychain_error:
-            problems.append(f"{self.config.keychain_error} The API key cannot be kept "
-                            "between runs.")
+            problems.append(f"{self.config.keychain_error} API keys, and passwords in "
+                            "addresses, cannot be kept between runs.")
         if providers.unready(self.config):
             GLib.idle_add(self._first_run_hint, problems)
         else:
@@ -1182,9 +1182,11 @@ class Assistant:
                     self.notify(f"Could not save settings: {e} They are used until the "
                                 "app quits.", urgency="normal")
                 except KeychainError as e:
-                    # Everything else is saved; the key is in memory until the app quits.
-                    self.notify(f"Settings saved, but the API key could not be kept: {e} "
-                                "It is used until the app quits.", urgency="normal")
+                    # Everything else is saved; the key - or a password written into
+                    # an address - is in memory until the app quits.
+                    self.notify(f"Settings saved, but an API key or password could not "
+                                f"be kept: {e} It is used until the app quits.",
+                                urgency="normal")
                 else:
                     self.notify("Settings saved")
                 proxy.apply(self.config)

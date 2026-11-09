@@ -56,6 +56,55 @@ class TheInstallCheckTakesAnyFolder(unittest.TestCase):
         self.assertEqual(done.returncode, 0 if done.stdout.startswith("ok") else 1)
 
 
+class TheInstallTakesNothingFromThisMachinesPip(unittest.TestCase):
+    """pip ran with this machine's settings: PIP_INDEX_URL, PIP_TRUSTED_HOST or a
+    pip.conf naming another index, or plain http, applied to the install. The hashes
+    held what was installed to the lock; where it came from, and how, was the
+    machine's to say. As SealedLore's build installs (Nov 2026)."""
+
+    SCRIPT = (ROOT / "tools" / "install-private-mode.sh").read_text()
+
+    def install(self):
+        joined = re.sub(r"\\\n\s*", " ", self.SCRIPT)
+        found = [line.strip() for line in joined.splitlines()
+                 if re.search(r"-m pip install\b", line) and not line.lstrip().startswith("#")]
+        self.assertEqual(len(found), 1, found)
+        return found[0]
+
+    def test_it_runs_isolated_with_no_config_file_and_by_hash(self):
+        command = self.install()
+        self.assertTrue(command.startswith('PIP_CONFIG_FILE=/dev/null "$PYTHON" -m pip '),
+                        command)
+        for option in ("--isolated", "--require-hashes", "--only-binary :all:",
+                       "--no-deps", '-r "$LOCK"'):
+            self.assertIn(option, command)
+        for option in ("--index-url", "--extra-index-url", "--trusted-host", "--find-links"):
+            self.assertNotIn(option, command)
+
+    def test_so_pip_reads_none_of_this_machines_settings(self):
+        """What pip reads, asked of pip itself with the script's settings: nothing,
+        with an index and an insecure host in the environment and a config file named."""
+        try:
+            import pip  # noqa: F401
+        except ImportError:
+            self.skipTest("pip is not installed here")
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        config = Path(folder, "pip.conf")
+        config.write_text("[global]\nindex-url = http://index.example/simple\n")
+        environment = dict(os.environ, PIP_INDEX_URL="http://index.example/simple",
+                           PIP_TRUSTED_HOST="index.example", PIP_CONFIG_FILE=str(config),
+                           HOME=folder, XDG_CONFIG_HOME=folder)
+        seen = subprocess.run([sys.executable, "-m", "pip", "config", "list"],
+                              capture_output=True, text=True, timeout=60, env=environment)
+        self.assertIn("index.example", seen.stdout)     # as it was
+        environment["PIP_CONFIG_FILE"] = "/dev/null"
+        seen = subprocess.run([sys.executable, "-m", "pip", "--isolated", "config", "list"],
+                              capture_output=True, text=True, timeout=60, env=environment)
+        self.assertEqual(seen.returncode, 0, seen.stderr)
+        self.assertNotIn("index.example", seen.stdout)
+
+
 class TheBuildFindsTheHostsCaBundle(unittest.TestCase):
     WRAPPER = (ROOT / "packaging" / "build-appimage.sh").read_text()
     APPRUN = (ROOT / "packaging" / "appimage" / "AppRun").read_text()

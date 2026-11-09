@@ -56,7 +56,14 @@ mkdir -p "$(dirname "$DEST")"
 trap 'rm -rf "$staging"' EXIT
 
 echo "Installing $(grep -c '==' "$LOCK") pinned packages into $DEST"
-"$PYTHON" -m pip install --quiet --disable-pip-version-check --no-input \
+# Nothing of this machine's pip settings applies. --isolated leaves out the PIP_
+# variables - PIP_INDEX_URL or PIP_TRUSTED_HOST would have fetched from another index,
+# or over plain http - and the user's pip.conf; a PIP_CONFIG_FILE of /dev/null, every
+# other file pip reads settings from, which --isolated does not. The hashes refuse
+# anything but the locked wheels wherever they come from; this keeps them coming from
+# PyPI, over https.
+PIP_CONFIG_FILE=/dev/null "$PYTHON" -m pip install --quiet --isolated \
+  --disable-pip-version-check --no-input \
   --require-hashes --only-binary :all: --no-deps --no-compile \
   --target "$staging" -r "$LOCK"
 

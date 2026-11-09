@@ -149,8 +149,8 @@ def _spectacle_help():
     process started - and a Qt application at that - before the picker could open.
     Kept by which file the program is, so that one updated while the app runs is asked
     again; not kept when that cannot be told, or the program did not answer."""
-    env = hostenv.host_env()
-    program = shutil.which("spectacle", path=(env or os.environ).get("PATH"))
+    program = shutil.which("spectacle",
+                           path=(hostenv.host_env() or os.environ).get("PATH"))
     try:
         st = os.stat(program) if program else None
     except OSError:
@@ -160,7 +160,7 @@ def _spectacle_help():
         return _spectacle_help_cache[key]
     try:
         result = subprocess.run(["spectacle", "--help"], capture_output=True,
-                                text=True, timeout=10, env=env)
+                                text=True, timeout=10, env=hostenv.host_env())
     except (OSError, subprocess.SubprocessError):
         return ""
     help_text = (result.stdout or "") + (result.stderr or "")

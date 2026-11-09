@@ -1,7 +1,8 @@
 """Files attached to a chat message: pictures, and text of any kind.
 
 Pictures are decoded to pixels and re-encoded from those pixels alone, as DAToolkit does
-(safety/images.py there). Whatever the file carried, only what is visible survives: no
+(safety/images.py there), and only the readers of the formats taken ever look at the bytes:
+Pillow would otherwise try a file's header with each of the few dozen formats it knows. Whatever the file carried, only what is visible survives: no
 EXIF (GPS, camera, timestamps, the embedded thumbnail), no XMP, ICC profile, PNG text
 chunks or JPEG comments, no frames after the first, no bytes appended after the image. A
 photo is turned upright from its EXIF orientation first, so it is sent the way it looks.
@@ -100,11 +101,30 @@ def sniff_image(raw):
         raise
 
 
+def _known_as(raw):
+    """The format Pillow would take `raw` for, by its first bytes alone: each reader's own quick
+    test of them, so that no reader but IMAGE_FORMATS' parses a file. None for none."""
+    Image.init()
+    prefix = raw[:16]
+    for name in Image.ID:
+        accept = Image.OPEN[name][1]
+        try:
+            if accept and accept(prefix):
+                return name
+        except Exception:
+            continue
+    return None
+
+
 def _picture(raw):
     """sniff_image's picture, or None for one Pillow does not know at all."""
     try:
-        im = Image.open(BytesIO(raw))
+        im = Image.open(BytesIO(raw), formats=IMAGE_FORMATS)
     except UnidentifiedImageError:
+        known = _known_as(raw)
+        if known and known not in IMAGE_FORMATS:
+            raise AttachmentError(f"{known} pictures are not supported; use PNG, "
+                                  f"JPEG, WebP, GIF or BMP")
         return None
     except Exception as e:
         # A plugin's own way of saying no is not always OSError or SyntaxError: PPM's is

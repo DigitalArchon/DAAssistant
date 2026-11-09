@@ -188,6 +188,21 @@ class Pictures(unittest.TestCase):
     def test_text_is_not_a_picture(self):
         self.assertIsNone(attachments.sniff_image(b'{"a": 1}'))
 
+    def test_only_the_readers_of_the_formats_taken_look_at_a_file(self):
+        """Pillow tries a file's header with every format it knows; only PNG's, JPEG's, WebP's,
+        GIF's and BMP's readers are asked now. Another picture is still named, by its first
+        bytes alone."""
+        from PIL import TiffImagePlugin
+        buf = BytesIO()
+        Image.new("RGB", (4, 4)).save(buf, "TIFF")
+
+        def asked(_self):
+            raise AssertionError("the TIFF reader was asked")
+        with mock.patch.object(TiffImagePlugin.TiffImageFile, "_open", asked):
+            with self.assertRaisesRegex(attachments.AttachmentError, "TIFF pictures are not supported"):
+                attachments.sniff_image(buf.getvalue())
+        self.assertIsNone(attachments.sniff_image(b"PK\x03\x04 a zip, which no reader knows"))
+
 
 class TextFiles(unittest.TestCase):
     def test_decodes_utf8_with_or_without_bom_and_utf16(self):

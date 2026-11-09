@@ -15,9 +15,10 @@ both light and dark.
 
 import re
 
-from gi.repository import Gdk, GLib, Gtk, Pango
+from gi.repository import Gdk, Gtk, Pango
 
-from .. import hostenv
+from .. import linkwarning
+from . import webpolicy
 from .markdown_html import URL, url_end
 
 FENCE = re.compile(r"^\s*```(\w*)\s*$")
@@ -158,16 +159,33 @@ def _insert(buffer, text, tags):
         buffer.insert(buffer.get_end_iter(), text)
 
 
-def _insert_link(buffer, label, url, tags):
+def _insert_link(buffer, label, url, tags, view=None):
     _insert(buffer, label, tags)
     end = buffer.get_end_iter()
     start = end.copy()
     start.backward_chars(len(label))
     buffer.apply_tag_by_name("link", start, end)
     buffer.apply_tag(_link_tag(buffer, url), start, end)
+    if linkwarning.insecure(url):
+        _insert_marker(buffer, view)
 
 
-def _insert_inline(buffer, text, *tags):
+def _insert_marker(buffer, view=None):
+    """After a link that is not secure, the WebKit view's "⚠ not secure" (linkwarning):
+    a label of its own in the text, at a child anchor, rather than words - the text's
+    own are selected and copied with it, and a widget is not. Without a `view` to show
+    it in (a buffer rendered on its own), the anchor alone."""
+    anchor = buffer.create_child_anchor(buffer.get_end_iter())
+    if view is None:
+        return
+    label = Gtk.Label(label=linkwarning.WORDS)
+    label.set_tooltip_text(linkwarning.TIP)
+    label.get_style_context().add_class(linkwarning.CLASS)
+    view.add_child_at_anchor(label, anchor)
+    label.show()
+
+
+def _insert_inline(buffer, text, *tags, view=None):
     """Insert one line, turning links, `code`, **bold** and *italic* into tags.
 
     One pass over the line, so a run that has already been taken as bold cannot be
@@ -179,12 +197,12 @@ def _insert_inline(buffer, text, *tags):
         token = match.group(0)
         if match.group(1):
             label = re.sub(r"\\(.)", r"\1", match.group(2))
-            _insert_link(buffer, label, match.group(3), tags)
+            _insert_link(buffer, label, match.group(3), tags, view)
             position = match.end()
             continue
         if match.group(4):
             url = url_end(token)
-            _insert_link(buffer, url, url, tags)
+            _insert_link(buffer, url, url, tags, view)
             position = match.start() + len(url)
             continue
         if token.startswith("`"):
@@ -199,8 +217,9 @@ def _insert_inline(buffer, text, *tags):
     _insert(buffer, ESCAPED.sub(r"\1", text[position:]), tags)
 
 
-def _insert_markdown(buffer, text, panel=None):
-    """`panel` tags every line, which is how a whole turn gets one background."""
+def _insert_markdown(buffer, text, panel=None, view=None):
+    """`panel` tags every line, which is how a whole turn gets one background. `view`
+    is the text view the buffer is shown in, for the marks beside insecure links."""
     extra = (panel,) if panel else ()
     in_fence = False
     for line in (text or "").splitlines():
@@ -216,7 +235,8 @@ def _insert_markdown(buffer, text, panel=None):
         heading = HEADING.match(line)
         if heading:
             level = min(len(heading.group(1)), 3)
-            _insert_inline(buffer, heading.group(2) + "\n", f"h{level}", *extra)
+            _insert_inline(buffer, heading.group(2) + "\n", f"h{level}", *extra,
+                           view=view)
             continue
         if RULE.match(line):
             buffer.insert_with_tags_by_name(buffer.get_end_iter(), "─" * 24 + "\n",
@@ -224,20 +244,21 @@ def _insert_markdown(buffer, text, panel=None):
             continue
         quote = QUOTE.match(line)
         if quote:
-            _insert_inline(buffer, quote.group(1) + "\n", "quote", *extra)
+            _insert_inline(buffer, quote.group(1) + "\n", "quote", *extra,
+                           view=view)
             continue
         bullet = BULLET.match(line)
         if bullet:
             _insert_inline(buffer, f"{bullet.group(1)}• {bullet.group(2)}\n",
-                           "list", *extra)
+                           "list", *extra, view=view)
             continue
         numbered = NUMBERED.match(line)
         if numbered:
             _insert_inline(
                 buffer, f"{numbered.group(1)}{numbered.group(2)}. {numbered.group(3)}\n",
-                "list", *extra)
+                "list", *extra, view=view)
             continue
-        _insert_inline(buffer, line + "\n", *extra)
+        _insert_inline(buffer, line + "\n", *extra, view=view)
 
 
 def render_body(buffer, text, widget=None):
@@ -247,7 +268,8 @@ def render_body(buffer, text, widget=None):
     """
     install_tags(buffer, widget)
     buffer.set_text("")
-    _insert_markdown(buffer, text)
+    _insert_markdown(buffer, text,
+                     view=widget if isinstance(widget, Gtk.TextView) else None)
     # Markdown ends every line, including the last; the trailing blank line would
     # otherwise sit inside the bubble as an empty row.
     end = buffer.get_end_iter()
@@ -287,13 +309,13 @@ def _on_link_click(textview, event):
     handler = getattr(textview, "on_link", None)
     if handler is not None and handler(url):
         return False
-    if url.startswith(("http://", "https://", "mailto:")):
-        # With the host's environment, as every program the app starts (hostenv); a
-        # link nothing opens - mailto: with no mail program - is not an error dialog.
-        try:
-            hostenv.open_uri(url)
-        except GLib.Error as e:
-            print(f"[link] {url}: {e.message}")
+    if url.startswith(webpolicy.EXTERNAL):
+        # As the WebKit view opens one (webpolicy.open_link): with the host's
+        # environment, as every program the app starts; one that is not secure only
+        # once the user says to; and one nothing opens - mailto: with no mail program -
+        # is not an error dialog.
+        toplevel = textview.get_toplevel()
+        webpolicy.open_link(url, toplevel if toplevel.is_toplevel() else None)
     return False
 
 

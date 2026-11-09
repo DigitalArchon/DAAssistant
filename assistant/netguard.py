@@ -159,6 +159,35 @@ def problem(url):
     return None
 
 
+# What a browser takes off both ends of a link's address, and out of it anywhere: C0
+# controls and spaces, and tabs and line breaks (WHATWG URL parsing).
+_LINK_ENDS = "".join(map(chr, range(0x21)))
+_LINK_BREAKS = re.compile(r"[\t\n\r]")
+
+
+def insecure_link(url):
+    """Whether a link to `url` would be opened over plain http somewhere other than this
+    machine, its own network or an onion service: a page anyone on the way could read
+    and change. https, mailto: and every other scheme are not, whatever they are.
+
+    For links in what the app shows - an answer, a dictionary's entry, an article - which
+    the browser opens, and reads as a browser does: the scheme is found as it would find
+    it, and a host that cannot be judged as written (a backslash or a space in the
+    address, a % escape, no host at all) is taken for one elsewhere. Only an address
+    that is plainly local, by the rules every request of the app's own is held to, goes
+    without the warning."""
+    text = str(url or "").strip(_LINK_ENDS)
+    if not _LINK_BREAKS.sub("", text).lower().startswith("http:"):
+        return False
+    if UNSAFE.search(text):
+        return True
+    try:
+        host = urlparse(text).hostname
+    except ValueError:
+        return True
+    return not (is_local(host) or is_onion(host))
+
+
 def shown(url):
     """`url` as it may be shown, or copied into a bug report: without the user name and
     password an address may carry (https://alice:secret@host/v1).

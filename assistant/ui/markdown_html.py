@@ -18,6 +18,7 @@ import markdown
 from pygments.formatters import HtmlFormatter
 from pygments.token import STANDARD_TYPES
 
+from .. import linkwarning
 from ..reference.encyclopedia import byline
 
 EXTENSIONS = ["fenced_code", "tables", "codehilite", "sane_lists", "nl2br"]
@@ -48,15 +49,18 @@ def url_end(url):
 
 
 def linkify(text):
-    """Plain text -> escaped HTML, with its bare http(s) URLs made into links."""
+    """Plain text -> escaped HTML, with its bare http(s) URLs made into links - and one
+    that is not secure marked as such (linkwarning)."""
     out, position = [], 0
     for match in BARE_URL.finditer(text):
         url = url_end(match.group(0))
         if "://" not in url or url.endswith("://"):
             continue
         out.append(html.escape(text[position:match.start()], quote=False))
-        out.append(f'<a href="{html.escape(url, quote=True)}">'
-                   f'{html.escape(url, quote=False)}</a>')
+        tip = (f' title="{html.escape(linkwarning.TIP)}"'
+               if linkwarning.insecure(url) else "")
+        out.append(f'<a href="{html.escape(url, quote=True)}"{tip}>'
+                   f'{html.escape(url, quote=False)}</a>{linkwarning.after(url)}')
         position = match.start() + len(url)
     out.append(html.escape(text[position:], quote=False))
     return "".join(out)
@@ -90,6 +94,12 @@ class _Sanitiser(HTMLParser):
 
     Disallowed tags are dropped, but their text content is kept and escaped, so nothing
     silently vanishes from a response.
+
+    A link that is not secure is followed by the app's mark saying so, and its title is
+    the warning's (see linkwarning): judged by the address the browser would open, which
+    is the first href kept - an element's attributes are each kept once, as a browser
+    reads only the first of two - and closed where a browser closes it, before the next
+    link begins, so that the mark sits beside the link it is for.
     """
 
     ALLOWED = {
@@ -130,15 +140,16 @@ class _Sanitiser(HTMLParser):
         self._counts = Counter()
         self._no_links = 0
         self._suppress = 0
+        self._links_open = []           # each <a> open: whether it is insecure
         # The link schemes allowed in href: the web, unless the caller adds its own -
         # a dictionary's cross-references are lookup: links the chat window follows.
         self._links = tuple(links) if links else self.ALLOWED_ATTRS["href"]
 
-    def _attrs(self, attrs):
-        out = []
+    def _attrs(self, attrs, tag=None):
+        kept = {}
         for name, value in attrs:
             name = name.lower()
-            if name not in self.ALLOWED_ATTRS or value is None:
+            if name not in self.ALLOWED_ATTRS or value is None or name in kept:
                 continue
             if name == "class":
                 value = " ".join(c for c in value.split() if c in CODE_CLASSES)
@@ -149,8 +160,14 @@ class _Sanitiser(HTMLParser):
                 lowered = value.strip().lower()
                 if not any(lowered.startswith(prefix) for prefix in prefixes):
                     continue
-            out.append(f' {name}="{html.escape(value, quote=True)}"')
-        return "".join(out)
+            kept[name] = value
+        if tag == "a":
+            bad = linkwarning.insecure(kept.get("href"))
+            self._links_open.append(bad)
+            if bad:
+                kept = dict(linkwarning.tip_attrs(kept.items()))
+        return "".join(f' {name}="{html.escape(value, quote=True)}"'
+                       for name, value in kept.items())
 
     def handle_starttag(self, tag, attrs):
         tag = tag.lower()
@@ -162,10 +179,14 @@ class _Sanitiser(HTMLParser):
         if tag in self.VOID:
             self.parts.append(f"<{tag}{self._attrs(attrs)}>")
             return
+        if tag == "a" and self._counts["a"]:
+            # A link is never inside a link: a browser ends the one open here.
+            while self._close_last() != "a":
+                pass
         self._open.append(tag)
         self._counts[tag] += 1
         self._no_links += tag in self.NO_LINKS
-        self.parts.append(f"<{tag}{self._attrs(attrs)}>")
+        self.parts.append(f"<{tag}{self._attrs(attrs, tag)}>")
 
     def _close_last(self):
         """Close the innermost open element; its tag."""
@@ -173,6 +194,8 @@ class _Sanitiser(HTMLParser):
         self._counts[tag] -= 1
         self._no_links -= tag in self.NO_LINKS
         self.parts.append(f"</{tag}>")
+        if tag == "a" and self._links_open.pop():
+            self.parts.append(linkwarning.marker())
         return tag
 
     def handle_endtag(self, tag):
@@ -195,9 +218,14 @@ class _Sanitiser(HTMLParser):
         tag = tag.lower()
         if tag not in self.ALLOWED:
             return
-        self.parts.append(f"<{tag}{self._attrs(attrs)}>")
+        if tag == "a" and self._counts["a"]:
+            while self._close_last() != "a":
+                pass
+        self.parts.append(f"<{tag}{self._attrs(attrs, tag)}>")
         if tag not in self.VOID:
             self.parts.append(f"</{tag}>")
+        if tag == "a" and self._links_open.pop():
+            self.parts.append(linkwarning.marker())
 
     def handle_data(self, data):
         if self._suppress:
@@ -418,6 +446,7 @@ img {{ max-width: 100%; }}
 .checks {{ color: {muted}; font-size: .9em; margin: .6em 0 .2em; }}
 .check-failed {{ color: {bad}; font-size: .9em; margin: .2em 0; }}
 .suggestions a {{ margin-right: .7em; white-space: nowrap; }}
+{linkwarning.css(dark)}
 {_pygments_css(dark)}
 """
 
@@ -530,7 +559,9 @@ def lookup_html(lookup, hidden=0):
         parts.append(f'<p class="lookup-note">No entry for “{escape(word)}”; showing '
                      f'“{escape(lookup["found"])}”.</p>')
     for result in results:
-        entries = "".join(f'<div class="entry">{entry["html"]}</div>'
+        # Each link of the dictionary's that is not secure marked as one, as an
+        # answer's are (linkwarning).
+        entries = "".join(f'<div class="entry">{linkwarning.mark(entry["html"])}</div>'
                           for entry in result["entries"])
         # Beside the arrow that folds it away, which hides it from sight but not from
         # what questions are sent with: the ✕ takes it out of both, as its button in

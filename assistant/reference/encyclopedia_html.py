@@ -26,6 +26,7 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import quote
 
+from .. import linkwarning
 from .encyclopedia import body_of, byline, citation_of, with_bylines
 
 KEEP = {
@@ -116,7 +117,11 @@ class _Page(HTMLParser):
             if href:
                 kind = ' class="asset"' if href.startswith(("enc://assembly/",
                                                              "enc://film/")) else ""
-                self._open(tag, f'<a href="{html_module.escape(href)}"{kind}>', "</a>")
+                # A web address that is not secure says so, after the link (linkwarning).
+                if linkwarning.insecure(href):
+                    kind = f' title="{html_module.escape(linkwarning.TIP)}"'
+                self._open(tag, f'<a href="{html_module.escape(href)}"{kind}>',
+                           "</a>" + linkwarning.after(href))
             else:
                 self.stack.append((tag, ""))
         elif tag in KEEP or tag in RENAME:
@@ -276,6 +281,7 @@ footer {{
   clear: both; margin-top: 2.5em; padding-top: .8em; border-top: 1px solid {border};
   font: 12px system-ui, sans-serif; color: {muted};
 }}
+{linkwarning.css(dark)}
 """
 
 

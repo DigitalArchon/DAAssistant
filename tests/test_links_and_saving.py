@@ -92,7 +92,7 @@ class TheFallbackViewLinksToo(unittest.TestCase):
                                 or url.startswith("enc://"))
         click = types.SimpleNamespace(button=1, x=0, y=0, time=0)
         with mock.patch.object(markdown_text, "link_at") as link_at, \
-                mock.patch.object(markdown_text.hostenv, "open_uri") as browser:
+                mock.patch.object(markdown_text.webpolicy.hostenv, "open_uri") as browser:
             link_at.return_value = "enc://cite/1/2"
             markdown_text._on_link_click(view, click)
             browser.assert_not_called()

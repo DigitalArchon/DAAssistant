@@ -138,3 +138,18 @@ headerbar button:checked {
   border-radius: 8px;
   padding: 2px 2px 2px 8px;
 }
+
+/* After a link that is not secure, in the plain-text view: the WebKit view's "⚠ not
+   secure" (assistant/linkwarning.py), a label in the text rather than words of it, so it
+   is neither selected nor copied with the text. Amber, as a warning is, mixed with the
+   theme's text colour so that it reads on a light theme and a dark one alike. */
+label.insecure-link {
+  font-size: 0.8em;
+  font-weight: bold;
+  border-radius: 7px;
+  padding: 0 6px;
+  margin-left: 4px;
+  color: mix(@theme_fg_color, #c08a12, 0.6);
+  background-color: alpha(#c08a12, 0.14);
+  border: 1px solid alpha(#c08a12, 0.6);
+}

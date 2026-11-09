@@ -89,6 +89,20 @@ an answer, a dictionary's entries, an article, the message box - and right-click
 a Search Encyclopedia window searching for it, each a window of its own. Each is offered
 only where there is something to look in. Links in an answer open in your browser; the
 view itself never leaves the conversation.
+
+**A link that isn't secure says so.** A link to a plain `http://` address - in an answer,
+a web search's sources, a dictionary's entry or an encyclopedia article - is followed by
+a small **⚠ not secure**, and its tooltip says why: the page it opens is not encrypted, so
+anyone between you and the site can read it or change it on its way. Opening one - a
+click, Enter, or **Open Link in Browser** - first asks **Open a link that isn't secure?**,
+naming the full address; it opens only after **Open anyway**, and **Cancel** (or Escape)
+is the default. The mark is the app's, put there from the address the link really goes
+to: link text that reads `https://…` over an `http://` address is marked all the same,
+and nothing in an answer or an entry can draw a mark or hide one. It is not part of the
+text, so it is not selected, copied or found with it. Plain http to this machine and its
+own network (`localhost`, `127.x`, `10.x`, `172.16`-`31.x`, `192.168.x`, link-local and
+private IPv6 addresses, `.local` names) and to a Tor onion service (`.onion`) is not
+marked or asked about, nor is `https://` or `mailto:`.
 A conversation about a screen region shows the
 capture above it, as you took it, to view full size or save as a PNG; saved as Markdown,
 the capture is written beside the `.md` under the same name and linked from it. Until you
@@ -1200,6 +1214,7 @@ assistant/
   paths.py                 where the cache is: every file the app writes there
   providers.py             NanoGPT, OpenRouter, Ollama, another endpoint: what differs
   netguard.py              https, or nothing: which API addresses may be used, redirects too
+  linkwarning.py           the "⚠ not secure" after a plain-http link, and its words
   proxy.py                 Settings > Advanced > Proxy, for every request the app makes
   keychain.py              the desktop's keyring (Secret Service), for the API keys
   session.py               display server / desktop / portal probing
@@ -1238,7 +1253,8 @@ assistant/
   capture/                 screenshot backends and the region selector
   ui/                      tray, chat window, dialogs, model browser, Markdown
     article_view.py        the encyclopedia's article pane and the Flash window
-    webpolicy.py           what a WebKit view may follow: links out, its own page kept
+    webpolicy.py           what a WebKit view may follow: links out, asked about if not
+                           secure, its own page kept
     lookups.py             right-click a selection to look it up
     encscheme.py           enc://, which serves the DVD's pictures and animations
     encyclopedia_windows.py  Search Encyclopedia, the reader, and Ask Encyclopedia

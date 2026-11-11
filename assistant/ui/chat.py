@@ -2692,14 +2692,18 @@ class ChatWindow(Gtk.Window):
                 "model": model or self._streaming_model}
         if private:
             turn["privacy"] = self._badge(privacy_module.receipt_badge(receipt))
-            # And the question it answers, only as far as the replies made from it show
-            # it reached the attested enclave.
-            self._badge_question(privacy_module.sent_badge(self._sent_kinds,
-                                                           self._tee_checks))
         if getattr(self, "_answer_is_reading", False):
             self._keep_transcription(result)
         self._finish_answer(turn, payload)
         self._append_turn(turn, replace_placeholder=placeholder)
+        if private:
+            # And the question it answers, only as far as the replies made from it show
+            # it reached the attested enclave. Once the answer has taken the
+            # placeholder's place: marked before, its redraw took the placeholder off a
+            # page that had loaded, and the answer then took the question's place, so
+            # the question and its mark were gone from the window (lab, Nov 2026).
+            self._badge_question(privacy_module.sent_badge(self._sent_kinds,
+                                                           self._tee_checks))
         self.status.set_text(turn["privacy"]["label"] if turn.get("privacy") else "")
         self._after_answer(turn, payload)
 

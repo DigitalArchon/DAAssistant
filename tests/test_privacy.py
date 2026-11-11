@@ -2439,6 +2439,54 @@ class ChatStaysPrivate(TempConfig):
         finally:
             window.destroy()
 
+    def test_the_question_and_its_mark_stay_on_the_page_with_the_answer(self):
+        """Answered once the page has loaded, as a real request is: the question's mark,
+        set when the answer came, was redrawn before the answer took the streaming
+        placeholder's place, so the answer took the question's instead, and the window
+        showed the answer alone (seen on the lab's VMs, Nov 2026)."""
+        from gi.repository import GLib, Gtk
+        from assistant.ui import chat
+        if chat.WebKit2 is None:
+            self.skipTest("needs WebKitGTK")
+        loaded = threading.Event()
+
+        class AfterTheLoad(RecordingClient):
+            def stream(self, *args, **kwargs):
+                loaded.wait(15)
+                return super().stream(*args, **kwargs)
+
+        session = session_for(GpusTied(tied="statement"))
+        session.ensure(TEXT)
+        window = chat.ChatWindow(StubApp(self.config, AfterTheLoad()), "Query text",
+                                 [{"role": "user", "content": "p", "display": "Q"}],
+                                 autostart=True, privacy=session)
+        try:
+            self.assertTrue(self._run_until(lambda: window._loaded))
+            loaded.set()
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 2))
+            got = {}
+
+            def finish(view, result):
+                try:
+                    got["page"] = json.loads(view.evaluate_javascript_finish(result)
+                                             .to_string())
+                except Exception as e:      # the assertion below fails on it
+                    got["page"] = f"ERROR {e}"
+
+            GLib.timeout_add(300, lambda: window.webview.evaluate_javascript(
+                "JSON.stringify(Array.from(document.querySelectorAll('body > .turn'))"
+                ".map(function(t){return [t.className, t.querySelector('.role')"
+                ".textContent, t.querySelector('.bubble').textContent.trim()];}))",
+                -1, None, None, None, finish) and False)
+            self.assertTrue(self._run_until(lambda: "page" in got))
+            self.assertEqual(got["page"], [
+                ["turn user private", "You🔒 Received by the attested TEE", "Q"],
+                ["turn assistant private", "Assistantglm-5.3-flash🔒 TEE · verifiedCopy",
+                 "ok"]])
+        finally:
+            window.destroy()
+
     def test_a_question_stopped_after_it_went_is_not_said_to_be_unanswered(self):
         """Stopped or failed once it had gone to a TEE/ model, its question says what
         the replies checked by then showed - nothing, as a rule - not "Not answered";

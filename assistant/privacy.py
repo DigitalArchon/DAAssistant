@@ -1881,14 +1881,47 @@ def receipt_badge(receipt):
             receipt.detail + ": nothing shows it came from the attested enclave.")
 
 
-def sent_badge(kinds):
-    """(label, tone, tooltip) for a question, from the kinds of model it went to."""
+# What a question's own mark says it is (sent_badge), beside its label: the chat window
+# keeps one that RECEIVED whatever a later take of it shows.
+RECEIVED = "received"
+UNPROVEN = "unproven"
+
+_CLEAR = (" The text passed nano-gpt's servers in the clear; a private/ model is "
+          "end-to-end encrypted instead.")
+
+
+def sent_badge(kinds, checks=None):
+    """(label, tone, tooltip[, mark]) for a question, from the kinds of model it went to
+    and, once its replies are in, what their checks found: `checks`, the state of each
+    TEE/ reply made from it on this request's way - a transcription, a reading, the
+    answer - or None while none has been checked yet.
+
+    Received by the attested TEE only as far as those show it: every one of them
+    VERIFIED or SIGNED, a record the attested key signed naming the exchange. Otherwise
+    not shown to reach the attested enclave - nano-gpt routes each request, Chutes signs
+    no replies, and a model may be served elsewhere when its provider is busy. It read
+    "Sent to attested TEE" whatever its reply showed. Never "signed": that is the
+    reply's. From SealedLore (9af15c1, Nov 11 2026)."""
     if kinds and all(kind == E2EE for kind in kinds):
         return ("🔐 Sealed end-to-end", "ok",
                 "Encrypted on this machine to the attested enclave's key before sending.")
-    return ("🔒 Sent to attested TEE", "ok",
-            "Sent only after the enclave was attested. TEE text passes nano-gpt's "
-            "gateway in the clear.")
+    if checks is None:
+        return ("🔒 Sent to the TEE model…", "pending",
+                "Sent while its attestation held. Whether the attested enclave received "
+                "it is shown once its reply has been checked.")
+    if checks and all(state in (VERIFIED, SIGNED) for state in checks):
+        return ("🔒 Received by the attested TEE", "ok",
+                "Received by the attested TEE: sent while its model's attestation held, "
+                "and the record of every reply made from it, signed by the attested key, "
+                "names the exchange. For a model RedPill serves, that TEE is RedPill's "
+                "gateway, which passed it on to the machine that runs the model."
+                + _CLEAR, RECEIVED)
+    return ("⚠ Not shown to reach the attested enclave", "warn",
+            "Sent to the TEE model while its attestation held, but no reply's signed "
+            "record shows the attested enclave received it: nano-gpt routes each "
+            "request, and this model's provider signs no replies (Chutes) or the check "
+            "could not be made. A model may be served elsewhere when its provider is "
+            "busy." + _CLEAR, UNPROVEN)
 
 
 def receiving_badge(kind):

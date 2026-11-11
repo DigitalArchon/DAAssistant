@@ -2069,6 +2069,35 @@ class Badges(unittest.TestCase):
         self.assertIn("Sealed", privacy.sent_badge({privacy.E2EE})[0])
         self.assertIn("TEE", privacy.sent_badge({privacy.E2EE, privacy.TEE})[0])
 
+    def test_a_question_is_received_only_as_far_as_its_replies_checks_show(self):
+        """It read "Sent to attested TEE" whatever its reply showed: nano-gpt routes each
+        request, Chutes signs no replies, and a model may be served elsewhere. Now only
+        a record the attested key signed shows the attested enclave received it
+        (SealedLore 9af15c1)."""
+        tee = {privacy.TEE}
+        self.assertEqual(privacy.sent_badge(tee)[:2], ("🔒 Sent to the TEE model…",
+                                                       "pending"))
+        for checks in ([privacy.VERIFIED], [privacy.SIGNED],
+                       [privacy.VERIFIED, privacy.SIGNED]):
+            label, tone, tip, mark = privacy.sent_badge(tee, checks)
+            self.assertEqual((label, tone, mark), ("🔒 Received by the attested TEE", "ok",
+                                                   privacy.RECEIVED), checks)
+            self.assertIn("in the clear", tip)
+        for checks in ([], [privacy.UNCHECKED], [privacy.FAILED],
+                       [privacy.VERIFIED, privacy.UNCHECKED]):
+            label, tone, tip, mark = privacy.sent_badge(tee, checks)
+            self.assertEqual((label, tone, mark), ("⚠ Not shown to reach the attested "
+                                                   "enclave", "warn", privacy.UNPROVEN),
+                             checks)
+            self.assertIn("no reply's signed record shows the attested enclave received "
+                          "it", tip)
+        self.assertNotIn("igned", privacy.sent_badge(tee, [privacy.SIGNED])[0],
+                         "signed is the reply's word")
+        # A transcription by a TEE/ model, the answer sealed: still the TEE's check.
+        self.assertEqual(privacy.sent_badge({privacy.TEE, privacy.E2EE},
+                                            [privacy.UNCHECKED])[1], "warn")
+        self.assertEqual(privacy.sent_badge({privacy.E2EE}, [])[0], "🔐 Sealed end-to-end")
+
 
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
 class Receipts(unittest.TestCase):
@@ -2290,13 +2319,72 @@ class ChatStaysPrivate(TempConfig):
             self.assertTrue(self._run_until(lambda: window._cancel is None
                                             and len(window.conversation) >= 2))
             question, answer = window.conversation[:2]
-            self.assertIn("Sent to attested TEE", question["privacy"]["label"])
+            # Its reply's record, signed by the attested key, shows the enclave had it.
+            self.assertEqual(question["privacy"]["label"], "🔒 Received by the attested TEE")
             self.assertIn("TEE · verified", answer["privacy"]["label"])
             self.assertEqual(answer["privacy"]["tone"], "ok")
             self.assertEqual(window._privacy_title.get_text(), "🔒 TEE gateway attested")
             self.assertTrue(window._privacy_detail.get_text().startswith(
                 f"{TEXT} — Attested: RedPill's TEE gateway"))
             self.assertTrue(window.privacy_banner.get_style_context().has_class("ok"))
+        finally:
+            window.destroy()
+
+    def test_a_question_is_received_only_once_a_replys_record_shows_it(self):
+        """A reply with no signed record (Chutes keeps none; a model may be served
+        elsewhere) leaves the question not shown to reach the attested enclave; once a
+        take's record shows it received, a later take that shows nothing does not take
+        that back: the same text was received (SealedLore 9af15c1)."""
+        from assistant.ui.chat import ChatWindow
+        server = FakeNanoGpt(signature_status=500)      # no record kept of a reply
+        session = session_for(server)
+        session.ensure(TEXT)
+        window = ChatWindow(StubApp(self.config, RecordingClient()), "Query text",
+                            [{"role": "user", "content": "p", "display": "Q"}],
+                            autostart=True, privacy=session)
+        try:
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 2))
+            question = window.conversation[0]
+            self.assertEqual(question["privacy"]["label"],
+                             "⚠ Not shown to reach the attested enclave")
+            self.assertEqual(question["privacy"]["tone"], "warn")
+            self.assertIn("reply not verified", window.conversation[1]["privacy"]["label"])
+            server.signature_status = 200               # this take's record holds
+            window._ask_again("text")
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 3))
+            self.assertIn("TEE · verified", window.conversation[-1]["privacy"]["label"])
+            self.assertEqual(question["privacy"]["label"], "🔒 Received by the attested TEE")
+            server.signature_status = 500
+            window._ask_again("text")
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 4))
+            self.assertIn("reply not verified", window.conversation[-1]["privacy"]["label"])
+            self.assertEqual(question["privacy"]["label"], "🔒 Received by the attested TEE")
+        finally:
+            window.destroy()
+
+    def test_a_question_stopped_after_it_went_is_not_said_to_be_unanswered(self):
+        """Stopped or failed once it had gone to a TEE/ model, its question says what
+        the replies checked by then showed - nothing, as a rule - not "Not answered";
+        one that never went says that, as before."""
+        from assistant.ui.chat import ChatWindow
+        session = session_for(FakeNanoGpt())
+        window = ChatWindow(StubApp(self.config, RecordingClient()), "Query text",
+                            [{"role": "user", "content": "p", "display": "Q"}],
+                            privacy=session)
+        try:
+            question = window.conversation[0]
+            for kinds, label in (({privacy.TEE}, "⚠ Not shown to reach the attested "
+                                                 "enclave"),
+                                 (set(), "🔒 Not answered")):
+                window._badge_question(privacy.pending_badge(session))
+                window._sent_kinds, window._tee_checks = set(kinds), []
+                if kinds:
+                    window._badge_question(privacy.sent_badge(kinds))
+                window._settle_question()
+                self.assertEqual(question["privacy"]["label"], label)
         finally:
             window.destroy()
 

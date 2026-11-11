@@ -441,6 +441,9 @@ class ChatWindow(Gtk.Window):
         self._retired_pending = None
         self._refused_retired = False       # the refusal shown is a retired model's
         self._sent_kinds = set()
+        # The state of each TEE/ reply checked on this request's way - a transcription, a
+        # reading, the answer: what the question's own mark is read from (sent_badge).
+        self._tee_checks = []
         self._streaming_privacy = None
         if privacy is not None:
             privacy.listener = lambda *event: GLib.idle_add(self._on_privacy_event, *event)
@@ -971,7 +974,12 @@ class ChatWindow(Gtk.Window):
                 # What is arriving, while it arrives: the answer's own badge replaces
                 # this once its signature has been checked, or its seal opened.
                 self._streaming_privacy = self._badge(privacy_module.receiving_badge(kind))
+            # Sealed, said now; sent to a TEE/ model, nothing yet shows the attested
+            # enclave received it: the replies' checks will (_on_stream_done).
             self._badge_question(privacy_module.sent_badge(self._sent_kinds))
+        elif event == "receipt":
+            if detail is not None and detail.kind == privacy_module.TEE:
+                self._tee_checks.append(detail.state)
         return False
 
     def _offer_another_model(self, retired):
@@ -1023,10 +1031,15 @@ class ChatWindow(Gtk.Window):
 
     @staticmethod
     def _badge(triple):
+        """A badge from (label, tone, tooltip), and the mark a question's carries
+        (privacy.sent_badge), if any."""
         if not triple:
             return None
-        label, tone, tip = triple
-        return {"label": label, "tone": tone, "tip": tip}
+        label, tone, tip, *mark = triple
+        badge = {"label": label, "tone": tone, "tip": tip}
+        if mark:
+            badge["mark"] = mark[0]
+        return badge
 
     def _badge_question(self, triple):
         """Set the badge on the question being answered, and redraw it."""
@@ -1037,6 +1050,12 @@ class ChatWindow(Gtk.Window):
             badge = self._badge(triple)
             # A transcription whose signature failed stays marked, whatever follows.
             if current.get("tone") == "bad" and badge and badge["tone"] != "bad":
+                return
+            # So does a question an earlier take showed the attested enclave received:
+            # the same text was received, whatever Ask again shows (SealedLore,
+            # 9af15c1). Only a failed check takes it back.
+            if current.get("mark") == privacy_module.RECEIVED and badge \
+                    and badge["tone"] != "bad":
                 return
             turn["privacy"] = badge
             break
@@ -2018,6 +2037,7 @@ class ChatWindow(Gtk.Window):
             # LLMClient refuses anything but the session's models, before sending.
             web_search = False
             self._sent_kinds = set()
+            self._tee_checks = []
             self._badge_question(privacy_module.pending_badge(privacy))
         else:
             web_search = self._search_now()
@@ -2671,6 +2691,10 @@ class ChatWindow(Gtk.Window):
                 "model": model or self._streaming_model}
         if private:
             turn["privacy"] = self._badge(privacy_module.receipt_badge(receipt))
+            # And the question it answers, only as far as the replies made from it show
+            # it reached the attested enclave.
+            self._badge_question(privacy_module.sent_badge(self._sent_kinds,
+                                                           self._tee_checks))
         if getattr(self, "_answer_is_reading", False):
             self._keep_transcription(result)
         self._finish_answer(turn, payload)
@@ -2697,16 +2721,22 @@ class ChatWindow(Gtk.Window):
             self._offer_another_model(retired)
 
     def _settle_question(self):
-        """A question whose request never went out keeps no "Private" promise badge."""
+        """A question whose request never went out keeps no "Private" promise badge, and
+        one that went to a TEE/ model and was stopped or failed on its way says how far
+        the replies checked by then showed it received - not at all, as a rule."""
         if self.privacy is None:
             return
         for turn in reversed(self.conversation):
             if turn["role"] == "user":
                 if (turn.get("privacy") or {}).get("tone") == "pending":
-                    turn["privacy"] = self._badge((
-                        "🔒 Not answered", "warn",
-                        "The request did not complete. It was only ever addressed to "
-                        "this conversation's attested models."))
+                    if privacy_module.TEE in self._sent_kinds:
+                        turn["privacy"] = self._badge(privacy_module.sent_badge(
+                            self._sent_kinds, self._tee_checks))
+                    else:
+                        turn["privacy"] = self._badge((
+                            "🔒 Not answered", "warn",
+                            "The request did not complete. It was only ever addressed "
+                            "to this conversation's attested models."))
                 break
 
     def _show_error(self, message, placeholder=False):

@@ -12,7 +12,9 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -224,6 +226,68 @@ class WithNoKeyring(Case):
         keychain = MemoryKeychain()
         self.assertEqual(Config(self.path, keychain=keychain).ollama_url, OLLAMA)
         self.assert_nowhere_in_the_file("carol", "pw@")
+
+
+class ListingsKeepNoPassword(Case):
+    """A model list is cached with the address it came from, so that another endpoint's
+    is not taken for it: that address went into ~/.cache/da-assistant as typed, a
+    password written into it and all, beside the keyring's copy. Now it is kept, and
+    compared, without one (SealedLore 0db15a2's hole, in this app's model lists)."""
+
+    def setUp(self):
+        super().setUp()
+        from assistant import models
+        self.models = models
+        for name, value in (("CACHE_DIR", self.dir),
+                            ("CACHE_FILE", os.path.join(self.dir, "models.json"))):
+            patch = mock.patch.object(models, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def cache_text(self, provider):
+        with open(self.models.cache_file(provider)) as f:
+            return f.read()
+
+    def test_a_list_from_an_address_with_a_password_is_cached_without_it(self):
+        from assistant import providers
+        config = Config(self.path, keychain=MemoryKeychain())
+        config.custom_url = ENDPOINT
+        answer = mock.Mock(status_code=200)
+        answer.json.return_value = {"data": [{"id": "llama-4"}]}
+        with mock.patch.object(self.models, "_get", return_value=answer) as get:
+            _listed, cached = self.models.fetch(config, provider=providers.CUSTOM,
+                                                force=True)
+        self.assertFalse(cached)
+        self.assertEqual(get.call_args[0][0], "https://bob:hunter2@llm.example/v1/models",
+                         "asked of the address as typed")
+        text = self.cache_text(providers.CUSTOM)
+        for secret in ("hunter2", "bob"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(json.loads(text)["url"], "https://llm.example/v1/models")
+        # Still this endpoint's list, read by the address without its password; not
+        # another's.
+        source = providers.get(config, providers.CUSTOM)
+        self.assertIsNotNone(self.models.load_cache(url=source.models_url,
+                                                    provider=providers.CUSTOM))
+        self.assertIsNone(self.models.load_cache(url="https://llm.example/v2/models",
+                                                 provider=providers.CUSTOM))
+
+    def test_one_cached_before_with_a_password_is_cleaned_when_read(self):
+        from assistant import providers
+        path = self.models.cache_file(providers.CUSTOM)
+        typed = "https://bob:hunter2@llm.example/v1/models"
+        with open(path, "w") as f:
+            json.dump({"version": self.models.CACHE_VERSION, "url": typed, "fetched": 1,
+                       "models": [{"id": "llama-4"}]}, f)
+        old = time.time() - 3600
+        os.utime(path, (old, old))
+        self.assertEqual(self.models.load_cache(url=typed, provider=providers.CUSTOM),
+                         [{"id": "llama-4"}])
+        self.assertNotIn("hunter2", self.cache_text(providers.CUSTOM))
+        self.assertAlmostEqual(os.stat(path).st_mtime, old, delta=1, msg="its age kept")
+        self.assertEqual(self.models.load_cache(url="https://llm.example/v1/models",
+                                                provider=providers.CUSTOM),
+                         [{"id": "llama-4"}])
 
 
 class EveryAddressSetting(unittest.TestCase):

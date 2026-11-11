@@ -304,7 +304,9 @@ def cache_file(provider=providers.NANOGPT):
 
 
 def load_cache(max_age=CACHE_TTL, url=None, provider=providers.NANOGPT):
-    """The cached list, or None. `url` is the endpoint it has to have come from."""
+    """The cached list, or None. `url` is the endpoint it has to have come from, which
+    is compared without the user name and password an address may have written into it:
+    the cache keeps none (save_cache)."""
     path = cache_file(provider)
     try:
         stat = os.stat(path)
@@ -319,15 +321,46 @@ def load_cache(max_age=CACHE_TTL, url=None, provider=providers.NANOGPT):
         return None
     if not isinstance(payload, dict):
         return None
+    came_from = payload.get("url")
+    if isinstance(came_from, str) and netguard.without_password(came_from) != came_from:
+        # Written up to 4.3.1, with the address as typed, password and all.
+        came_from = _without_password_kept(path, payload, stat)
     # One provider's catalogue is no use for choosing a model from another's.
-    if url is not None and payload.get("url") != url:
+    if url is not None and came_from != netguard.without_password(url):
         return None
     if payload.get("version") != CACHE_VERSION:
         return None
     return payload.get("models") or None
 
 
+def _without_password_kept(path, payload, stat):
+    """An older cache's address, written over without its password, and the file's age
+    as it was: the list is as old as it ever was. The address without it, either way."""
+    payload = dict(payload, url=netguard.without_password(payload["url"]))
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                                   prefix=os.path.basename(path) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+        os.utime(path, (stat.st_atime, stat.st_mtime))
+    except OSError:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return payload["url"]
+
+
 def save_cache(models, url, provider=providers.NANOGPT):
+    """Keep `models` as `provider`'s list, from `url` - without the user name and
+    password an address may have written into it. Which endpoint a list came from is
+    only compared (load_cache), never sent to, and a password belongs in the keychain
+    alone: up to 4.3.1 one typed into an endpoint's address (https://bob:pw@host/v1) was
+    written here as typed, beside the keychain's copy. From SealedLore 0db15a2, for its
+    picture and video listings."""
     path = cache_file(provider)
     tmp = None
     try:
@@ -340,8 +373,8 @@ def save_cache(models, url, provider=providers.NANOGPT):
         fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=os.path.basename(path) + ".",
                                    suffix=".tmp")
         with os.fdopen(fd, "w") as f:
-            json.dump({"version": CACHE_VERSION, "url": url, "fetched": time.time(),
-                       "models": models}, f)
+            json.dump({"version": CACHE_VERSION, "url": netguard.without_password(url),
+                       "fetched": time.time(), "models": models}, f)
         os.replace(tmp, path)
     except OSError:
         if tmp is not None:

@@ -486,8 +486,11 @@ def strip_internal_keys(messages):
 class LLMClient:
     def __init__(self, config):
         self.config = config
-        # Follows a redirect only where the request could have gone in the first place
-        # (netguard.session): a 307 would otherwise carry the conversation anywhere.
+        # Follows no redirect (netguard.session): a 307 or 308 would re-send the
+        # conversation, or the search query, wherever it pointed. One is an error that
+        # says where (netguard.redirected), and nothing is sent there. The chat, the
+        # web search and the query written for it, Ask Encyclopedia's plan and check:
+        # every request this client makes carries the conversation or a key.
         self.session = netguard.session()
 
     def _provider(self, model):

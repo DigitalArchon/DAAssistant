@@ -260,7 +260,9 @@ def private_ids_in(body):
 
 
 def _get(url, **kwargs):
-    """A GET that follows a redirect only where netguard allows (netguard.session)."""
+    """A GET that follows no redirect (netguard.session): a model list is asked for with
+    the provider's key, which a redirect would carry on. One is an error that says
+    where it pointed."""
     with netguard.session() as session:
         return session.get(url, **kwargs)
 

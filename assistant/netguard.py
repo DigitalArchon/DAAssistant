@@ -25,9 +25,13 @@ requests will read it: an address with a backslash, a space or a control charact
 it is refused outright, because Python's parser and urllib3's do not agree on where its
 host ends - `http://evil.com\\@localhost` is localhost to one and evil.com to the other.
 
-A redirect is held to the same rule (session()): followed only to an address that could
-have been used in the first place, never from https to plain http, and never from a
-server elsewhere into this machine or its network.
+A redirect is not followed at all by a request that carries a key, the conversation, a
+question or a search query (session(), as every such request's client makes it): it is
+an error naming where the address pointed, and nothing is sent there. A public fetch that
+carries neither - Intel's and NVIDIA's evidence, Tinfoil's releases - may follow one
+(session(follow=True)), but only to an address that could have been used in the first
+place, never from https to plain http, and never from a server elsewhere into this
+machine or its network.
 """
 
 import ipaddress
@@ -250,6 +254,18 @@ def check(url):
     return url.strip()
 
 
+def redirected(source, target, status):
+    """What a request answered with a redirect it did not follow says: where it pointed,
+    named without the password an address may carry (shown()), and what to do if the
+    address has moved. A redirect re-sends the request - a 307 or 308 its body, the
+    conversation, too - to wherever it points, so none is followed by a request that
+    carries a key or anything of the user's (session()). From SealedLore (e947938)."""
+    where = f" to {shown(target)}" if target else ""
+    return (f"{shown(source)} redirected (HTTP {status}){where}, which was not followed: "
+            f"that would have sent the request, and what it carries, there. If the "
+            f"address has moved, put the new one in Settings > Providers.")
+
+
 def redirect_problem(source, target):
     """Why a redirect from `source` to `target` may not be followed, or None.
 
@@ -279,16 +295,19 @@ def redirect_problem(source, target):
     return None
 
 
-def session():
-    """A requests Session that follows a redirect only where netguard would have let the
-    request go in the first place, never from https to plain http, and never from a
-    server elsewhere into this machine or its network (redirect_problem).
+def session(follow=False):
+    """A requests Session that follows no redirect: one raises RedirectRefused, saying
+    where it pointed (redirected), before anything is sent there. Every request that
+    carries a key, the conversation, a question or a search query is made with one: the
+    models, their lists, the web search. Up to 4.3.1 they followed a redirect wherever
+    netguard allowed, and a 307 or 308 re-sent the conversation to the new host - without
+    the key, which requests takes off when the host changes, but with everything else.
 
-    requests follows redirects by itself, and a 307 or 308 carries the body along: the
-    whole conversation, captures and all. It takes the Authorization header off when the
-    host changes, but nothing else, so without this a provider - or anything answering
-    at its address - could send the next copy of a conversation anywhere, in the clear.
-    A refused redirect raises RedirectRefused, before anything is sent to it.
+    `follow`: for a public fetch that carries neither (Intel's and NVIDIA's evidence,
+    Tinfoil's releases, RedPill's session records): it follows a redirect, but only where
+    netguard would have let the request go in the first place, never from https to
+    plain http, and never from a server elsewhere into this machine or its network
+    (redirect_problem).
 
     And a proxy is held to the same rule. A server on this machine or its own network
     is reached directly, whatever the environment says: plain http to it through a
@@ -304,8 +323,14 @@ def session():
         def get_redirect_target(self, response):
             target = super().get_redirect_target(response)
             if target:
-                found = redirect_problem(response.url, urljoin(response.url, target))
+                absolute = urljoin(response.url, target)
+                found = (redirect_problem(response.url, absolute) if follow
+                         else redirected(response.url, absolute, response.status_code))
                 if found:
+                    try:
+                        response.close()        # its connection, back to the pool
+                    except Exception:
+                        pass
                     raise RedirectRefused(found, response=response)
             return target
 

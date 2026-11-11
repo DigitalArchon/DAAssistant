@@ -158,7 +158,7 @@ def verify(answer, nonce, session=None, now=None):
     KeysUnavailable only once everything but the signatures has held: see the module's
     docstring."""
     import cryptography  # noqa: F401  - ImportError here, before anything is claimed
-    session = session or netguard.session()
+    session = session or netguard.session(follow=True)     # public: carries no key
     now = now if now is not None else time.time()
     try:
         return _verify(answer, nonce, session, now)

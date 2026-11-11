@@ -48,7 +48,7 @@ import threading
 import types
 from contextlib import contextmanager
 from dataclasses import dataclass
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from . import models, netguard, proxy
 from .dcap import since_boot
@@ -156,6 +156,14 @@ def _hardware(document):
     return kind
 
 
+def _redirected(url, response):
+    """What one of Private Mode's relay paths answered with a redirect says
+    (netguard.redirected): where it pointed, without a password. Neither is followed."""
+    location = response.headers.get("location")
+    target = urljoin(url, location) if location else ""
+    return netguard.redirected(url, target, response.status_code)
+
+
 def _around_the_proxy():
     """Raise PrivacyError if a proxy set in Settings cannot be used: httpx and TUF do
     not go through netguard's session, which refuses the rest (proxy.refusal())."""
@@ -167,13 +175,15 @@ def _around_the_proxy():
 
 class _GuardedRequests(types.ModuleType):
     """requests, as Tinfoil's SDK is given it: its functions each send through a session
-    of netguard's (netguard.session()), and Session is that session's class; everything
-    else - its exceptions, Response, the rest - is requests' own."""
+    of netguard's (netguard.session(follow=True): what it fetches is public - releases,
+    certificates, the enclave's report - and carries no key), and Session is that
+    session's class; everything else - its exceptions, Response, the rest - is requests'
+    own."""
 
     def __init__(self, real):
         super().__init__(real.__name__, real.__doc__)
         self._real = real
-        with netguard.session() as made:
+        with netguard.session(follow=True) as made:
             self.Session = type(made)
 
     def __getattr__(self, name):
@@ -182,7 +192,7 @@ class _GuardedRequests(types.ModuleType):
         return getattr(self._real, name)
 
     def request(self, method, url, **kwargs):
-        with netguard.session() as session:
+        with netguard.session(follow=True) as session:
             return session.request(method=method, url=url, **kwargs)
 
     def get(self, url, params=None, **kwargs):
@@ -526,6 +536,9 @@ class PrivateModeClient:
         finally:
             if self._preflight_client is None:
                 client.close()
+        if 300 <= response.status_code < 400:
+            # It carries the key: never followed (follow_redirects=False), and said.
+            raise PrivacyError(_redirected(self.enclave.relay + "/preflight", response))
         if response.status_code >= 400:
             # Every path's backstop - a model retired mid-conversation, the connection
             # test: say why, not just that it was refused.
@@ -620,6 +633,10 @@ class PrivateModeClient:
                 # plaintext stream in it would have been read, and shown, as a sealed
                 # reply.
                 response.close()
+                if 300 <= response.status_code < 400:
+                    # Not followed (follow_redirects=False): said, and where it pointed.
+                    raise PrivacyError(_redirected(self.endpoint, response) + " The "
+                                       "sealed request was refused unread")
                 raise PrivacyError(f"nano-gpt's relay answered HTTP "
                                    f"{response.status_code} instead of a sealed reply, "
                                    f"which was refused unread")

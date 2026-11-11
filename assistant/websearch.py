@@ -319,6 +319,8 @@ def run(query, config, session=None, timeout=None, provider=None):
         # The search is NanoGPT's (/api/web), whichever provider answers the question.
         raise SearchError("web search runs on NanoGPT and needs its API key "
                           "(Settings > Providers)")
+    # Following no redirect (netguard.session): it would carry the query and the key
+    # on to wherever it pointed. One is an error saying where.
     post = (session or netguard.session()).post
     try:
         response = post(

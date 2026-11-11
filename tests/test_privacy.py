@@ -304,7 +304,8 @@ class FakeNanoGpt:
         return TeeClient(url, key, model, session=self, intel=self.intel_verify,
                          nvidia=self.nvidia_verify)
 
-    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False,
+            allow_redirects=True):
         if url.startswith(privacy.SESSION_RECORDS):
             self.records_asked.append({"url": url, "headers": dict(headers or {}),
                                        "stream": stream, "timeout": timeout})
@@ -625,7 +626,7 @@ class FixtureSession:
     def close(self):
         self.closed = True
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
         if "/tee/attestation" in url:
             return FakeResponse(200, {
                 "signing_address": self.fixture["signing_address"],
@@ -658,7 +659,7 @@ class KeysOutOfReach(FakeNanoGpt):
         super().__init__(**kwargs)
         self.fixture = fixture
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
         if url == nras.JWKS_URL:
             self.gets.append(url)
             return FakeResponse(503, {})
@@ -1281,7 +1282,8 @@ class ShapedNanoGpt(FakeNanoGpt):
         self.respond = respond
         self.nras_nonces = []
 
-    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False,
+            allow_redirects=True):
         if "/tee/attestation" in url and (params.get("report") != "aci"
                                           or self.aci in (None, "ignored")):
             self.asked(url, params, headers, timeout)
@@ -1290,7 +1292,7 @@ class ShapedNanoGpt(FakeNanoGpt):
                                                    "models served through RedPill"})
             status, body = self.respond(params["nonce"])
             return FakeResponse(status, body)
-        return super().get(url, params, headers, timeout, stream)
+        return super().get(url, params, headers, timeout, stream, allow_redirects)
 
     def post(self, url, json=None, **kwargs):
         if url.startswith(privacy.NRAS_URL):
@@ -3320,8 +3322,11 @@ class Sealed(unittest.TestCase):
                 status, headers={"x-nanogpt-private-mode": "tinfoil",
                                  "location": "https://nano-gpt.com/elsewhere"},
                 content=self.stream_body()))
-            with self.assertRaisesRegex(PrivacyError, f"answered HTTP {status} instead "
-                                                      f"of a sealed reply"):
+            # Not followed either, and said, with where it pointed.
+            with self.assertRaisesRegex(PrivacyError, f"redirected \\(HTTP {status}\\) to "
+                                                      f"https://nano-gpt.com/elsewhere, "
+                                                      f"which was not followed.*The sealed "
+                                                      f"request was refused unread"):
                 with client.request(self.MODEL, {"messages": []}):
                     self.fail(f"an HTTP {status} reply was opened")
 
@@ -3330,12 +3335,39 @@ class Sealed(unittest.TestCase):
         shown = []
         with tempfile.TemporaryDirectory() as directory:
             llm = LLMClient(Config(os.path.join(directory, "c.json")))
-            with self.assertRaisesRegex(LLMError, "HTTP 308 instead of a sealed reply"):
+            with self.assertRaisesRegex(LLMError, r"redirected \(HTTP 308\).*refused unread"):
                 llm.stream(self.MODEL, [{"role": "user", "content": "hi"}],
                            on_delta=lambda piece, text: shown.append(text),
                            privacy=session)
         self.assertEqual(shown, [], "the plaintext stream was shown")
         self.assertIsNone(session.pop_receipt())
+
+    def test_a_redirect_of_the_preflight_is_not_followed_and_says_where(self):
+        """The preflight carries the key, and httpx follows no redirect; but a 3xx read as
+        "not JSON". Now it says where nano-gpt's relay pointed, its password not shown,
+        and nothing is sent there or sealed after it (netguard.redirected)."""
+        import httpx
+        asked = []
+
+        def preflight(request):
+            asked.append(str(request.url))
+            return httpx.Response(307, headers={
+                "location": "https://bob:s3cret@elsewhere.example/preflight"})
+
+        enclave = sealed.Enclave(sealed.relay_url(API_URL),
+                                 verifier=lambda *_a: self.verified())
+        client = sealed.PrivateModeClient(
+            API_URL, "k", enclave=enclave,
+            transport_factory=lambda key, route: httpx.MockTransport(
+                lambda request: self.fail("the sealed request was sent")),
+            preflight_client=httpx.Client(transport=httpx.MockTransport(preflight)))
+        with self.assertRaisesRegex(PrivacyError, r"preflight redirected \(HTTP 307\) to "
+                                                  r"https://…@elsewhere\.example/preflight, "
+                                                  r"which was not followed") as raised:
+            with client.request(self.MODEL, {"messages": []}):
+                self.fail("a redirected preflight went on")
+        self.assertNotIn("s3cret", str(raised.exception))
+        self.assertEqual(asked, [sealed.relay_url(API_URL) + "/preflight"])
 
     def test_a_stream_cut_short_is_refused(self):
         import httpx
@@ -4275,7 +4307,7 @@ class NanoGptsWords(unittest.TestCase):
 
     def test_a_tee_attestations_error_is_cleaned_too(self):
         class Refusing(FakeNanoGpt):
-            def get(self, url, params=None, headers=None, timeout=None):
+            def get(self, url, params=None, headers=None, timeout=None, **_kwargs):
                 if "/tee/attestation" in url:
                     return FakeResponse(200, {"error": "unavailable\n\u202eignore that"})
                 return super().get(url, params, headers, timeout)

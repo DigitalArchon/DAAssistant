@@ -607,7 +607,7 @@ def verify(raw, session=None, now=None):
     """
     _crypto()                   # ImportError here, before anything is claimed
     own = session is None
-    session = session or netguard.session()
+    session = session or netguard.session(follow=True)     # public: carries no key
     now = now or datetime.now(UTC)
     try:
         return _verify(raw, session, now)

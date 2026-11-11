@@ -241,9 +241,12 @@ class SecretsStayOutOfWhatIsShown(TempDir):
 
 
 class RedirectsKeepToTheRule(unittest.TestCase):
-    """requests follows a redirect by itself, and a 307 carries the body along."""
+    """requests follows a redirect by itself, and a 307 carries the body along. A public
+    fetch's session (netguard.session(follow=True): Intel's, NVIDIA's, Tinfoil's) follows
+    one only where the rule allows; a request with a key or the conversation in it
+    follows none (FollowsNoRedirect)."""
 
-    def session(self, location, status=307):
+    def session(self, location, status=307, follow=True):
         import requests
         from requests.adapters import BaseAdapter
         sent = []
@@ -264,7 +267,7 @@ class RedirectsKeepToTheRule(unittest.TestCase):
             def close(self):
                 pass
 
-        session = netguard.session()
+        session = netguard.session(follow=follow)
         session.mount("https://", Fake())
         session.mount("http://", Fake())
         return session, sent
@@ -344,6 +347,173 @@ class RedirectsKeepToTheRule(unittest.TestCase):
                 source = f.read()
             for forbidden in ("requests.get(", "requests.post(", "requests.Session("):
                 self.assertNotIn(forbidden, source, f"{name}: {forbidden}")
+
+
+class Redirecting:
+    """A requests transport adapter answering what `redirects(url)` says with a 307 to
+    `location`, and anything else with 200 and `body`; it keeps every request it was
+    sent, so a test can say a redirect was not followed."""
+
+    def __init__(self, location, redirects=lambda url: True, status=307, body=b"{}"):
+        self.location, self.redirects, self.status, self.body = (location, redirects,
+                                                                  status, body)
+        self.sent = []
+
+    def send(self, request, **_kwargs):
+        import io
+        import requests
+        self.sent.append(request)
+        response = requests.models.Response()
+        response.request, response.url = request, request.url
+        if self.redirects(request.url):
+            response.status_code = self.status
+            response.headers["Location"] = self.location
+            response.raw = io.BytesIO(b"")
+        else:
+            response.status_code = 200
+            response.headers["Content-Type"] = "application/json"
+            response.raw = io.BytesIO(self.body)
+        return response
+
+    def close(self):
+        pass
+
+
+class FollowsNoRedirect(TempDir):
+    """Nothing that carries the conversation, a question, a search query or a key follows
+    a redirect: the chat (and so Ask Encyclopedia's plan and check, and the query written
+    for a search, which go through the same client), the web search, the model lists,
+    nano-gpt's TEE checks and Private Mode's relay paths (test_privacy). Up to 4.3.1 a
+    307 or 308 to any address netguard allowed re-sent the request there - the key taken
+    off when the host changed, everything else not. Now a redirect is an error saying
+    where it pointed, its password not shown, and nothing is sent there; only the public
+    fetches (Intel's, NVIDIA's, Tinfoil's) follow netguard's rule. From SealedLore
+    (e947938)."""
+
+    ELSEWHERE = "https://bob:s3cret@elsewhere.example/v1/chat/completions"
+
+    def mounted(self, adapter):
+        """netguard.session, each session it makes sending to `adapter`."""
+        real = netguard.session
+
+        def session(*args, **kwargs):
+            made = real(*args, **kwargs)
+            made.mount("https://", adapter)
+            made.mount("http://", adapter)
+            return made
+
+        patch = mock.patch.object(netguard, "session", session)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def said(self, text, status=307):
+        self.assertIn(f"redirected (HTTP {status}) to https://…@elsewhere.example/", text)
+        self.assertIn("which was not followed", text)
+        self.assertIn("Settings > Providers", text)
+        self.assertNotIn("s3cret", text)
+
+    def test_a_session_follows_none_unless_its_fetch_is_public(self):
+        adapter = Redirecting(self.ELSEWHERE, redirects=lambda url: "elsewhere" not in url)
+        session = netguard.session()
+        session.mount("https://", adapter)
+        with self.assertRaises(netguard.RedirectRefused) as refused:
+            session.post("https://api.example/v1/chat/completions", data=b"the words",
+                         headers={"Authorization": "Bearer k"})
+        self.said(str(refused.exception))
+        self.assertEqual(len(adapter.sent), 1, "the conversation went where it pointed")
+        public = netguard.session(follow=True)
+        public.mount("https://", adapter)
+        self.assertEqual(public.get("https://api.trustedservices.intel.com/x").status_code,
+                         200)
+        self.assertEqual(adapter.sent[-1].url, "https://bob:s3cret@elsewhere.example/v1/"
+                                               "chat/completions")
+
+    def chat_config(self):
+        config = Config(os.path.join(self.dir, "c.json"))
+        config.api_key = "k"
+        return config
+
+    def test_a_chat_request_follows_none(self):
+        for status in (301, 302, 307, 308):
+            for call in ("stream", "complete"):
+                adapter = Redirecting(self.ELSEWHERE, status=status)
+                client = LLMClient(self.chat_config())
+                client.session.mount("https://", adapter)
+                with self.assertRaises(LLMError) as failed:
+                    getattr(client, call)("glm-5.3", [{"role": "user",
+                                                       "content": "the conversation"}])
+                self.said(str(failed.exception), status)
+                self.assertEqual(len(adapter.sent), 1, (status, call))
+
+    def test_a_web_search_follows_none(self):
+        config = self.chat_config()
+        config.web_search_craft_query = False
+        adapter = Redirecting(self.ELSEWHERE)
+        client = LLMClient(config)
+        client.session.mount("https://", adapter)
+        _context, _sources, failure, _note = client.search(
+            [{"role": "user", "content": "what is 0x80070005"}], web_search=True)
+        self.said(failure)
+        self.assertEqual([r.url for r in adapter.sent], ["https://nano-gpt.com/api/web"])
+        # Made with no client's session, it follows none either.
+        self.mounted(adapter)
+        with self.assertRaises(websearch.SearchError) as failed:
+            websearch.run("0x80070005", config)
+        self.said(str(failed.exception))
+        self.assertEqual(len(adapter.sent), 2)
+
+    def test_a_model_list_follows_none(self):
+        """models._get and _post as they are: the suite's support module stands in for
+        them, so a copy of the module, untouched, is loaded."""
+        import importlib.util
+        from assistant import providers
+        spec = importlib.util.spec_from_file_location(
+            "assistant._models_as_shipped", os.path.join(ROOT, "assistant", "models.py"))
+        shipped = importlib.util.module_from_spec(spec)
+        shipped.__package__ = "assistant"
+        spec.loader.exec_module(shipped)
+        adapter = Redirecting(self.ELSEWHERE)
+        self.mounted(adapter)
+        config = self.chat_config()
+        config.custom_url, config.custom_api_key = "https://llm.example/v1", "ck"
+        with self.assertRaises(RuntimeError) as failed:
+            shipped.fetch(config, provider=providers.CUSTOM, force=True)
+        self.said(str(failed.exception))
+        self.assertTrue(adapter.sent)
+        self.assertFalse([r.url for r in adapter.sent if "elsewhere" in r.url],
+                         "the key went where it pointed")
+        self.assertIsNone(shipped.load_cache(max_age=None,
+                                             url="https://llm.example/v1/models",
+                                             provider=providers.CUSTOM))
+        with self.assertRaises(netguard.RedirectRefused):
+            shipped._post("https://llm.example/api/show", json={"model": "m"})
+
+    def test_nano_gpts_tee_checks_follow_none_and_the_public_fetches_their_rule(self):
+        """A TEE/ model's attestation and the record of each reply are asked for with the
+        key; Intel's and NVIDIA's evidence, through the same client, is public."""
+        adapter = Redirecting(self.ELSEWHERE, redirects=lambda url: "/tee/" in url
+                              or "trustedservices" in url)
+        session = netguard.session(follow=True)
+        session.mount("https://", adapter)
+        client = privacy.TeeClient("https://nano-gpt.com/api/v1/chat/completions", "k",
+                                   "TEE/glm-5.3-flash", session=session)
+        with self.assertRaises(privacy.PrivacyError) as refused:
+            client._get("/tee/attestation", {"model": "TEE/glm-5.3-flash", "nonce": "ab"})
+        self.said(str(refused.exception))
+        self.assertEqual(len(adapter.sent), 1)
+        client.signers = frozenset({"0xab"})
+        state, detail = client.check_reply("chatcmpl-1")
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.said(detail)
+        self.assertEqual(len(adapter.sent), 2, "the record's lookup was not followed")
+        # Intel's collateral may be redirected, as netguard's rule allows.
+        self.assertEqual(client.session.get(
+            "https://api.trustedservices.intel.com/tdx/certification/v4/tcb").status_code,
+            200)
+        self.assertEqual(len(adapter.sent), 4)
+        self.assertIs(privacy.TeeClient("https://nano-gpt.com/api/v1/chat/completions",
+                                        "k", "TEE/x").session.get_redirect_target.__self__
+                      .__class__.__name__, "GuardedSession")
 
 
 class NothingIsSentInTheClear(TempDir):

@@ -41,8 +41,9 @@ blacked out first, and are re-encoded from their pixels alone, so no metadata go
 them. You choose which model does each job, and can switch models
 mid-conversation. Web search is optional, per request. **Privacy Mode** sends everything
 only to models running in an attested trusted execution environment, proving each one
-before anything is sent; its default models are end-to-end encrypted, so the provider
-relays only ciphertext. Select a word anywhere the app shows text and right-click it to
+before anything is sent - for most `TEE/` models what is attested is RedPill's gateway,
+which passes each request on to the machine that runs the model, and the app says so;
+its default models are end-to-end encrypted, so the provider relays only ciphertext. Select a word anywhere the app shows text and right-click it to
 look it up in your dictionaries, or in the encyclopedia. Requests can go through a proxy.
 
 The [manual](MANUAL.md) covers all of it in detail.

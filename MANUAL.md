@@ -347,6 +347,10 @@ so — cut off, or all thinking and no answer — and names the setting to chang
 
 ## Privacy Mode
 
+How the app handles your security and privacy as a whole - every service it contacts and
+what each is sent, what it keeps on this computer, and what it cannot protect you from -
+is set out in [Security and privacy](docs/security-and-privacy.md).
+
 Tick **Privacy Mode (TEE models only)** in the tray menu, or in **Settings > Privacy**, and
 every operation - translation, OCR, questions about text or a screen region, and every
 follow-up - goes only to the models set there, never to the ones above:
@@ -1179,6 +1183,9 @@ A read takes in at most 8 MB of text, twice what the longest context of any mode
 or a 64 MB picture; the app says so of a clipboard holding more, and reads none of it.
 
 ### Requests
+
+Every service the app contacts, and what each is sent, is listed in [Security and
+privacy](docs/security-and-privacy.md#the-services-it-contacts).
 
 Requests to NanoGPT are gzipped above 16 KB — every turn resends the conversation and any
 capture, and the body has to finish uploading before the model is dispatched. No other

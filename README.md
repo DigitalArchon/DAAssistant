@@ -7,8 +7,10 @@ own, or any other OpenAI-compatible chat API.
 > [!NOTE]
 > Everything you capture, copy or attach is sent to the providers you choose: check what
 > is in a screenshot before you send it (anything in it can be blacked out first), and
-> read [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. Answers are written
-> by language models and can be wrong, even when they sound sure.
+> read [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. [Security and
+> privacy](docs/security-and-privacy.md) says what the app sends where, what it keeps,
+> and what it cannot protect you from. Answers are written by language models and can be
+> wrong, even when they sound sure.
 
 ## What it does
 

@@ -2071,10 +2071,10 @@ class PrivacySession:
                 "model, when you send, how much, and the cost.")
         if TEE in kinds:
             lines.append(
-                "TEE models: nano-gpt's gateway sees the text in the clear. A reply is "
-                "checked against the record the attested key signed, for the exact "
-                "bytes that came, where nano-gpt passes its stream on as it was - where "
-                "the model's provider signs one: Chutes signs none, so its replies read "
+                "TEE models: nano-gpt's gateway sees the text in the clear. A reply of a "
+                "model whose provider signs them is checked against the record the "
+                "attested key signed, for the exact bytes that came, where nano-gpt "
+                "passes its stream on as it was; Chutes signs none, so its replies read "
                 "not verified. Not checked by this app: what you sent - the record "
                 "hashes the request as nano-gpt passed it on, so that it was yours rests "
                 "on nano-gpt; where nano-gpt has no report of RedPill's gateway's own "

@@ -1027,10 +1027,12 @@ class SettingsDialog(Gtk.Dialog):
             "after its enclave has proved itself. The premium model answers instead of "
             "the text model when the premium option is on, and a conversation's model "
             "menu can switch to any TEE model. Web search is off.\n\n"
-            "<b>TEE/</b> models run in an attested trusted execution environment and "
-            "sign their replies; your text still passes nano-gpt's gateway in the "
-            "clear. <b>private/</b> models are also <b>end-to-end encrypted</b>: sealed "
-            "on this machine to a key only the attested enclave holds.\n\n"
+            "<b>TEE/</b> models are attested before anything is sent to them - most as "
+            "RedPill's gateway, which passes each request on to the machine that runs "
+            "the model - and their replies are checked where their provider signs them; "
+            "your text still passes nano-gpt's gateway in the clear. <b>private/</b> "
+            "models are also <b>end-to-end encrypted</b>: sealed on this machine to a "
+            "key only the attested enclave holds.\n\n"
             "A conversation keeps the privacy it started with: switching this off, or "
             "choosing other models, changes only the conversations that start "
             "afterwards. Switching it on makes the open ones private from their next "
@@ -1199,8 +1201,11 @@ class SettingsDialog(Gtk.Dialog):
                 except privacy_module.PrivacyError as e:
                     lines.append(f"✗ {model}: {e}")
                 else:
+                    # What was attested leads the details, and what that leaves to
+                    # someone's word: RedPill's gateway is not the machine that runs it.
+                    what = privacy_module.what_was_attested(attestation)
                     lines.append(f"✓ {model}: {attestation.headline} — "
-                                 f"{attestation.detail}")
+                                 f"{what + ' ' if what else ''}{attestation.detail}")
             GLib.idle_add(self._show_attestation, lines)
 
         threading.Thread(target=worker, daemon=True).start()

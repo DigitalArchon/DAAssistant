@@ -926,7 +926,11 @@ class ChatWindow(Gtk.Window):
                                  f"({a.hardware or 'attested hardware'}, {a.release}"
                                  f"{short}). nano-gpt relays ciphertext only.")
                 else:
-                    lines.append(f"{a.model}: {a.summary or a.detail}.")
+                    # What was attested first, and what that leaves to someone's word:
+                    # RedPill's gateway is not the machine that runs the model.
+                    what = privacy_module.what_was_attested(a, clear=False)
+                    lines.append(f"{a.model} — {what + ' ' if what else ''}"
+                                 f"{a.summary or a.detail}.")
             waiting = [m for m in session.models() if m not in session.attestations]
             if waiting:
                 lines.append(f"{', '.join(waiting)}: will be attested before its first "
@@ -2652,9 +2656,9 @@ class ChatWindow(Gtk.Window):
                 if private:
                     turn["privacy"] = self._badge((
                         "🔒 Stopped · unchecked", "warn",
-                        "Stopped before the reply was complete, so its signature was "
-                        "not checked. It came only from this conversation's attested "
-                        "models."))
+                        "Stopped before the reply was complete, so it was not checked "
+                        "against a signed record: nothing shows which machine sent it. "
+                        "It was asked of this conversation's attested models only."))
                 self._append_turn(turn, replace_placeholder=placeholder)
                 return
             self._restore_replaced()

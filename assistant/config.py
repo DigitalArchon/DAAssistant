@@ -48,8 +48,9 @@ DEFAULTS = {
     "use_premium": False,
     # Privacy Mode: every operation, and every follow-up, goes only to these models,
     # each attested before anything is sent to it (see assistant/privacy.py). TEE/ models
-    # are attested and sign their replies; private/ models are end-to-end encrypted as
-    # well. A conversation keeps the privacy it started with, whatever happens here.
+    # are attested, most as RedPill's gateway, and their replies checked where their
+    # provider signs them; private/ models are end-to-end encrypted as well. A
+    # conversation keeps the privacy it started with, whatever happens here.
     # The defaults are private/ ones, sealed end to end to an enclave attested itself,
     # after 4.0.0 (Nov 2026): every TEE/ model nano-gpt offered by then was attested as
     # RedPill's gateway, which does not show that the model's own host is an enclave,

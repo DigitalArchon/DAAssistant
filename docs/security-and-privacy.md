@@ -64,9 +64,9 @@ plain http, and only on this machine, on your local network or as a Tor onion se
 - **https, or nothing.** An address is used only if it is https, or if it never leaves
   this machine or its local network (`localhost`, `127.x`, `10.x`, `172.16`-`31.x`,
   `192.168.x`, link-local and IPv6 unique local addresses, `.local` names), or if it is a
-  Tor onion service.
-  Any other plain http address is refused, with the reason, before a byte is sent. It is
-  never rewritten to https for you, and certificates are always checked.
+  Tor onion service. Any other plain http address is refused, with the reason, before a
+  byte is sent. It is never rewritten to https for you, and certificates are always
+  checked.
 - **Plain http on your own network is not encrypted.** The app allows it, because that is
   how a model server next door is reached, and it does not ask first: the key and the
   whole conversation cross that network as they are, readable by anyone on it - a café's
@@ -280,8 +280,9 @@ badges' labels with it.
   model, or that no reader can see, is named and the model told to ignore it, and the
   answer says so. The query searched is the one written for the search, not your whole
   message; when none can be written, nothing is searched, and the answer says that too.
-- **What a provider's gateway or relay writes** in an error is shown on one short line,
-  without line breaks or characters you could not see, and never as the model's words.
+- **What nano-gpt's TEE gateway or Private Mode's relay writes** in an error is shown on
+  one short line, without line breaks or characters you could not see, and never as the
+  model's words: nothing vouches for it.
 - **The clipboard** is read only when an operation asks for it, at most 8 MB of text or a
   64 MB picture.
 - **Builds can be checked.** Every AppImage can be rebuilt from its source and compared

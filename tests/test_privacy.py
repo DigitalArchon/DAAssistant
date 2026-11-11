@@ -157,14 +157,20 @@ class FakeNanoGpt:
     nonce ("bound") or to another ("unbound"), a 400 as for a model only Chutes or
     Tinfoil serves ("400"), nano-gpt's rate limit ("429"), or, None, the plain report, as
     before nano-gpt offered the gateway's. Every attestation asked for is in `reports`: its params, headers and
-    timeout."""
+    timeout.
+
+    `record`: RedPill's record of the gateway's session, which each receipt names by its
+    sha256 and api.redpill.ai serves - as `record_body`, or with `record_status` or a
+    `record_length` header, when given (Nov 11 2026). Every request for one is in
+    `records_asked`."""
 
     def __init__(self, nonce_bound=True, gpu=True, evidence=True, signer=KEY,
                  attestation_status=200, signature_status=200, reply="Hello there",
                  intel=UP_TO_DATE, nvidia=8, nras_status=200, attestation_extra=None,
                  signed_bytes=None, tied=None, receipts=False, upstream="verified",
                  receipt_key=None, digest=None, not_after=4_000_000_000, receipt_id=None,
-                 route=None, not_ready=0, tail=b"", cut=False, aci=None):
+                 route=None, not_ready=0, tail=b"", cut=False, aci=None, record=None,
+                 record_body=None, record_status=200, record_length=None):
         if aci is not None and tied is None:
             tied = "e2ee"
         self.aci = aci
@@ -186,6 +192,9 @@ class FakeNanoGpt:
         self.receipt_key, self.digest, self.not_after = receipt_key, digest, not_after
         self.receipt_id, self.route, self.not_ready = receipt_id, route, not_ready
         self.tail, self.cut = tail, cut
+        self.record, self.record_body = record, record_body
+        self.record_status, self.record_length = record_status, record_length
+        self.records_asked = []
         self._keyset = None
         self.gets = []
         self.posts = []
@@ -270,11 +279,16 @@ class FakeNanoGpt:
             "event_log": [
                 {"type": "request.received", "body_hash": f"sha256:{request_hash}"},
                 {"type": "upstream.verified", "result": self.upstream, "required": True,
-                 "session_id": "s", "model_id": "m"},
+                 "session_id": self.session_id, "model_id": "m"},
                 {"type": "response.returned", "body_hash": f"sha256:{response_hash}"}]}
         receipt["signature"] = (self.receipt_key or self.gateway).sign(
             canonical(receipt)).hex()
         return receipt
+
+    @property
+    def session_id(self):
+        """The session a receipt names: the sha256 of RedPill's record of it, as JCS."""
+        return hashlib.sha256(canonical(self.record)).hexdigest() if self.record else "s"
 
     def intel_verify(self, raw, session):
         if isinstance(self.intel, BaseException):
@@ -290,7 +304,14 @@ class FakeNanoGpt:
         return TeeClient(url, key, model, session=self, intel=self.intel_verify,
                          nvidia=self.nvidia_verify)
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False):
+        if url.startswith(privacy.SESSION_RECORDS):
+            self.records_asked.append({"url": url, "headers": dict(headers or {}),
+                                       "stream": stream, "timeout": timeout})
+            body = (self.record_body if self.record_body is not None
+                    else json.dumps(self.record).encode())
+            length = {"content-length": self.record_length} if self.record_length else {}
+            return FakeResponse(self.record_status, None, content=body, headers=length)
         if "/tee/attestation" in url:
             self.asked(url, params, headers, timeout)
             if params.get("report") == "aci" and self.aci is not None:
@@ -1260,7 +1281,7 @@ class ShapedNanoGpt(FakeNanoGpt):
         self.respond = respond
         self.nras_nonces = []
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def get(self, url, params=None, headers=None, timeout=None, stream=False):
         if "/tee/attestation" in url and (params.get("report") != "aci"
                                           or self.aci in (None, "ignored")):
             self.asked(url, params, headers, timeout)
@@ -1269,7 +1290,7 @@ class ShapedNanoGpt(FakeNanoGpt):
                                                    "models served through RedPill"})
             status, body = self.respond(params["nonce"])
             return FakeResponse(status, body)
-        return super().get(url, params, headers, timeout)
+        return super().get(url, params, headers, timeout, stream)
 
     def post(self, url, json=None, **kwargs):
         if url.startswith(privacy.NRAS_URL):
@@ -3907,6 +3928,210 @@ class WhatWasAttested(unittest.TestCase):
         tee = session.caveats()[0]
         self.assertIn("Chutes signs none, so its replies read not verified", tee)
         self.assertIn("that the GPUs NVIDIA vouched for are the attested machine's", tee)
+
+
+# RedPill's record of a gateway session with Tinfoil's router, as api.redpill.ai serves
+# one (SealedLore's tests, Nov 11 2026): the receipt's served_at, 1_800_000_000, is inside.
+TINFOIL = {
+    "api_version": "aci/1",
+    "upstream_name": "tinfoil",
+    "verifier_id": "private-ai-verifier/tinfoil/v1",
+    "claims": {"extra": {"evidence_scope": "router"}, "gpu_attested": {"status": "unknown"}},
+    "established_at": 1_799_999_000,
+    "expires_at": 1_800_002_600,
+}
+
+
+class OneAnswer:
+    """A requests transport adapter that answers every request with one response and
+    keeps the requests it was sent: for a real netguard session, with no network."""
+
+    def __init__(self, status=200, headers=None, body=b""):
+        self.status, self.headers, self.body = status, headers or {}, body
+        self.sent = []
+
+    def send(self, request, **_kwargs):
+        import io
+        import requests
+        from requests.structures import CaseInsensitiveDict
+        self.sent.append(request)
+        response = requests.models.Response()
+        response.status_code = self.status
+        response.headers = CaseInsensitiveDict(self.headers)
+        response.raw = io.BytesIO(self.body)
+        response.url, response.request = request.url, request
+        return response
+
+    def close(self):
+        pass
+
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class ProviderBehindAReply(unittest.TestCase):
+    """SealedLore 44e145d (Nov 11 2026): after a TEE/ reply whose receipt holds under the
+    attested keys, RedPill's public record of the gateway's session names the provider
+    that ran the model - looked up from api.redpill.ai with no key, believed only as the
+    signed receipt names it, never for a model Chutes serves, and never changing the
+    reply's state."""
+
+    def setUp(self):
+        patch = mock.patch.object(privacy, "_records", {})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def named(self, server, model=TEXT, receipt_id="rcpt-1"):
+        client = server.tee_client(API_URL, "k", model)
+        client.attest()
+        return client, client.check("chatcmpl-42", receipt_id=receipt_id,
+                                    body_hash=stream_hash(server.stream()),
+                                    name_upstream=True)
+
+    def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(self):
+        server = FakeNanoGpt(aci="bound", receipts=True, record=TINFOIL)
+        client, found = self.named(server)
+        self.assertEqual(found.state, privacy.VERIFIED, found.detail)
+        upstream = found.upstream
+        self.assertEqual((upstream.name, upstream.scope, upstream.gpus, upstream.model),
+                         ("tinfoil", "router", "unknown", "m"))
+        self.assertEqual(privacy.upstream_label(upstream), "Tinfoil")
+        words = privacy.upstream_words(upstream)
+        self.assertIn("Run by Tinfoil (as m): RedPill's record of its gateway's session says "
+                      "its verifier (private-ai-verifier/tinfoil/v1) checked its router",
+                      words)
+        self.assertIn("RedPill's record has no GPU attestation", words)
+        self.assertIn("That is RedPill's word, fetched from api.redpill.ai and matched to "
+                      "the receipt the attested gateway signed", words)
+        asked = server.records_asked
+        self.assertEqual([a["url"] for a in asked],
+                         [privacy.SESSION_RECORDS + server.session_id])
+        self.assertTrue(asked[0]["url"].startswith("https://api.redpill.ai/v1/aci/"
+                                                   "sessions/"))
+        self.assertEqual(asked[0]["headers"], {}, "no key goes to RedPill")
+        self.assertTrue(asked[0]["stream"], "read a piece at a time")
+        # The next reply in the same session reads no record again; one not asked to
+        # name its provider asks nothing of RedPill at all.
+        again = client.check("chatcmpl-42", receipt_id="rcpt-1",
+                             body_hash=stream_hash(server.stream()), name_upstream=True)
+        self.assertEqual(again.upstream.name, "tinfoil")
+        self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1",
+                                            body_hash=stream_hash(server.stream()))[0],
+                         privacy.VERIFIED)
+        self.assertIsNone(client.check("chatcmpl-42", receipt_id="rcpt-1").upstream)
+        self.assertEqual(len(server.records_asked), 1)
+
+    def test_a_provider_label_is_redpills_name_without_its_number(self):
+        self.assertEqual(privacy.upstream_label(privacy.TeeUpstream(name="phala-244")),
+                         "Phala")
+        self.assertEqual(privacy.upstream_label(privacy.TeeUpstream(name="near-ai")),
+                         "NEAR AI")
+        self.assertEqual(privacy.upstream_label(privacy.TeeUpstream(name="somebody-new")),
+                         "somebody-new")
+        words = privacy.upstream_words(privacy.TeeUpstream(
+            name="phala-244", scope="model_instance", gpus="asserted"))
+        self.assertIn("checked the machine that ran the model; RedPill's verifier checked "
+                      "its GPUs", words)
+
+    def test_a_record_that_cannot_be_read_or_believed_names_nobody(self):
+        """Never a failed reply: the state is the gateway's check, and stands."""
+        for server, note in (
+                ({"record_body": b'{"upstream_name": "chutes"}'},
+                 "is not the one the receipt names"),
+                ({"record_length": "3424330"}, "3,424 KB, more than is read for one reply"),
+                ({"record_body": b" " * (privacy.SESSION_RECORD_MAX_BYTES + 1)},
+                 "more than is read for one reply"),
+                ({"record_status": 503}, "api.redpill.ai answered HTTP 503"),
+                ({"record_body": b"not json"}, "RedPill's record could not be read"),
+                # Nested past what Python reads: still a note, not a failed check.
+                ({"record_body": b"[" * 100_000 + b"]" * 100_000},
+                 "RedPill's record could not be read")):
+            with self.subTest(note=note):
+                privacy._records.clear()
+                fake = FakeNanoGpt(aci="bound", receipts=True, record=TINFOIL, **server)
+                _client, found = self.named(fake)
+                self.assertEqual(found.state, privacy.VERIFIED)
+                self.assertEqual(found.upstream.name, "")
+                self.assertIn(note, found.upstream.note)
+                self.assertEqual(privacy._records, {}, "nothing kept of it")
+                words = privacy.upstream_words(found.upstream)
+                self.assertTrue(words.startswith("The provider that ran it was not named: "))
+                self.assertIn(note, words)
+
+    def test_a_reply_served_outside_the_session_its_receipt_names_names_nobody(self):
+        stale = dict(TINFOIL, expires_at=1_799_999_500)
+        _client, found = self.named(FakeNanoGpt(aci="bound", receipts=True, record=stale))
+        self.assertEqual(found.state, privacy.VERIFIED)
+        self.assertIn("served outside the session", found.upstream.note)
+
+    def test_a_model_chutes_serves_is_never_looked_up(self):
+        """A Chutes instance has a session of its own, 3.4 MB for TEE/deepseek-v3.2, and
+        replies spread over the instances: megabytes nearly every message."""
+        instances = InstanceEvidence()
+        server = ShapedNanoGpt(lambda nonce: (200, instances.body(nonce)), aci="bound",
+                               receipts=True, record=TINFOIL)
+        _client, found = self.named(server, model="TEE/glm-5.1")
+        self.assertEqual(found.state, privacy.VERIFIED, "RedPill answered this one")
+        self.assertEqual(found.upstream.name, "")
+        self.assertIn("not looked up for a model Chutes serves", found.upstream.note)
+        self.assertEqual(server.records_asked, [])
+
+    def test_a_session_named_by_a_receipt_not_read_is_never_looked_up(self):
+        server = FakeNanoGpt(tied="none", receipts=True, record=TINFOIL)
+        _client, found = self.named(server)
+        self.assertEqual(found.state, privacy.VERIFIED)
+        self.assertIn("its receipt was not read under the attested keys", found.upstream.note)
+        self.assertEqual(server.records_asked, [])
+
+    def test_a_reply_short_of_signed_names_nobody_and_asks_nothing(self):
+        for server in (FakeNanoGpt(aci="bound", receipts=True, record=TINFOIL, signer=1),
+                       FakeNanoGpt(aci="bound", receipts=True, record=TINFOIL,
+                                   signature_status=500)):
+            _client, found = self.named(server)
+            self.assertIn(found.state, (privacy.FAILED, privacy.UNCHECKED))
+            self.assertIsNone(found.upstream)
+            self.assertEqual(server.records_asked, [])
+
+    def test_at_most_sixty_four_records_are_kept(self):
+        class Records:
+            def __init__(self):
+                self.asked = 0
+
+            def get(self, url, timeout=None, stream=False):
+                self.asked += 1
+                return FakeResponse(200, None, content=json.dumps(by_id[url[-64:]]).encode())
+
+        by_id = {}
+        for n in range(privacy.SESSION_RECORDS_KEPT + 1):
+            record = dict(TINFOIL, upstream_name=f"phala-{n}")
+            by_id[hashlib.sha256(canonical(record)).hexdigest()] = record
+        ids, session = list(by_id), Records()
+        for session_id in ids:
+            privacy._session_record(session, session_id)
+        self.assertEqual(len(privacy._records), privacy.SESSION_RECORDS_KEPT)
+        self.assertNotIn(ids[0], privacy._records, "the oldest goes first")
+        privacy._session_record(session, ids[-1])
+        self.assertEqual(session.asked, len(ids), "a record kept is not read again")
+
+    def test_the_lookup_keeps_to_netguards_rules_and_the_proxy(self):
+        """As every attestation fetch: https only, no redirect netguard would not follow
+        - here, from https to plain http - and nothing while the proxy set in Settings
+        cannot be used. Each names nobody, and says why."""
+        from assistant import proxy
+        session_id = hashlib.sha256(canonical(TINFOIL)).hexdigest()
+        moved = OneAnswer(302, {"location": "http://api.redpill.ai/v1/aci/sessions/x"})
+        session = netguard.session()
+        session.mount("https://", moved)
+        with self.assertRaisesRegex(PrivacyError, r"api\.redpill\.ai could not be reached "
+                                                  r"\(RedirectRefused\)"):
+            privacy._session_record(session, session_id)
+        self.assertEqual(len(moved.sent), 1, "nothing was sent where it pointed")
+        self.assertNotIn("Authorization", moved.sent[0].headers)
+        session = netguard.session()
+        session.mount("https://", OneAnswer(200, body=json.dumps(TINFOIL).encode()))
+        with mock.patch.object(proxy, "refusal", return_value="PySocks is missing"):
+            with self.assertRaisesRegex(PrivacyError, r"\(ProxyRefused\)"):
+                privacy._session_record(session, session_id)
+        self.assertEqual(privacy._session_record(session, session_id).name, "tinfoil")
+        self.assertTrue(privacy.SESSION_RECORDS.startswith("https://"))
 
 
 class NanoGptsWords(unittest.TestCase):

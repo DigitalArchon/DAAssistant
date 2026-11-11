@@ -18,9 +18,10 @@ Anything that breaks one of DA Assistant's promises, which
 [docs/security-and-privacy.md](docs/security-and-privacy.md) sets out in full, for example:
 
 - a request going over plain http to anywhere but this machine, its local network or a Tor
-  onion service, a certificate going unchecked, or a redirect followed where the request
-  could not have been sent in the first place (from https to plain http, or from the
-  internet into this machine or its network);
+  onion service, or a certificate going unchecked;
+- a request that carries a key, the conversation, a question or a search query following a
+  redirect, or a public fetch following one where it could not have been sent in the first
+  place (from https to plain http, or from the internet into this machine or its network);
 - an API key going to any service but its own provider, or a key or a password written into
   an address reaching `config.json`, the cache or a message the app shows;
 - with Privacy Mode on, anything reaching a model outside the conversation's attested ones,

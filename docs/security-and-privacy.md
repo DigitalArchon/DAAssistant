@@ -75,10 +75,19 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   a space, a backslash or a control character in it is refused outright, and so is a
   plain http host with a `%` escape in it, since the parsers involved disagree on where
   such a host ends.
-- **Redirects** are followed only to an address that could have been used in the first
-  place: never from https to plain http, and never from a server on the internet into this
-  machine or its network. When the host changes, the key is not sent along. Tinfoil's
-  client's own fetches are held to the same rules.
+- **Redirects are not followed by anything that carries a key or your words**: the
+  models (your messages, a capture, a question, the query written for a search), their
+  model lists, the web search, nano-gpt's TEE checks and Private Mode's relay. A redirect
+  would send the request on to wherever it points, so the app stops and says where the
+  address pointed, without any password written into it; if it has moved, the new one
+  goes in Settings. Nothing is sent there. (Up to 4.3.1 one was followed wherever the
+  rule below allowed, and a 307 or 308 re-sent the conversation to the new address,
+  without the key.)
+- **The public fetches** that carry neither - Intel's and NVIDIA's services, Tinfoil's
+  releases and certificates, RedPill's session records - follow a redirect only to an
+  address that could have been used in the first place: never from https to plain http,
+  and never from a server on the internet into this machine or its network. Tinfoil's
+  client's own fetches are held to the same rule.
 - **A proxy** (Settings > Advanced > Proxy) carries every request the app makes - the
   models, the web search, the model lists, the attestation services, RedPill's session
   records when they are fetched, Tinfoil's client - except to this machine and its own

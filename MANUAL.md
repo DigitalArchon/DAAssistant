@@ -1216,15 +1216,27 @@ backslash, a space or a control character in it is refused outright: Python's pa
 the one requests uses do not agree on where its host ends. So is a plain `http://` name
 with a `%` escape in it, other than an IPv6 address's zone: requests decodes it, and up
 to 3.4.0 `http://127.0.0.1%2eexample.com` passed as this machine and went, unencrypted,
-to `127.0.0.1.example.com`. A redirect is followed only to an address that could have
+to `127.0.0.1.example.com`.
+
+**No request that carries a key or anything of yours follows a redirect**: the models -
+your messages, a capture, Ask Encyclopedia's questions, the query written for a search -
+their model lists, the web search, the `TEE/` models' checks and Private Mode's relay. A
+redirect would send the request on to wherever it points, so it stops there instead, and
+the error says where the address pointed (without any password written into it): if
+the address has moved, put the new one in **Settings > Providers**. Nothing is sent to
+the address it pointed to. (Up to 4.3.1 such a redirect was followed wherever the rule
+below allowed, and a 307 or 308 sent the conversation on to the new address - without
+the key, which was taken off when the host changed, but with everything else.)
+
+The public fetches that carry neither a key nor anything of yours - Intel's and NVIDIA's
+services, Tinfoil's releases and certificates for a `private/` model's attestation,
+RedPill's session records - follow a redirect, but only to an address that could have
 been used in the first place, never from https to plain http, and never from a server
 on the internet into this machine or its network - the router's admin page, a printer, a
 model server of your own - over https or not (up to 4.2.0 one over https was); a server
 on your network may still send a request on to another there. A refused redirect sends
-nothing further, and says where it pointed. So is every fetch
-Tinfoil's client makes for a `private/` model's attestation - the release and its
-Sigstore bundle, AMD's and Intel's certificates - which by itself followed a redirect
-anywhere, plain http included. (Up to 4.1.0 it did.)
+nothing further, and says where it pointed. Tinfoil's client is held to that too: by
+itself it followed a redirect anywhere, plain http included. (Up to 4.1.0 it did.)
 
 **A proxy** (Settings > Advanced > Proxy) takes every request the app makes - the
 models, the web search, the model lists, the attestation services, RedPill's session

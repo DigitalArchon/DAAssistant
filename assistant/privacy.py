@@ -406,6 +406,9 @@ class Receipt:
     kind: str
     state: str
     detail: str = ""
+    # Strict doubted it: its model is attested again before anything more is sent to it
+    # (PrivacySession.check_reply).
+    doubted: bool = False
 
 
 def _json(value):
@@ -1791,6 +1794,7 @@ class PrivacySession:
             if self.strict and (receipt.state == FAILED
                                 or (receipt.state in (UNCHECKED, SIGNED) and signs)):
                 self._doubted.add(model)
+                receipt.doubted = True
         self._emit("receipt", model, receipt)
         return receipt
 
@@ -1863,22 +1867,44 @@ class PrivacySession:
 
 # ---- turn badges ------------------------------------------------------------------------
 
+# What a TEE/ reply's verified or signed record leaves to RedPill's gateway's word.
+_GATEWAYS_WORD = (" For a model RedPill serves, the attested key is RedPill's gateway's, "
+                  "which passed the request on to the machine that runs the model: that "
+                  "machine is the gateway's word, in its signed receipt, not checked by "
+                  "this app (the banner says what was attested).")
+
+
 def receipt_badge(receipt):
-    """(label, tone, tooltip) for an answer, from its receipt."""
+    """(label, tone, tooltip) for an answer, from its receipt. The tooltip says what the
+    check showed, what it leaves to the gateway's word, and that a TEE/ reply's text
+    passed nano-gpt in the clear, as SealedLore's marks do (TEE_MARK_TIPS, 9af15c1); and,
+    where Strict doubted the reply (Receipt.doubted), that its model is attested again."""
     if receipt is None:
         return None
+    again = (" Strict is on, so its model is attested again before anything more is "
+             "sent to it." if getattr(receipt, "doubted", False) else "")
     if receipt.state == SEALED:
-        return ("🔐 End-to-end encrypted", "ok", receipt.detail)
+        return ("🔐 End-to-end encrypted", "ok",
+                f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext.")
     if receipt.state == VERIFIED:
         return ("🔒 TEE · verified", "ok",
-                receipt.detail + ". What you sent is not covered: the record hashes the "
-                "request as nano-gpt passed it on.")
+                f"TEE verified: {receipt.detail}." + _GATEWAYS_WORD + " What you sent is "
+                "not covered: the record hashes the request as nano-gpt passed it on."
+                + _CLEAR)
     if receipt.state == SIGNED:
-        return ("🔒 TEE · signed, text not compared", "warn", receipt.detail + ".")
+        return ("🔒 TEE · signed, text not compared", "warn",
+                f"TEE signed, text not compared: {receipt.detail}. A change on its way "
+                "here would not show." + _GATEWAYS_WORD + again + _CLEAR)
     if receipt.state == FAILED:
-        return ("⚠ TEE · check failed", "bad", receipt.detail)
+        return ("⚠ TEE · check failed", "bad",
+                f"Check failed: {receipt.detail}. This reply does not match its record: "
+                "not signed by the attested key, not the text that was signed, or its "
+                "receipt does not hold (another key, another reply, or a model that was "
+                "not verified)." + again)
     return ("⚠ TEE · reply not verified", "warn",
-            receipt.detail + ": nothing shows it came from the attested enclave.")
+            f"Not verified: {receipt.detail}. Nothing this app could check shows which "
+            "machine answered it: nano-gpt routes each request, and a model may be "
+            "served elsewhere when its provider is busy." + again + _CLEAR)
 
 
 # What a question's own mark says it is (sent_badge), beside its label: the chat window

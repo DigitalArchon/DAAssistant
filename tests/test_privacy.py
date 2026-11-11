@@ -1732,9 +1732,22 @@ class StrictAttestation(TempConfig):
         session = PrivacySession(API_URL, "k", "TEE/kimi-k3", VISION, uses=("text",),
                                  tee_factory=lambda *args: provider, strict=True)
         session.ensure("TEE/kimi-k3")
-        session.check_reply("TEE/kimi-k3", "chatcmpl-1")
+        self.assertFalse(session.check_reply("TEE/kimi-k3", "chatcmpl-1").doubted)
         session.ensure("TEE/kimi-k3")
         self.assertEqual(provider.attested, 1)
+
+    def test_a_reply_strict_doubted_says_so_and_no_other_does(self):
+        server = GpusTied(tied="statement", signer=1)
+        session = self.session(server)
+        session.ensure(TEXT)
+        failed = session.check_reply(TEXT, "chatcmpl-1", body_hash=stream_hash(
+            server.stream()))
+        self.assertEqual(failed.state, privacy.FAILED)
+        self.assertTrue(failed.doubted)
+        self.assertIn("Strict is on", privacy.receipt_badge(failed)[2])
+        relaxed = self.session(server, strict=False)
+        relaxed.ensure(TEXT)
+        self.assertFalse(relaxed.check_reply(TEXT, "chatcmpl-1").doubted)
 
     def test_without_it_a_mismatch_is_shown_and_nothing_attested_again(self):
         server = FakeNanoGpt(signer=1)
@@ -2068,6 +2081,44 @@ class Badges(unittest.TestCase):
             privacy.Receipt("private/x", privacy.E2EE, privacy.SEALED))[0])
         self.assertIn("Sealed", privacy.sent_badge({privacy.E2EE})[0])
         self.assertIn("TEE", privacy.sent_badge({privacy.E2EE, privacy.TEE})[0])
+
+    def test_a_replys_mark_says_what_is_the_gateways_word_and_what_passed_in_the_clear(
+            self):
+        """As SealedLore's marks say it (TEE_MARK_TIPS, 9af15c1): for a model RedPill
+        serves, the key that signed is its gateway's, and the machine that runs the
+        model is the gateway's word; the text passed nano-gpt in the clear; a private/
+        model is end-to-end encrypted instead."""
+        def tip(state, detail="d", **kwargs):
+            return privacy.receipt_badge(privacy.Receipt(TEXT, privacy.TEE, state, detail,
+                                                         **kwargs))[2]
+
+        verified = tip(privacy.VERIFIED, "signed by the attested key 0xab, for the exact "
+                                         "bytes that came")
+        self.assertTrue(verified.startswith("TEE verified: signed by the attested key 0xab"))
+        self.assertIn("the attested key is RedPill's gateway's, which passed the request on "
+                      "to the machine that runs the model: that machine is the gateway's "
+                      "word, in its signed receipt, not checked by this app", verified)
+        self.assertIn("What you sent is not covered", verified)
+        self.assertIn("The text passed nano-gpt's servers in the clear; a private/ model is "
+                      "end-to-end encrypted instead.", verified)
+        signed = tip(privacy.SIGNED)
+        self.assertIn("A change on its way here would not show", signed)
+        self.assertIn("the gateway's word", signed)
+        unchecked = tip(privacy.UNCHECKED, "this model's provider signs no replies")
+        self.assertTrue(unchecked.startswith("Not verified: this model's provider signs no "
+                                             "replies."))
+        self.assertIn("Nothing this app could check shows which machine answered it: "
+                      "nano-gpt routes each request, and a model may be served elsewhere "
+                      "when its provider is busy.", unchecked)
+        self.assertIn("in the clear", unchecked)
+        self.assertNotIn("Strict", unchecked)
+        self.assertIn("Strict is on, so its model is attested again before anything more "
+                      "is sent to it", tip(privacy.UNCHECKED, doubted=True))
+        self.assertIn("This reply does not match its record", tip(privacy.FAILED))
+        sealed_one = privacy.receipt_badge(privacy.Receipt(
+            "private/x", privacy.E2EE, privacy.SEALED, "decrypted here"))[2]
+        self.assertEqual(sealed_one, "End-to-end encrypted: decrypted here. nano-gpt "
+                                     "relayed ciphertext.")
 
     def test_a_question_is_received_only_as_far_as_its_replies_checks_show(self):
         """It read "Sent to attested TEE" whatever its reply showed: nano-gpt routes each

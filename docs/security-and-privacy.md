@@ -84,10 +84,12 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   rule below allowed, and a 307 or 308 re-sent the conversation to the new address,
   without the key.)
 - **The public fetches** that carry neither - Intel's and NVIDIA's services, Tinfoil's
-  releases and certificates, RedPill's session records - follow a redirect only to an
-  address that could have been used in the first place: never from https to plain http,
-  and never from a server on the internet into this machine or its network. Tinfoil's
-  client's own fetches are held to the same rule.
+  releases and certificates, Sigstore's trust root, RedPill's session records - follow a
+  redirect only to an address that could have been used in the first place: never from
+  https to plain http, and never from a server on the internet into this machine or its
+  network. Tinfoil's client's own fetches are held to the same rule, and so is Sigstore's
+  trust root, which it fetches through TUF's client (five redirects at most; up to 4.3.1
+  it followed one anywhere). If that cannot be done, a `private/` model is not attested.
 - **A proxy** (Settings > Advanced > Proxy) carries every request the app makes - the
   models, the web search, the model lists, the attestation services, RedPill's session
   records when they are fetched, Tinfoil's client - except to this machine and its own

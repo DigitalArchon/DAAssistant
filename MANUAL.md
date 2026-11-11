@@ -1229,14 +1229,19 @@ below allowed, and a 307 or 308 sent the conversation on to the new address - wi
 the key, which was taken off when the host changed, but with everything else.)
 
 The public fetches that carry neither a key nor anything of yours - Intel's and NVIDIA's
-services, Tinfoil's releases and certificates for a `private/` model's attestation,
-RedPill's session records - follow a redirect, but only to an address that could have
-been used in the first place, never from https to plain http, and never from a server
-on the internet into this machine or its network - the router's admin page, a printer, a
-model server of your own - over https or not (up to 4.2.0 one over https was); a server
-on your network may still send a request on to another there. A refused redirect sends
-nothing further, and says where it pointed. Tinfoil's client is held to that too: by
-itself it followed a redirect anywhere, plain http included. (Up to 4.1.0 it did.)
+services, Tinfoil's releases and certificates and Sigstore's trust root for a `private/`
+model's attestation, RedPill's session records - follow a redirect, but only to an
+address that could have been used in the first place, never from https to plain http,
+and never from a server on the internet into this machine or its network - the router's
+admin page, a printer, a model server of your own - over https or not (up to 4.2.0 one
+over https was); a server on your network may still send a request on to another there.
+A refused redirect sends nothing further, and says where it pointed. Tinfoil's client is held to that too: by
+itself it followed a redirect anywhere, plain http included. (Up to 4.1.0 it did.) So is
+Sigstore's trust root, which it checks the router's release against: TUF's client, which
+fetches it, followed a redirect anywhere too (up to 4.3.1 it did), and now follows five
+at most, each held to the rule. Should a newer Tinfoil client change what that rests on,
+a `private/` model is not attested, and the error says why, rather than the trust root
+being fetched unguarded.
 
 **A proxy** (Settings > Advanced > Proxy) takes every request the app makes - the
 models, the web search, the model lists, the attestation services, RedPill's session

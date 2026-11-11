@@ -311,7 +311,5 @@ badges' labels with it.
 
 ## Reporting a security problem
 
-DA Assistant has no private channel for security reports yet. Report a problem at the
-project's page, <https://github.com/DigitalArchon/DAAssistant>, and leave out anything
-that would help someone exploit it: say there that you have more to send, and ask for a
-private way to send it.
+Please don't open a public issue for a vulnerability: [SECURITY.md](../SECURITY.md) says how
+to report one privately, which versions get fixes, and what is in scope.

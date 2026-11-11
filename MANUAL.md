@@ -349,7 +349,8 @@ so — cut off, or all thinking and no answer — and names the setting to chang
 
 How the app handles your security and privacy as a whole - every service it contacts and
 what each is sent, what it keeps on this computer, and what it cannot protect you from -
-is set out in [Security and privacy](docs/security-and-privacy.md).
+is set out in [Security and privacy](docs/security-and-privacy.md). To report a
+vulnerability, see [SECURITY.md](SECURITY.md).
 
 Tick **Privacy Mode (TEE models only)** in the tray menu, or in **Settings > Privacy**, and
 every operation - translation, OCR, questions about text or a screen region, and every

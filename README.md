@@ -9,8 +9,9 @@ own, or any other OpenAI-compatible chat API.
 > is in a screenshot before you send it (anything in it can be blacked out first), and
 > read [Privacy Mode](MANUAL.md#privacy-mode) if that matters to you. [Security and
 > privacy](docs/security-and-privacy.md) says what the app sends where, what it keeps,
-> and what it cannot protect you from. Answers are written by language models and can be
-> wrong, even when they sound sure.
+> and what it cannot protect you from, and [SECURITY.md](SECURITY.md) how to report a
+> vulnerability. Answers are written by language models and can be wrong, even when they
+> sound sure.
 
 ## What it does
 
@@ -176,7 +177,8 @@ of this app; it is read from your copy. Setting it up is described under
 
 Run `--probe`, or open **Diagnostics** from the tray menu (it has a Copy button), to see
 what the app found. The manual's [Troubleshooting](MANUAL.md#troubleshooting) covers the
-common problems.
+common problems. For a security vulnerability, don't open a public issue:
+[SECURITY.md](SECURITY.md) says how to report it.
 
 ## License
 

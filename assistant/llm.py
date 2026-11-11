@@ -1108,7 +1108,13 @@ class LLMClient:
                       # A stream that broke or was cut short has no whole to compare.
                       "body_hash": "sha256:" + digest.hexdigest() if whole else None}
             say("Checking the reply's signature…")
-        privacy.check_reply(model, result["id"], **record)
+        # And who ran a TEE/ reply's model, where Settings > Privacy asks for it: read at
+        # each reply, as SealedLore reads it, so that switching it off stops the lookups
+        # at once, in conversations already open too (privacy.TeeClient.served_by).
+        privacy.check_reply(model, result["id"],
+                            name_upstream=bool(getattr(self.config, "tee_name_upstreams",
+                                                       False)),
+                            **record)
         return self._ending(result["text"].strip(), result["finish_reason"], model,
                             payload.get("max_tokens"), result["done"], result["error"])
 

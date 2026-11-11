@@ -657,7 +657,10 @@ class SettingsDialog(Gtk.Dialog):
         content.pack_start(notebook, True, True, 0)
         notebook.append_page(self._build_general(), Gtk.Label(label="General"))
         notebook.append_page(self._build_providers(), Gtk.Label(label="Providers"))
-        notebook.append_page(self._build_privacy(), Gtk.Label(label="Privacy"))
+        # Scrolled too since the note under "Name the provider behind each TEE reply"
+        # made it the tallest page, and the dialog taller with it.
+        notebook.append_page(self._scrolled(self._build_privacy()),
+                             Gtk.Label(label="Privacy"))
         notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
         notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
         from .shortcuts import ShortcutsPage
@@ -1071,6 +1074,19 @@ class SettingsDialog(Gtk.Dialog):
             "anything more.")
         self.privacy_strict.set_active(bool(getattr(self.config, "privacy_strict", False)))
         page.pack_start(self.privacy_strict, False, False, 0)
+
+        # Off by default, and said plainly beside it (SealedLore's author, Nov 11 2026):
+        # the one request that goes to RedPill directly, not through nano-gpt.
+        self.tee_upstreams = Gtk.CheckButton.new_with_label(
+            "Name the provider behind each TEE reply")
+        self.tee_upstreams.set_active(bool(getattr(self.config, "tee_name_upstreams",
+                                                   False)))
+        page.pack_start(self.tee_upstreams, False, False, 0)
+        self.tee_upstreams_note = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.tee_upstreams_note.set_markup(
+            "<small>" + GLib.markup_escape_text(privacy_module.UPSTREAMS_NOTE) + "</small>")
+        self.tee_upstreams_note.get_style_context().add_class("dim-label")
+        page.pack_start(self.tee_upstreams_note, False, False, 0)
 
         self.privacy_problems = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         self.privacy_problems.get_style_context().add_class("warning-text")
@@ -1835,6 +1851,7 @@ class SettingsDialog(Gtk.Dialog):
         out["web_search_craft_query"] = self.search_craft.get_active()
         out["privacy_mode"] = self.privacy_enabled.get_active()
         out["privacy_strict"] = self.privacy_strict.get_active()
+        out["tee_name_upstreams"] = self.tee_upstreams.get_active()
         out["dictionaries_dir"] = self.dictionaries_dir.get_text().strip()
         out["encyclopedia_enabled"] = self.encyclopedia_enabled.get_active()
         out["encyclopedia_dir"] = self.encyclopedia_dir.get_text().strip()

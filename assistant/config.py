@@ -70,6 +70,13 @@ DEFAULTS = {
     # - rather than sending with an amber banner; and after a reply whose signature did
     # not match, send nothing more until the enclave has been attested again.
     "privacy_strict": False,
+    # After a TEE/ reply whose receipt holds, name the provider that ran the model, from
+    # RedPill's public record of its gateway's session (privacy.TeeClient.served_by). Off
+    # by default: it connects to api.redpill.ai directly, not through nano-gpt, so
+    # RedPill sees this computer's address (SealedLore's author, Nov 11 2026: a clear
+    # choice in Settings). Read at each reply, as SealedLore reads it: off, nothing more
+    # is looked up, in conversations already open too.
+    "tee_name_upstreams": False,
     # Global shortcuts, set in Settings > Shortcuts: {action: "<Control><Shift>1"}. None
     # are bound on a new install. See assistant/hotkeys.py.
     "hotkeys": {},

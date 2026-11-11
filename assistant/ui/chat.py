@@ -1071,7 +1071,8 @@ class ChatWindow(Gtk.Window):
             text = f"Refused: {self._privacy_refused}\n\n{text}"
         text += ("\n\nThis conversation stays in Privacy Mode until it is closed, "
                  "whatever Settings or the tray say. Web search is off in it.\n\n"
-                 + "\n\n".join(session.caveats()))
+                 + "\n\n".join(session.caveats(
+                     bool(getattr(self.config, "tee_name_upstreams", False)))))
         view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
         view.get_buffer().set_text(text)
         for margin in ("start", "end", "top", "bottom"):

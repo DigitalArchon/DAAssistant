@@ -2460,6 +2460,56 @@ class ChatStaysPrivate(TempConfig):
         finally:
             window.destroy()
 
+    def test_naming_a_tee_replys_provider_is_a_choice_that_says_where_it_goes(self):
+        """SealedLore's author, Nov 11 2026: "a clear option in settings to enable or
+        disable it, explaining to the user that it will connect to api.redpill.ai
+        directly". Off by default."""
+        from assistant.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(None, self.config, type("C", (), {"config": self.config}))
+        self.addCleanup(dialog.destroy)
+        box, note = dialog.tee_upstreams, dialog.tee_upstreams_note.get_text()
+        self.assertEqual(box.get_label(), "Name the provider behind each TEE reply")
+        self.assertFalse(box.get_active())
+        self.assertTrue(box.get_sensitive())
+        for said in ("This connects to api.redpill.ai directly, not through nano-gpt",
+                     "RedPill sees this computer's internet address",
+                     "and that one of its models was used around then",
+                     "Only the session's id is sent, never your messages or your key",
+                     "about one small download a model an hour",
+                     "never for models Chutes serves itself, whose records are megabytes",
+                     "RedPill's word, matched to the receipt the attested gateway signed"):
+            self.assertIn(said, note)
+        self.assertIs(dialog.values()["tee_name_upstreams"], False)
+        box.set_active(True)
+        self.assertIs(dialog.values()["tee_name_upstreams"], True)
+
+    @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+    def test_a_reply_says_who_ran_its_model_when_settings_ask(self):
+        from assistant.ui.chat import ChatWindow
+        patch = mock.patch.object(privacy, "_records", {})
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.config.tee_name_upstreams = True
+        server = FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1",
+                             record=TINFOIL)
+        client = LLMClient(self.config)
+        client.session = server
+        window = ChatWindow(StubApp(self.config, client), "Query text",
+                            [{"role": "user", "content": "p", "display": "Q"}],
+                            autostart=True, privacy=session_for(server))
+        try:
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 2))
+            answer = window.conversation[1]["privacy"]
+            self.assertEqual(answer["label"], "🔒 TEE · verified · run by Tinfoil")
+            self.assertIn("its router, which passes requests on to the model", answer["tip"])
+            self.assertIn("fetched from api.redpill.ai", answer["tip"])
+            self.assertEqual(window.status.get_text(), "🔒 TEE · verified · run by Tinfoil")
+            self.assertEqual(window.conversation[0]["privacy"]["label"],
+                             "🔒 Received by the attested TEE")
+        finally:
+            window.destroy()
+
     def test_the_banner_says_what_was_attested_and_whose_word_the_rest_is(self):
         """RedPill's gateway is what is attested for a model it serves, not the machine
         that runs it; Chutes' instances sign no replies. The banner leads with that,
@@ -4132,6 +4182,87 @@ class ProviderBehindAReply(unittest.TestCase):
                 privacy._session_record(session, session_id)
         self.assertEqual(privacy._session_record(session, session_id).name, "tinfoil")
         self.assertTrue(privacy.SESSION_RECORDS.startswith("https://"))
+
+
+@unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class NamingTheProvider(TempConfig):
+    """Settings > Privacy, "Name the provider behind each TEE reply" (config.
+    tee_name_upstreams): off by default, since it goes to api.redpill.ai directly; read
+    at each reply, as SealedLore reads it (44e145d)."""
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(privacy, "_records", {})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def send(self, server, session):
+        client = LLMClient(self.config)
+        client.session = server
+        with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
+            client.stream(TEXT, [{"role": "user", "content": "hi"}], privacy=session)
+        return session.pop_receipt()
+
+    def test_it_is_off_by_default_and_asked_for_only_while_settings_say(self):
+        self.assertIs(Config(os.path.join(self.dir, "new.json")).tee_name_upstreams, False)
+        server = FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1",
+                             record=TINFOIL)
+        session = session_for(server)
+        receipt = self.send(server, session)
+        self.assertEqual(receipt.state, privacy.VERIFIED, receipt.detail)
+        self.assertIsNone(receipt.upstream)
+        self.assertEqual(server.records_asked, [], "nothing asked of RedPill")
+        self.assertEqual(privacy.receipt_badge(receipt)[0], "🔒 TEE · verified")
+        self.config.tee_name_upstreams = True
+        receipt = self.send(server, session)
+        self.assertEqual(receipt.upstream.name, "tinfoil")
+        label, tone, tip = privacy.receipt_badge(receipt)
+        self.assertEqual((label, tone), ("🔒 TEE · verified · run by Tinfoil", "ok"))
+        self.assertIn("Run by Tinfoil (as m): RedPill's record", tip)
+        self.assertIn("That is RedPill's word, fetched from api.redpill.ai", tip)
+        # Off again, in the same conversation: nothing more is looked up.
+        self.config.tee_name_upstreams = False
+        privacy._records.clear()
+        self.assertIsNone(self.send(server, session).upstream)
+        self.assertEqual(len(server.records_asked), 1)
+
+    def test_a_mark_names_a_provider_only_where_its_receipt_held(self):
+        named = privacy.TeeUpstream(name="phala-244", scope="model_instance",
+                                    gpus="asserted")
+        for state, shown in ((privacy.VERIFIED, True), (privacy.SIGNED, True),
+                             (privacy.FAILED, False), (privacy.UNCHECKED, False)):
+            label, _tone, tip = privacy.receipt_badge(privacy.Receipt(
+                TEXT, privacy.TEE, state, "d", upstream=named))
+            self.assertEqual(label.endswith(" · run by Phala"), shown, state)
+            self.assertEqual("Run by Phala" in tip, shown, state)
+        unnamed = privacy.TeeUpstream(note="api.redpill.ai answered HTTP 503")
+        label, _tone, tip = privacy.receipt_badge(privacy.Receipt(
+            TEXT, privacy.TEE, privacy.VERIFIED, "d", upstream=unnamed))
+        self.assertEqual(label, "🔒 TEE · verified", "the mark never changes")
+        self.assertIn("The provider that ran it was not named: api.redpill.ai answered "
+                      "HTTP 503.", tip)
+
+    def test_the_details_and_diagnostics_say_whom_it_tells(self):
+        session = PrivacySession(API_URL, "k", TEXT, VISION, uses=("text",))
+        self.assertFalse(any("api.redpill.ai" in line for line in session.caveats()))
+        said = " ".join(session.caveats(name_upstreams=True))
+        self.assertIn("RedPill's record of its session is read from api.redpill.ai, "
+                      "directly, not through nano-gpt, so RedPill sees this computer's "
+                      "internet address", said)
+        self.assertIn("Only the session's id is sent, never your messages or your key",
+                      said)
+        sealed_only = PrivacySession(API_URL, "k", "private/glm-5-3", "private/glm-5-3",
+                                     uses=("text",))
+        self.assertFalse(any("api.redpill.ai" in line
+                             for line in sealed_only.caveats(name_upstreams=True)),
+                         "no TEE/ model, nothing to look up")
+        with mock.patch.object(sealed, "available", return_value=(True, "Tinfoil 0.15")):
+            self.assertIn("TEE providers : not looked up",
+                          privacy.summary_lines(self.config))
+            self.config.tee_name_upstreams = True
+            self.assertIn("TEE providers : named after each checked reply, from "
+                          "api.redpill.ai (Settings > Privacy)",
+                          privacy.summary_lines(self.config))
 
 
 class NanoGptsWords(unittest.TestCase):

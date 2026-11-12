@@ -2439,15 +2439,53 @@ class ChatStaysPrivate(TempConfig):
         finally:
             window.destroy()
 
+    def _page_turns(self, window):
+        """What the window's WebKit page shows, turn by turn: its classes, its role line
+        with any mark, and its text - what the reader sees, which a list of turns in
+        window.conversation does not show."""
+        from gi.repository import GLib
+        got = {}
+
+        def finish(view, result):
+            try:
+                got["page"] = json.loads(view.evaluate_javascript_finish(result)
+                                         .to_string())
+            except Exception as e:          # the assertion that reads it fails on it
+                got["page"] = f"ERROR {e}"
+
+        GLib.timeout_add(300, lambda: window.webview.evaluate_javascript(
+            "JSON.stringify(Array.from(document.querySelectorAll('body > .turn'))"
+            ".map(function(t){return [t.className, t.querySelector('.role')"
+            ".textContent, t.querySelector('.bubble').textContent.trim()];}))",
+            -1, None, None, None, finish) and False)
+        self.assertTrue(self._run_until(lambda: "page" in got))
+        return got["page"]
+
+    def _window_once_loaded(self, client, loaded, private=True, preflight=None):
+        """A window whose request goes on only once its page has loaded, as a real one
+        does: whatever ends it then lands on the live page, not in its first load."""
+        from assistant.ui import chat
+        if chat.WebKit2 is None:
+            self.skipTest("needs WebKitGTK")
+        session = None
+        if private:
+            session = session_for(GpusTied(tied="statement"))
+            session.ensure(TEXT)
+        question = {"role": "user", "content": "p", "display": "Q"}
+        if preflight is not None:
+            question.update(display="Q (reading the picture…)", plain_display="Q")
+        window = chat.ChatWindow(StubApp(self.config, client), "Query text", [question],
+                                 autostart=True, privacy=session, preflight=preflight)
+        self.addCleanup(lambda: window._destroyed or window.destroy())
+        self.assertTrue(self._run_until(lambda: window._loaded))
+        loaded.set()
+        return window
+
     def test_the_question_and_its_mark_stay_on_the_page_with_the_answer(self):
         """Answered once the page has loaded, as a real request is: the question's mark,
         set when the answer came, was redrawn before the answer took the streaming
         placeholder's place, so the answer took the question's instead, and the window
         showed the answer alone (seen on the lab's VMs, Nov 2026)."""
-        from gi.repository import GLib, Gtk
-        from assistant.ui import chat
-        if chat.WebKit2 is None:
-            self.skipTest("needs WebKitGTK")
         loaded = threading.Event()
 
         class AfterTheLoad(RecordingClient):
@@ -2455,37 +2493,79 @@ class ChatStaysPrivate(TempConfig):
                 loaded.wait(15)
                 return super().stream(*args, **kwargs)
 
-        session = session_for(GpusTied(tied="statement"))
-        session.ensure(TEXT)
-        window = chat.ChatWindow(StubApp(self.config, AfterTheLoad()), "Query text",
-                                 [{"role": "user", "content": "p", "display": "Q"}],
-                                 autostart=True, privacy=session)
-        try:
-            self.assertTrue(self._run_until(lambda: window._loaded))
-            loaded.set()
+        window = self._window_once_loaded(AfterTheLoad(), loaded)
+        self.assertTrue(self._run_until(lambda: window._cancel is None
+                                        and len(window.conversation) >= 2))
+        self.assertEqual(self._page_turns(window), [
+            ["turn user private", "You🔒 Received by the attested TEE", "Q"],
+            ["turn assistant private", "Assistantglm-5.3-flash🔒 TEE · verifiedCopy",
+             "ok"]])
+
+    def test_a_question_whose_first_step_failed_stays_on_the_page(self):
+        """The first request's own step - reading the picture, say - failing once the
+        page had loaded: _finish_stream redrew the question as it was asked, which took
+        the streaming placeholder off, and the error then took the question's place,
+        so the window showed the error alone. In a private conversation the question
+        says it was not answered; in any, it is shown as asked."""
+        for private, mark in ((False, ""), (True, "🔒 Not answered")):
+            loaded = threading.Event()
+
+            def preflight(cancel, status, privacy=None, web_search=None):
+                loaded.wait(15)
+                raise LLMError("The vision model is down", model="vision/m")
+
+            window = self._window_once_loaded(RecordingClient(), loaded, private,
+                                              preflight)
             self.assertTrue(self._run_until(lambda: window._cancel is None
                                             and len(window.conversation) >= 2))
-            got = {}
+            page = self._page_turns(window)
+            self.assertEqual([turn[:2] for turn in page],
+                             [["turn user" + (" private" if private else ""),
+                               "You" + mark],
+                              ["turn assistant", "AssistantCopy"]], page)
+            self.assertEqual(page[0][2], "Q")
+            self.assertTrue(page[1][2].startswith("Error: The vision model"), page)
 
-            def finish(view, result):
-                try:
-                    got["page"] = json.loads(view.evaluate_javascript_finish(result)
-                                             .to_string())
-                except Exception as e:      # the assertion below fails on it
-                    got["page"] = f"ERROR {e}"
+    def test_a_question_that_failed_or_was_stopped_is_shown_with_its_settled_mark(self):
+        """Settled when its request failed or was stopped - not shown to reach the
+        enclave, or not answered at all - the question's mark was changed in the
+        conversation and left as it had been drawn on the page: "Sent to the TEE
+        model…", "Private"."""
+        mid_stream, stopped, refused = range(3)
+        for case, mark in ((mid_stream, "⚠ Not shown to reach the attested enclave"),
+                           (stopped, "⚠ Not shown to reach the attested enclave"),
+                           (refused, "🔒 Not answered")):
+            loaded, started = threading.Event(), threading.Event()
 
-            GLib.timeout_add(300, lambda: window.webview.evaluate_javascript(
-                "JSON.stringify(Array.from(document.querySelectorAll('body > .turn'))"
-                ".map(function(t){return [t.className, t.querySelector('.role')"
-                ".textContent, t.querySelector('.bubble').textContent.trim()];}))",
-                -1, None, None, None, finish) and False)
-            self.assertTrue(self._run_until(lambda: "page" in got))
-            self.assertEqual(got["page"], [
-                ["turn user private", "You🔒 Received by the attested TEE", "Q"],
-                ["turn assistant private", "Assistantglm-5.3-flash🔒 TEE · verifiedCopy",
-                 "ok"]])
-        finally:
-            window.destroy()
+            class Ending(RecordingClient):
+                def stream(self, model, messages, image_base64=None, cancel=None,
+                           on_delta=None, privacy=None, **_kwargs):
+                    loaded.wait(15)
+                    if case == refused:
+                        raise LLMError("The enclave was not attested; nothing was sent",
+                                       model=model)
+                    privacy.note_sent(model)
+                    on_delta("Half an ans", "Half an ans")
+                    started.set()
+                    if case == stopped:
+                        cancel.wait(15)
+                        return None
+                    time.sleep(0.5)             # drawn, then the connection drops
+                    raise LLMError("The connection dropped", model=model)
+
+            window = self._window_once_loaded(Ending(), loaded)
+            if case == stopped:
+                self.assertTrue(self._run_until(started.is_set))
+                self.assertTrue(self._run_until(
+                    lambda: "Half" in (window._streaming_text or "")))
+                window._stop()
+            self.assertTrue(self._run_until(lambda: window._cancel is None
+                                            and len(window.conversation) >= 2))
+            page = self._page_turns(window)
+            self.assertEqual(page[0], ["turn user private", "You" + mark, "Q"], case)
+            self.assertEqual(len(page), 2, page)
+            self.assertTrue(page[1][2].startswith("Half an ans" if case == stopped
+                                                  else "Error:"), page)
 
     def test_a_question_stopped_after_it_went_is_not_said_to_be_unanswered(self):
         """Stopped or failed once it had gone to a TEE/ model, its question says what

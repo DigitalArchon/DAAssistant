@@ -349,6 +349,20 @@ def _is_dark():
     return "dark" in theme
 
 
+# Puts a turn's HTML in the streaming placeholder's place - the page's last .turn, when
+# that is the placeholder (.streaming, markdown_html.turn_html) - and otherwise after the
+# last turn, before #end. Replaced blindly, the last turn was the question whenever a
+# full redraw had taken the placeholder off first (_finish_stream's, when a request's
+# first step failed), and the answer or the error took the question's place on the page
+# (lab, Nov 2026). With no turn yet, the first goes before #end: after the screenshot.
+PLACE_JS = ("function place(h){var t=document.querySelectorAll('body > .turn');"
+            "var last=t.length?t[t.length-1]:null;"
+            "if(last&&last.classList.contains('streaming')){last.outerHTML=h;return;}"
+            "var e=document.getElementById('end');"
+            "if(e&&e.parentNode===document.body){e.insertAdjacentHTML('beforebegin',h);}"
+            "else{document.body.insertAdjacentHTML('beforeend',h);}}")
+
+
 class ChatWindow(Gtk.Window):
     def __init__(self, app, title, conversation, image_base64=None, first_model=None,
                  image_first=True, autostart=False, web_search=None, preflight=None,
@@ -1606,19 +1620,13 @@ class ChatWindow(Gtk.Window):
             return
 
         # Incremental: replace only the final turn, so streaming does not reflow the
-        # whole document on every token.
+        # whole document on every token - the streaming placeholder, and nothing else
+        # (PLACE_JS).
         if not turns:
             return
         html = self._turn_html(turns[-1], len(turns) - 1)
-        # With no turn yet, the first goes before #end: after the screenshot, if any.
-        self._js(
-            "(function(){var t=document.querySelectorAll('body > .turn');"
-            f"var h={json.dumps(html)};"
-            "if(t.length){t[t.length-1].outerHTML=h;}"
-            "else{var e=document.getElementById('end');"
-            "if(e){e.insertAdjacentHTML('beforebegin',h);}"
-            "else{document.body.insertAdjacentHTML('beforeend',h);}}"
-            "window.followEnd();})();")
+        self._js("(function(){" + PLACE_JS + f"place({json.dumps(html)});"
+                 "window.followEnd();})();")
 
     def _scroll_text_to_end(self):
         # Queued while the window was open, and it may have closed since: a destroyed
@@ -1671,12 +1679,8 @@ class ChatWindow(Gtk.Window):
                 + (to_start if scroll == "start" else ""))
             return
         if replace_placeholder:
-            self._js(
-                "(function(){var t=document.querySelectorAll('body > .turn');"
-                f"var h={json.dumps(html)};"
-                "if(t.length){t[t.length-1].outerHTML=h;}"
-                "else{document.body.insertAdjacentHTML('beforeend',h);}"
-                "window.followEnd();})();")
+            self._js("(function(){" + PLACE_JS + f"place({json.dumps(html)});"
+                     "window.followEnd();})();")
             return
         self._js(
             "(function(){var h=" + json.dumps(html) + ";"
@@ -2668,7 +2672,7 @@ class ChatWindow(Gtk.Window):
         self._finish_stream()
         if cancelled:
             self.status.set_text("Stopped")
-            self._settle_question()
+            settled = self._settle_question()
             if partial:
                 # What had come is kept, said to be cut short, and carried into the
                 # conversation like any answer - not thrown away with the Stop.
@@ -2681,6 +2685,8 @@ class ChatWindow(Gtk.Window):
                         "against a signed record: nothing shows which machine sent it. "
                         "It was asked of this conversation's attested models only."))
                 self._append_turn(turn, replace_placeholder=placeholder)
+                if settled:
+                    self._render(full=True)     # the question's mark, as it now is
                 return
             self._restore_replaced()
             self._render(full=True)      # full redraw drops the placeholder
@@ -2728,9 +2734,14 @@ class ChatWindow(Gtk.Window):
     def _settle_question(self):
         """A question whose request never went out keeps no "Private" promise badge, and
         one that went to a TEE/ model and was stopped or failed on its way says how far
-        the replies checked by then showed it received - not at all, as a rule."""
+        the replies checked by then showed it received - not at all, as a rule.
+
+        Returns whether its mark changed: the caller redraws it once the answer, or the
+        error, has taken the placeholder's place. Left as it was drawn, the page went on
+        saying "Sent to the TEE model…" or "Private" of a question the conversation had
+        settled as not shown to reach the enclave, or not answered at all."""
         if self.privacy is None:
-            return
+            return False
         for turn in reversed(self.conversation):
             if turn["role"] == "user":
                 if (turn.get("privacy") or {}).get("tone") == "pending":
@@ -2742,11 +2753,13 @@ class ChatWindow(Gtk.Window):
                             "🔒 Not answered", "warn",
                             "The request did not complete. It was only ever addressed "
                             "to this conversation's attested models."))
+                    return True
                 break
+        return False
 
     def _show_error(self, message, placeholder=False):
         self.status.set_text("")
-        self._settle_question()
+        settled = self._settle_question()
         restored = self._restore_replaced()
         # Marked so history_for() keeps it out of what is sent upstream. A provider's
         # error body is JSON too: see sound_text.
@@ -2754,8 +2767,10 @@ class ChatWindow(Gtk.Window):
                            "content": f"**Error:** {sound_text(str(message))}",
                            "error": True},
                           replace_placeholder=placeholder)
-        if restored:
-            self._render(full=True)     # the answers back, no longer marked earlier ones
+        if restored or settled:
+            # The answers back, no longer marked earlier ones; the question's mark as
+            # it now is.
+            self._render(full=True)
 
     def _finish_stream(self):
         self._cancel = None

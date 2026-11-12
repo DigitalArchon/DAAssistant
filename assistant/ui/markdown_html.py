@@ -495,6 +495,8 @@ def turn_html(role, content, is_premium=False, streaming=False, privacy=None,
     if attachments:
         body += attachments_html(attachments)
     classes = html.escape(role)
+    if streaming:
+        classes += " streaming"         # the placeholder an answer takes the place of
     if superseded:
         classes += " superseded"
     if privacy:

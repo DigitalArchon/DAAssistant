@@ -119,9 +119,9 @@ class OutsideJson(unittest.TestCase):
     def test_nested_past_200_levels_is_no_json_and_never_a_recursion_error(self):
         self.assertIsInstance(safejson.loads("[" * 200 + "]" * 200), list)
         for text in (DEEP, DEEPER, DEEP.encode()):
-            with self.subTest(length=len(text)):
-                with self.assertRaisesRegex(json.JSONDecodeError, "nested more than 200"):
-                    safejson.loads(text)
+            with self.subTest(length=len(text)), \
+                    self.assertRaisesRegex(json.JSONDecodeError, "nested more than 200"):
+                safejson.loads(text)
         with self.assertRaises(ValueError):
             safejson.loads('{"a": ' * 300 + "1" + "}" * 300)
 
@@ -133,8 +133,8 @@ class OutsideJson(unittest.TestCase):
 
     def test_a_stream_chunk_nested_too_deep_is_passed_over(self):
         from assistant.llm import LLMClient
-        lines = [f"data: {DEEPER}", 'data: {"choices": [{"delta": {"content": "ok"}, '
-                 '"finish_reason": "stop"}]}', "data: [DONE]"]
+        answer = 'data: {"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}'
+        lines = [f"data: {DEEPER}", answer, "data: [DONE]"]
         result = LLMClient._consume(iter(line.encode() for line in lines), None, None,
                                     None)
         self.assertEqual(result["text"], "ok")

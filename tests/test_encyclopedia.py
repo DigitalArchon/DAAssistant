@@ -391,7 +391,7 @@ class Import(DvdCase):
         thread, raised = self._import_held(encyclopedia,
                                            lambda: encyclopedia._stop.wait(10))
         # Built in files of their own names (atomic.temp_beside), never a fixed one.
-        building, new = encyclopedia._partial
+        building, _new = encyclopedia._partial
         self.assertTrue(os.path.exists(building))
         self.assertNotEqual(building, encyclopedia.path + ".new.importing")
         encyclopedia.stop_import()

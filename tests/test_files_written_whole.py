@@ -57,7 +57,8 @@ class WrittenWhole(Case):
         path = os.path.join(self.dir, "x.json")
         flushed = Flushed(self)
         atomic.write_json(path, {"a": 1})
-        self.assertEqual(json.load(open(path)), {"a": 1})
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"a": 1})
         self.assertEqual(mode_of(path), 0o600)
         # The temp file of its own, then the folder; nothing left beside it.
         self.assertEqual(len(flushed.flushed), 2)
@@ -71,7 +72,8 @@ class WrittenWhole(Case):
         with mock.patch.object(atomic.os, "replace", side_effect=OSError("full")), \
                 self.assertRaises(OSError):
             atomic.write_json(path, {"a": 2})
-        self.assertEqual(json.load(open(path)), {"a": 1})
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"a": 1})
         self.assertEqual(os.listdir(self.dir), ["x.json"])
 
     def test_one_for_someone_else_has_a_new_files_permissions(self):
@@ -153,7 +155,8 @@ class AnAnswerSaved(Case):
             f.write("old")
         flushed = Flushed(self)
         write_whole(path, b"new")
-        self.assertEqual(open(path).read(), "new")
+        with open(path) as f:
+            self.assertEqual(f.read(), "new")
         self.assertEqual(len(flushed.flushed), 2)
         self.assertTrue(flushed.flushed[0].endswith(".part"))
         self.assertEqual(flushed.flushed[1], self.dir)

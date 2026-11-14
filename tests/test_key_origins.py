@@ -302,9 +302,7 @@ class ANoIsLetGo(Case):
 
 class FakeClient:
     """A stand-in for LLMClient in Settings: the config each test connection is made
-    with, and nothing sent."""
-
-    made = []
+    with (FakeClient.made), and nothing sent."""
 
     def __init__(self, config):
         FakeClient.made.append(config)
@@ -312,6 +310,9 @@ class FakeClient:
 
     def test_connection(self):
         return True, "ok"
+
+
+FakeClient.made = []
 
 
 class TheDialogAsks(Case):
@@ -472,9 +473,8 @@ class InTheClear(Case):
         dialog.entries["custom_url"].set_text(self.LAN)
         dialog.entries["custom_api_key"].set_text("sk-lan")
         dialog.response(Gtk.ResponseType.OK)
-        self.assertEqual(asked, [(["The Other OpenAI-compatible endpoint API key"],
-                                  "No goes back to Settings, to change the address or "
-                                  "the key.")])
+        said = "No goes back to Settings, to change the address or the key."
+        self.assertEqual(asked, [(["The Other OpenAI-compatible endpoint API key"], said)])
         self.assertEqual(reached, [], "Save did not go through")
         self.assertIn("would have gone unencrypted", dialog.save_held.get_text())
         # Yes, and it goes through; asked once for the dialog.

@@ -516,6 +516,72 @@ class InTheClear(Case):
         dialog.response(Gtk.ResponseType.OK)
         self.assertEqual(len(asked), 1)
 
+    def test_a_secret_already_going_there_is_held_back_until_confirmed(self):
+        """Nothing is taken as confirmed (the author, Nov 14 2026): a key, or a password in
+        an address, set to go over plain http to another machine before this was asked is
+        not sent until it is confirmed once - refused in words naming the machine and
+        where to confirm - and never deleted. To this machine itself nothing is held."""
+        from assistant import proxy
+        config = self.saved(custom_url=self.LAN, custom_api_key="sk-lan",
+                            ollama_url="http://bob:hunter2@192.168.1.60:11434",
+                            proxy="http://p:q@10.0.0.3:3128")
+        held = providers.get(config, providers.CUSTOM)
+        self.assertEqual(held.api_key, "")
+        self.assertIn("would go over plain http, unencrypted, to http://192.168.1.50:8000",
+                      held.problem())
+        self.assertIn("Settings > Providers, under Keys held back, Confirm", held.problem())
+        self.assertNotIn("sk-lan", held.problem())
+        self.assertEqual(config.key_for("custom_api_key"), "")
+        self.assertEqual(config.custom_api_key, "sk-lan", "never deleted")
+        self.assertIn("password in Ollama's address", providers.get(config, providers.OLLAMA)
+                      .problem())
+        self.addCleanup(proxy.apply, Config(os.path.join(self.dir, "none.json"),
+                                            keychain=MemoryKeychain()))
+        self.assertFalse(proxy.apply(config))
+        self.assertIn("proxy's user name and password", proxy.refusal())
+        config.key_in_clear = {name: netguard.origin(address) for name, address in (
+            ("custom_api_key", self.LAN), ("ollama_url", config.ollama_url),
+            ("proxy", config.proxy))}
+        config.save()
+        config = self.fresh()
+        self.assertEqual(providers.get(config, providers.CUSTOM).api_key, "sk-lan")
+        self.assertIsNone(providers.get(config, providers.OLLAMA).problem())
+        self.assertTrue(proxy.apply(config))
+        here = self.saved(custom_url="http://127.0.0.1:8000/v1", custom_api_key="sk-here",
+                          proxy="")
+        self.assertEqual(providers.get(here, providers.CUSTOM).api_key, "sk-here")
+
+    def test_settings_lists_one_held_back_with_confirm_and_save_keeps_the_yes(self):
+        config = self.saved(custom_url=self.LAN, custom_api_key="sk-lan")
+        asked = self.asking(False)
+        dialog, reached = self.dialog(config)
+        words, confirm = dialog.held_back["custom_api_key"]
+        self.assertIn("would go over plain http", words.get_text())
+        confirm.clicked()
+        self.assertEqual(asked, [(["The Other OpenAI-compatible endpoint API key"],
+                                  "Save keeps your answer.")])
+        self.assertNotIn("custom_api_key", dialog.values()["key_in_clear"])
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(len(asked), 1, "Save does not ask about it again")
+        self.assertEqual(reached, [Gtk.ResponseType.OK])
+        asked = self.asking(True)
+        dialog, _reached = self.dialog(config)
+        dialog.held_back["custom_api_key"][1].clicked()
+        self.assertEqual(dialog.values()["key_in_clear"],
+                         {"custom_api_key": "http://192.168.1.50:8000"})
+
+    def test_an_action_asks_about_one_held_back_and_sends_it_only_on_yes(self):
+        config = self.saved(custom_url=self.LAN, custom_api_key="sk-lan")
+        asked = self.asking(False)
+        dialog, _reached = self.dialog(config)
+        FakeClient.made = []
+        dialog._on_test(None)
+        self.assertEqual([no for _what, no in asked], ["No sends nothing."])
+        self.assertEqual(FakeClient.made, [])
+        self.asking(True)
+        staged = dialog._ready_to_send(dialog._staged())
+        self.assertEqual(staged.key_for("custom_api_key"), "sk-lan", "the Yes goes with it")
+
     def test_the_question_says_what_and_where_never_the_secret_and_no_is_the_default(self):
         from assistant.ui import dialogs
         seen = {}

@@ -720,9 +720,16 @@ class SettingsDialog(Gtk.Dialog):
         # life, by Test connection, a model list, Check attestation, Ask again... and
         # Save alike, and saved with it (Assistant._ask_keys_follow).
         self.key_answers = {}
-        # The secrets going over plain http to another machine as Settings opened,
-        # which are not asked about, and those said Yes to since (_may_send_plain).
-        self._plain_at_open = config.keys_in_the_clear()
+        # The secrets set to go over plain http to another machine as Settings opened,
+        # as (name, what, address, secret): those confirmed for it (Config.key_in_clear)
+        # are sent; the rest are held back until confirmed (nothing is taken as
+        # confirmed: the author, Nov 14 2026), listed under Keys held back with
+        # Confirm.... Save asks about neither again; a Test connection, a model list or
+        # Check attestation, which send at once, ask about one held back. And those said
+        # Yes to since (_may_send_plain), which Save records (values()).
+        self._plain_at_open = config.secrets_in_the_clear()
+        self._plain_confirmed = [entry for entry in self._plain_at_open
+                                 if config.clear_agreed(entry[0], entry[2])]
         self._plain_allowed = []
         self.set_default_size(680, -1)
         self.add_button("_Cancel", Gtk.ResponseType.CANCEL)
@@ -803,34 +810,54 @@ class SettingsDialog(Gtk.Dialog):
             if answer:
                 staged.key_origins = dict(staged.key_origins or {}, **{key: going_to})
 
-    def _may_send_plain(self, staged, after_no):
+    @staticmethod
+    def _same_secret(entry, other):
+        """The same secret to the same scheme, host and port."""
+        return entry[3] == other[3] and \
+            netguard.origin(entry[2]) == netguard.origin(other[2])
+
+    def _may_send_plain(self, staged, after_no, held_too=False):
         """Before `staged` sends a secret over plain http to another machine on the
         local network (Config.keys_in_the_clear), where anyone on it can read it: asked
         first, every such secret at once, No the default (send_in_the_clear). Not one
-        going there already as Settings opened, nor one said Yes to in this dialog: the
-        same secret to the same scheme, host and port. True unless No."""
-        def same(entry, other):
-            return entry[2] == other[2] and \
-                netguard.origin(entry[1]) == netguard.origin(other[1])
+        confirmed for it, nor one said Yes to in this dialog, nor (unless `held_too`) one
+        set to go there as Settings opened: held back, listed with Confirm..., and Save
+        does not ask about it again. True unless No."""
+        known = self._plain_confirmed + self._plain_allowed
+        if not held_too:
+            known = known + self._plain_at_open
         new = []
-        for entry in staged.keys_in_the_clear():
-            if not any(same(entry, other)
-                       for other in self._plain_at_open + self._plain_allowed + new):
+        for entry in staged.secrets_in_the_clear():
+            if not any(self._same_secret(entry, other) for other in known + new):
                 new.append(entry)
         if not new:
             return True
-        if not send_in_the_clear(self, new, after_no):
+        if not send_in_the_clear(self, [entry[1:] for entry in new], after_no):
             return False
         self._plain_allowed += new
         return True
 
+    def _cleared(self, staged):
+        """Config.key_in_clear as Save records it from `staged`: each secret confirmed
+        for plain http to its address, or said Yes to here, and none for one typed anew."""
+        agreed = dict(self.config.key_in_clear) \
+            if isinstance(self.config.key_in_clear, dict) else {}
+        for entry in staged.secrets_in_the_clear():
+            name, _what, address, _secret = entry
+            if any(self._same_secret(entry, other) for other in self._plain_allowed):
+                agreed[name] = netguard.origin(address)
+            elif not any(self._same_secret(entry, other) for other in self._plain_confirmed):
+                agreed.pop(name, None)
+        return agreed
+
     def _ready_to_send(self, staged):
         """`staged`, the settings as typed, asked about as Save would ask before a Test
         connection, a model list or Check attestation sends them (_ask_moved_keys,
-        _may_send_plain); None when nothing is to be sent."""
+        _may_send_plain, one held back included); None when nothing is to be sent."""
         self._ask_moved_keys(staged)
-        if not self._may_send_plain(staged, "No sends nothing."):
+        if not self._may_send_plain(staged, "No sends nothing.", held_too=True):
             return None
+        staged.key_in_clear = self._cleared(staged)     # a Yes goes with what is sent
         return staged
 
     def _on_response(self, _dialog, response):
@@ -855,7 +882,9 @@ class SettingsDialog(Gtk.Dialog):
         not sent, and Ask again... (Save keeps the answer). None when none is."""
         from ..config import KEYED, SECRETS
         held = [key for key in SECRETS if held_back_words(self.config, key)]
-        if not held:
+        in_clear = [entry for entry in self._plain_at_open
+                    if entry not in self._plain_confirmed]
+        if not held and not in_clear:
             return None
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         title = Gtk.Label(xalign=0)
@@ -883,6 +912,31 @@ class SettingsDialog(Gtk.Dialog):
             row.pack_end(again, False, False, 0)
             box.pack_start(row, False, False, 0)
             self.held_back[key] = (words, again)
+        for entry in in_clear:
+            name, what, address, _secret = entry
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            held_words = (f"{what} would go over plain http, unencrypted, to "
+                          f"{netguard.origin(address)}, another machine on your network, "
+                          f"so it is not sent until you confirm it (or use the server's "
+                          f"https:// address).")
+            words = Gtk.Label(label=held_words, xalign=0, wrap=True, max_width_chars=64)
+            row.pack_start(words, True, True, 0)
+            confirm = Gtk.Button.new_with_label("Confirm…")
+            confirm.set_valign(Gtk.Align.CENTER)
+
+            def ask_clear(_widget, entry=entry, words=words, held_words=held_words):
+                if send_in_the_clear(self, [entry[1:]], "Save keeps your answer."):
+                    if entry not in self._plain_allowed:
+                        self._plain_allowed.append(entry)
+                    words.set_text(f"With Save, {entry[1][0].lower()}{entry[1][1:]} is "
+                                   f"sent over plain http to {netguard.origin(entry[2])}.")
+                else:
+                    words.set_text(held_words)
+
+            confirm.connect("clicked", ask_clear)
+            row.pack_end(confirm, False, False, 0)
+            box.pack_start(row, False, False, 0)
+            self.held_back[name] = (words, confirm)
         return box
 
     @staticmethod
@@ -2082,4 +2136,8 @@ class SettingsDialog(Gtk.Dialog):
             value = combo.get_active_id()
             if value:
                 out[key] = value
+        # Last, so the secrets set above (which let a confirmation for the old one go)
+        # are in place before it: what is confirmed for plain http, with this dialog's
+        # answers (_cleared).
+        out["key_in_clear"] = self._cleared(self.config.detached(**out))
         return out

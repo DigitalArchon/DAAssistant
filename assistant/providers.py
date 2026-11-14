@@ -243,13 +243,19 @@ def get(config, provider):
     NanoGPT: a config.json edited by hand does not get to send anything anywhere new.
     Nor does an address: the key goes only where it was saved for (key_withheld)."""
     kind = KINDS.get(provider) or KINDS[NANOGPT]
-    withheld = getattr(config, "key_withheld", None)
+    reasons = []
+    for check, name in (("key_withheld", kind.key_key), ("key_in_clear_withheld", kind.key_key),
+                        ("address_withheld", kind.url_key)):
+        found = getattr(config, check, None)
+        if name and callable(found):
+            reasons.append(found(name))
+    # And a key, or a password in its address, that would go over plain http to another
+    # machine before it is confirmed for it (Config.key_in_clear): nothing is sent.
     return Provider(kind,
                     getattr(config, kind.url_key, "") if kind.url_key else "",
                     getattr(config, kind.key_key, "") if kind.key_key else "",
                     getattr(config, "proxy", ""),
-                    withheld=(withheld(kind.key_key) if kind.key_key and callable(withheld)
-                              else None))
+                    withheld=next((reason for reason in reasons if reason), None))
 
 
 def role_provider(config, role):

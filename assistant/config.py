@@ -180,6 +180,14 @@ DEFAULTS = {
     # there, with Ask again.... A key entered for that address, or the address put back
     # where the key was saved for, lets the No go. No key in it.
     "key_declined": {},
+    # The address each secret was confirmed for going over plain http to another
+    # machine on the local network (netguard.in_the_clear), where anyone on it can read
+    # it: {"custom_api_key": "http://192.168.1.50:8000"}, and the same for a password
+    # written into one of ADDRESSES ({"proxy": ...}). Until then it is not sent there
+    # (key_in_clear_withheld, address_withheld): nothing is taken as confirmed, one
+    # going there before this was asked included (the author, Nov 14 2026). Settings
+    # asks (No the default) and lists one held back with Confirm.... No secret in it.
+    "key_in_clear": {},
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.
@@ -350,11 +358,21 @@ class Config:
         # Track deliberate changes so save() knows what it is allowed to overwrite.
         if name in DEFAULTS and not object.__getattribute__(self, "_loading"):
             object.__getattribute__(self, "_dirty").add(name)
-            if name in SECRETS and value != getattr(self, name, None):
+            changed = name in SECRETS and value != getattr(self, name, None)
+            # A password typed anew into an address is confirmed anew for plain http.
+            changed_password = name in ADDRESSES and netguard.credentials(
+                value or "") != netguard.credentials(getattr(self, name, "") or "")
+            if changed_password and isinstance(self.key_in_clear, dict) \
+                    and name in self.key_in_clear:
+                object.__setattr__(self, "key_in_clear", {
+                    k: v for k, v in self.key_in_clear.items() if k != name})
+                object.__getattribute__(self, "_dirty").add("key_in_clear")
+            if changed:
                 # A key entered now is for these settings' address, which save()
                 # records for it: until then it goes with the address as it stands.
-                # A No said to sending the key it replaces somewhere goes with it.
-                for kept in ("key_origins", "key_declined"):
+                # A No said to sending the key it replaces somewhere goes with it, and
+                # so does its going over plain http, confirmed for the old key.
+                for kept in ("key_origins", "key_declined", "key_in_clear"):
                     origins = getattr(self, kept, None)
                     if isinstance(origins, dict) and name in origins:
                         setattr(self, kept, {k: v for k, v in origins.items()
@@ -515,19 +533,59 @@ class Config:
         written into an address (ADDRESSES), which go with every request to it. To this
         machine itself (netguard.is_loopback) nothing leaves it, and nothing is counted.
         Settings asks before any of them is sent (SettingsDialog._may_send_plain), as
-        SealedLore's keys_in_the_clear does (Nov 2026)."""
+        SealedLore's keys_in_the_clear does (Nov 2026), confirmed for it or not."""
+        return [(what, address, secret)
+                for _name, what, address, secret in self.secrets_in_the_clear()]
+
+    def secrets_in_the_clear(self):
+        """keys_in_the_clear's, each with the name it is confirmed under (key_in_clear):
+        (name, what, address, secret)."""
         found = []
         for key in SECRETS:
-            secret = self.key_for(key)
+            secret = "" if self.key_withheld(key) else (getattr(self, key, "") or "")
             address = self.key_address(key)
             if secret and netguard.in_the_clear(address):
-                found.append((f"The {KEYED[key].name} API key", address, secret))
+                found.append((key, f"The {KEYED[key].name} API key", address, secret))
         for name, what in ADDRESS_SAID.items():
             address = str(getattr(self, name, "") or "")
             secret = netguard.credentials(address)
             if secret and netguard.in_the_clear(address):
-                found.append((what, address, secret))
+                found.append((name, what, address, secret))
         return found
+
+    def clear_agreed(self, name, address):
+        """Whether `name`'s secret was confirmed for going over plain http to
+        `address`'s origin (key_in_clear)."""
+        agreed = self.key_in_clear if isinstance(self.key_in_clear, dict) else {}
+        return bool(address) and agreed.get(name) == netguard.origin(address)
+
+    def _in_clear_words(self, name, what, address):
+        going_to = netguard.origin(address)
+        return (f"{what} would go over plain http, unencrypted, to {going_to}, another "
+                f"machine on your network, where anyone on it can read it, so it is not "
+                f"sent until you confirm that once: in Settings > Providers, under Keys "
+                f"held back, Confirm...; or use the server's https:// address.")
+
+    def key_in_clear_withheld(self, key, url=None):
+        """Why `key`'s secret is not sent with a request to `url` - its own address, when
+        not given - because it would go over plain http to another machine and that was
+        not confirmed for it (key_in_clear), or None. Nothing is taken as confirmed."""
+        if key not in KEYED or not (getattr(self, key, "") or ""):
+            return None
+        address = self.key_address(key) if url is None else url
+        if not netguard.in_the_clear(address) or self.clear_agreed(key, address):
+            return None
+        return self._in_clear_words(key, f"The {KEYED[key].name} API key", address)
+
+    def address_withheld(self, name):
+        """Why the address `name` (one of ADDRESSES) may not be used: a user name and
+        password written into it would go over plain http to another machine, and that
+        was not confirmed (key_in_clear); or None."""
+        address = str(getattr(self, name, "") or "")
+        if name not in ADDRESS_SAID or not netguard.credentials(address) \
+                or not netguard.in_the_clear(address) or self.clear_agreed(name, address):
+            return None
+        return self._in_clear_words(name, ADDRESS_SAID[name], address)
 
     def key_withheld(self, key, url=None):
         """Why `key`'s secret is not sent with a request to `url` - its own address, when
@@ -556,8 +614,11 @@ class Config:
                 f"address's own key in Settings > Providers.")
 
     def key_for(self, key, url=None):
-        """`key`'s secret, if it may go with a request to `url` (key_withheld), else ""."""
-        return "" if self.key_withheld(key, url) else (getattr(self, key, "") or "")
+        """`key`'s secret, if it may go with a request to `url` (key_withheld,
+        key_in_clear_withheld), else ""."""
+        if self.key_withheld(key, url) or self.key_in_clear_withheld(key, url):
+            return ""
+        return getattr(self, key, "") or ""
 
     def _load_addresses(self, values):
         """Each of ADDRESSES as it was typed: the file's, with the password the keychain
@@ -778,7 +839,9 @@ class Config:
         # A key given here that is not the one kept is one typed for these settings -
         # Settings' own, being tried out - and goes with their address, as one entered
         # does (__setattr__). One kept goes only where it was saved for.
-        for kept in ("key_origins", "key_declined"):
+        for kept in ("key_origins", "key_declined", "key_in_clear"):
+            if kept == "key_in_clear" and kept in overrides:
+                continue                # given as Settings has it (its own answers)
             origins = values.get(kept)
             if isinstance(origins, dict):
                 values[kept] = {

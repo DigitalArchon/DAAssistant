@@ -74,9 +74,12 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   proxy's), first goes that way to another machine, Settings asks *Send the key
   unencrypted?*, **No** the default: at **Save**, where No goes back to the settings, and
   before **Test connection**, a model list or **Check attestation**, where No sends
-  nothing. One going there already when Settings was opened is not asked about, nor one
-  to this machine itself (`localhost`, `127.0.0.1`), which never leaves it. (Up to 4.4.0
-  nothing was asked.) Give the server an https address if it can have one.
+  nothing. A Yes is kept for that address. One that was going there before this was
+  asked is held back until you confirm it once (**Keys held back**, **Confirm…**, in
+  Settings > Providers): a request that would send it is refused, naming the machine,
+  and a proxy with such a password is not used, nothing going around it. Nothing is
+  asked about one to this machine itself (`localhost`, `127.0.0.1`), which never leaves
+  it. (Up to 4.4.0 nothing was asked.) Give the server an https address if it can have one.
 - **An address is judged as written**, not by looking up where its name points. One with
   a space, a backslash or a control character in it is refused outright, and so is a
   plain http host with a `%` escape in it, since the parsers involved disagree on where

@@ -1236,9 +1236,11 @@ The address is never rewritten to https for you, and certificates are always che
 machine on your network is not encrypted: before a key, or a password written into an
 address, first goes that way, Settings asks *Send the key unencrypted?*, **No** the
 default - at **Save**, where No goes back to the settings, and before **Test
-connection**, **Browse…** or **Check attestation**, where No sends nothing. One going
-there already when Settings was opened is not asked about again, nor one to this
-machine itself. An onion service
+connection**, **Browse…** or **Check attestation**, where No sends nothing. Yes is kept
+for that address. One that was going there before this was asked is not taken as
+agreed: it is not sent until you confirm it once, under **Keys held back** in Settings >
+Providers with **Confirm…** (Save does not keep asking), and whatever would have used it
+says so. Nothing is asked about one to this machine itself. An onion service
 (`.onion`) may be plain http, since it is encrypted end to end. An address with a
 backslash, a space or a control character in it is refused outright: Python's parser and
 the one requests uses do not agree on where its host ends. So is a plain `http://` name

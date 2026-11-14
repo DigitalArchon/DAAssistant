@@ -196,6 +196,11 @@ def apply(config):
     url = (getattr(config, "proxy", "") or "").strip()
     names = VARIABLES + ("NO_PROXY", "no_proxy")
     _refused = problem(url) if url else None
+    # Its user name and password going over plain http to another machine is
+    # confirmed once first (Config.address_withheld): until then nothing goes around it.
+    withheld = getattr(config, "address_withheld", None)
+    if url and not _refused and callable(withheld):
+        _refused = withheld("proxy")
     if not url or _refused:
         for name in names:
             hostenv.restore_own(name)

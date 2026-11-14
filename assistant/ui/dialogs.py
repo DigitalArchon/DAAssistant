@@ -1229,12 +1229,12 @@ class SettingsDialog(Gtk.Dialog):
         staged = self.config.detached(**dict(self.values(), privacy_mode=True))
 
         def worker():
-            lines = []
+            lines, tips = [], []
             try:
                 session = privacy_module.PrivacySession.start(
                     staged, uses=("text", "premium", "vision"))
             except privacy_module.PrivacyError as e:
-                GLib.idle_add(self._show_attestation, [f"✗ {e}"])
+                GLib.idle_add(self._show_attestation, [f"✗ {e}"], [])
                 return
             for model in session.models():
                 try:
@@ -1250,14 +1250,18 @@ class SettingsDialog(Gtk.Dialog):
                     what = privacy_module.what_was_attested(attestation)
                     lines.append(f"✓ {model}: {attestation.headline} — "
                                  f"{what + ' ' if what else ''}{attestation.detail}")
-            GLib.idle_add(self._show_attestation, lines)
+                    tips += [f"{model} — {tip}"
+                             for tip in privacy_module.shortfall_tips(attestation)]
+            GLib.idle_add(self._show_attestation, lines, tips)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _show_attestation(self, lines):
+    def _show_attestation(self, lines, tips=()):
         if self._closed:
             return False
         self.attest_result.set_text("\n".join(lines))
+        # What each shortfall costs (privacy.shortfall_tips), as plain text.
+        self.attest_result.set_tooltip_text("\n\n".join(tips) or None)
         self.attest_button.set_sensitive(True)
         return False
 

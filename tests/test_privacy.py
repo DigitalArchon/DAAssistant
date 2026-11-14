@@ -2971,6 +2971,9 @@ class ChatStaysPrivate(TempConfig):
                       "requests on", said)
         self.assertIn("in the clear on the way", said)
         self.assertIn("the gateway's quote binds its receipt keys", said)
+        # What each shortfall costs, in its tooltip.
+        self.assertIn(f"{TEXT} — RedPill's gateway, not the model's host: what is attested "
+                      f"is RedPill's TEE gateway", dialog.attest_result.get_tooltip_text())
 
     def test_receipt_keys_the_quote_does_not_bind_turn_the_banner_amber(self):
         """As nano-gpt serves its TEE/ models (Nov 2026): the quote binds the key
@@ -2986,6 +2989,12 @@ class ChatStaysPrivate(TempConfig):
             context = window.privacy_banner.get_style_context()
             self.assertTrue(context.has_class("warn"))
             self.assertIn(privacy.RECEIPT_KEYS_LOOSE, window._privacy_title.get_text())
+            # And what it costs, where the amber is (the DA apps' standard, Nov 2026).
+            tooltip = window._privacy_title.get_tooltip_text()
+            self.assertIn(f"{TEXT} — Receipt keys not in the quote: nano-gpt had no "
+                          f"gateway report", tooltip)
+            self.assertIn("GPUs not tied to the quote: NVIDIA vouches", tooltip)
+            self.assertEqual(window._privacy_detail.get_tooltip_text(), tooltip)
         finally:
             window.destroy()
 
@@ -4346,6 +4355,42 @@ class GatewaysOwnReport(unittest.TestCase):
 
 
 @unittest.skipUnless(_has_cryptography(), "the cryptography package is not installed")
+class ShortfallsSayWhatTheyCost(unittest.TestCase):
+    """Every shortfall has a tooltip saying what it costs, with the meaning every DA app
+    gives it (the DA apps' security standard, Nov 2026; SealedLore's SHORTFALL_TIPS)."""
+
+    def test_every_shortfall_the_checks_name_has_its_words(self):
+        import inspect
+        import re
+
+        source = inspect.getsource(privacy)
+        named = set(re.findall(r'fall_short\("([^"{]+)"\)', source))
+        named |= {privacy.GATEWAY_SHORTFALL, privacy.GATEWAY_UNCHECKED,
+                  privacy.RECEIPT_KEYS_LOOSE, privacy.GPUS_LOOSE}
+        self.assertGreaterEqual(len(named), 9)
+        for what in named:
+            with self.subTest(what=what):
+                self.assertIn(what, privacy.SHORTFALL_TIPS)
+                self.assertGreater(len(privacy.SHORTFALL_TIPS[what]), len(what) + 20)
+
+    def test_what_an_attestation_lacked_is_said_in_order_and_intels_words_as_given(self):
+        attestation = privacy.Attestation(
+            model=TEXT, kind=privacy.TEE, level="partial",
+            shortfalls=[privacy.GPUS_LOOSE, "Intel TCB OutOfDate", "unforeseen"])
+        tips = privacy.shortfall_tips(attestation)
+        self.assertTrue(tips[0].startswith("GPUs not tied to the quote: "))
+        self.assertTrue(tips[1].startswith("Intel TCB OutOfDate: Intel rates the machine "
+                                           "below up to date"))
+        self.assertEqual(tips[2], "unforeseen")
+        e2ee = privacy.Attestation(model="private/x", kind=privacy.E2EE, level="full",
+                                   latest_release="v0.0.180", release_checked=True)
+        self.assertEqual(privacy.shortfall_tips(e2ee), [
+            "An older release: the enclave runs a release older than the latest "
+            "(v0.0.180), whose fixes it may lack."])
+        self.assertEqual(privacy.shortfall_tips(privacy.Attestation(
+            model=TEXT, kind=privacy.TEE, level="full", release_checked=True)), [])
+
+
 class WhatWasAttested(unittest.TestCase):
     """SealedLore's author, Nov 11 2026: "always make clear to the user what is actually
     happening and if it is properly attested or not". RedPill's gateway is not the

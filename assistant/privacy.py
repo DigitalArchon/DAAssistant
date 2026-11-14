@@ -459,6 +459,72 @@ def what_was_attested(attestation, clear=True):
     return ""
 
 
+# What each way an attestation can fall short costs, in a sentence or two (shortfall_tips):
+# the tooltip of an attestation that proved less than it could, wherever it is shown. Every
+# DA app gives each shortfall the same meaning and says what it costs (the DA apps' security
+# standard, Nov 2026); the words are SealedLore's SHORTFALL_TIPS, by this app's names.
+SHORTFALL_TIPS = {
+    GATEWAY_SHORTFALL: (
+        "RedPill's gateway, not the model's host: what is attested is RedPill's TEE gateway, "
+        "which passes each request on to the machine that runs the model. That machine is "
+        "not attested by this app: that it is a verified TEE is the gateway's word, in each "
+        "reply's signed receipt. For an enclave attested itself, end to end, use a private/ "
+        "model."),
+    GATEWAY_UNCHECKED: (
+        "RedPill's gateway unchecked: nano-gpt gave no report of the gateway just now (a "
+        "rate limit, an outage, or an answer in no shape this app reads, not that the "
+        "gateway does not serve this model), and the gateway answers some of this "
+        "provider's models now and then: a reply it answers cannot be checked. Attesting "
+        "again may find it."),
+    RECEIPT_KEYS_LOOSE: (
+        "Receipt keys not in the quote: nano-gpt had no gateway report for this model, so "
+        "the hardware's quote binds the key that signs each reply's record, not the key of "
+        "the gateway's receipts, and a receipt's word that the model was verified rests on "
+        "nano-gpt's relay."),
+    "receipt keys expired": (
+        "Receipt keys expired: the gateway's keyset names no time its keys hold until that "
+        "this app can read, so its receipts are not read. (Keys past their time are "
+        "refused.)"),
+    "no GPU evidence": (
+        "No GPU evidence: none was offered, so no GPU was checked. For a model attested "
+        "through RedPill's gateway, each reply's receipt carries the gateway's word that "
+        "the model was verified."),
+    GPUS_LOOSE: (
+        "GPUs not tied to the quote: NVIDIA vouches for these GPUs, for this check, but the "
+        "attested machine's quote does not commit to their evidence, so they may be "
+        "another machine's (the one running the model, say), passed on."),
+    "GPUs unverified": "GPUs unverified: NVIDIA's attestation service could not be reached.",
+    "NVIDIA signature unchecked": (
+        "NVIDIA signature unchecked: NVIDIA's keys could not be fetched to check its "
+        "verdict, so only what the verdict says of itself was held to (its nonce, its "
+        "time, each GPU's result)."),
+    "Intel TCB unchecked": (
+        "Intel TCB unchecked: Intel's revocation lists and ratings could not be fetched, "
+        "so whether the machine is revoked or out of date was not checked."),
+    "its release not checked against the latest": (
+        "Release not checked: the latest release of the enclave's software could not be "
+        "looked up, so an enclave on a release long superseded would read the same."),
+    "not everything could be checked": (
+        "Not everything could be checked: the attestation did not say what it lacked."),
+}
+
+
+def shortfall_tips(attestation):
+    """A sentence for each way `attestation` proved less than it could (fell_short),
+    saying what it costs: for a tooltip, as plain text. [] when it proved everything."""
+    tips = []
+    for what in getattr(attestation, "fell_short", None) or []:
+        tip = SHORTFALL_TIPS.get(what)
+        if tip is None and what.startswith("Intel TCB "):
+            tip = (f"{what}: Intel rates the machine below up to date, so a fix Intel has "
+                   f"published may be missing from it.")
+        elif tip is None and what.startswith("an older release than "):
+            tip = (f"An older release: the enclave runs a release older than the latest "
+                   f"({what[len('an older release than '):]}), whose fixes it may lack.")
+        tips.append(tip or what)
+    return tips
+
+
 @dataclass
 class Receipt:
     """What was checked about one reply."""

@@ -915,6 +915,7 @@ class ChatWindow(Gtk.Window):
         session = self.privacy
         attested = [session.attestations[m] for m in session.models()
                     if m in session.attestations]
+        tips = []                   # what each shortfall costs, for the tooltip
         if self._privacy_refused:
             tone, icon = "bad", "dialog-warning-symbolic"
             title = ("No longer offered — nothing was sent" if self._refused_retired
@@ -953,6 +954,8 @@ class ChatWindow(Gtk.Window):
                 lines.append(f"{', '.join(waiting)}: will be attested before its first "
                              f"use.")
             detail = "\n".join(lines)
+            for a in attested:
+                tips += [f"{a.model} — {tip}" for tip in privacy_module.shortfall_tips(a)]
         context = self.privacy_banner.get_style_context()
         for name in ("ok", "warn", "bad", "pending"):
             context.remove_class(name)
@@ -960,6 +963,11 @@ class ChatWindow(Gtk.Window):
         self._privacy_icon.set_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR)
         self._privacy_title.set_text(title)
         self._privacy_detail.set_text(detail)
+        # What each shortfall costs, said where the amber is (plain text: Intel names a
+        # TCB status in its own words).
+        tooltip = "\n\n".join(dict.fromkeys(tips)) or None
+        self._privacy_title.set_tooltip_text(tooltip)
+        self._privacy_detail.set_tooltip_text(tooltip)
 
     def _on_privacy_event(self, event, model, detail):
         """From the worker, by way of the main loop: see PrivacySession.listener."""

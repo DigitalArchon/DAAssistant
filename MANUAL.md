@@ -502,8 +502,9 @@ What you see:
   an older release, or one whose release could not be looked up (with **Strict** on,
   such an enclave is refused instead) - and red if it was refused, until
   it next attests well. Each `TEE/` model's line begins with what was attested and what
-  that leaves to someone's word. **Details…** lists everything that was checked, and
-  what was not. The status line follows each step: attesting, sending, receiving,
+  that leaves to someone's word, and the banner's tooltip says what each shortfall
+  costs (as **Check attestation**'s result does in Settings). **Details…** lists
+  everything that was checked, and what was not. The status line follows each step: attesting, sending, receiving,
   checking the signature.
 - **On every turn**, a badge. Your message reads *Sealed end-to-end* when it went
   sealed. Sent to a `TEE/` model, it reads *Sent to the TEE model…* while its reply is

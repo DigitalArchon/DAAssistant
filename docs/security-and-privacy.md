@@ -186,7 +186,8 @@ Intel's root, which is pinned in the app; the GPU evidence goes to NVIDIA's atte
 service with the app's own nonce, and NVIDIA's signed verdict is checked in turn; and
 RedPill's gateway's own report is asked for beside the model's, with a nonce of its own.
 Anything forged, revoked, for another nonce, or from a debug machine is refused, and
-nothing is sent. What could not be checked, or is not current, turns the banner amber.
+nothing is sent. What could not be checked, or is not current, turns the banner amber,
+and its tooltip says what each such shortfall costs.
 
 **What is attested** depends on who serves the model, and the banner says which, first
 of all, with what that leaves to someone's word:

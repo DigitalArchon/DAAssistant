@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
-from .. import (errors, imaging, llm as llm_module, privacy as privacy_module,
+from .. import (errors, imaging, llm as llm_module, netguard, privacy as privacy_module,
                 providers, proxy as proxy_module, sealed, websearch)
 from ..vendored import location as vendored_location
 from . import keys
@@ -268,6 +268,52 @@ def use_saved_key_there(parent, name, saved_for, going_to):
         return dialog.run() == Gtk.ResponseType.YES
     finally:
         dialog.destroy()
+
+
+def send_in_the_clear(parent, entries, after_no):
+    """Ask whether the secrets in `entries` - (what, address, secret), as
+    Config.keys_in_the_clear gives them - may go over plain http to another machine on
+    the local network: True only for Yes. No is the default, and what Escape and closing
+    the dialog answer. `after_no`: what No does. The secrets themselves are never shown,
+    nor a password written into an address (netguard.shown)."""
+    one = len(entries) == 1
+    listed = "\n".join(f"•  {what}: {netguard.shown(address)}"
+                       for what, address, _secret in entries)
+    dialog = Gtk.MessageDialog(transient_for=parent if isinstance(parent, Gtk.Window)
+                               else None, modal=True, destroy_with_parent=True,
+                               message_type=Gtk.MessageType.WARNING,
+                               text="Send the key unencrypted?" if one
+                               else "Send these unencrypted?")
+    dialog.format_secondary_text(
+        f"{'This goes' if one else 'These go'} over plain http, which is not encrypted, "
+        f"to another machine on your network:\n\n{listed}\n\nAnyone on that network "
+        f"can read {'it' if one else 'them'} on the way, a café's or a hotel's Wi-Fi "
+        f"included. (Sent to this machine itself, localhost or 127.0.0.1, nothing leaves "
+        f"it.) Send {'it' if one else 'them'} unencrypted? {after_no}")
+    no = dialog.add_button("_No", Gtk.ResponseType.NO)
+    dialog.add_button("_Yes", Gtk.ResponseType.YES)
+    dialog.set_default_response(Gtk.ResponseType.NO)
+    dialog.set_focus(no)
+    try:
+        return dialog.run() == Gtk.ResponseType.YES
+    finally:
+        dialog.destroy()
+
+
+def held_back_words(config, key):
+    """What Settings > Providers says of `key` while it is held back from the place its
+    address names now (Config.key_withheld), or None when it is not."""
+    from ..config import KEYED
+    if not config.key_withheld(key):
+        return None
+    saved_for = config.key_saved_for(key)
+    going_to = netguard.origin(config.key_address(key))
+    host = urlparse(going_to).hostname or going_to or "the new address"
+    said_no = (" You said No to sending it there." if going_to
+               and config.key_declined_for(key) == going_to else "")
+    return (f"The saved {KEYED[key].name} key is for {saved_for or 'another address'}, "
+            f"not sent to {going_to or 'its address now'}.{said_no} To use a key at "
+            f"{host}, enter it in its API key field, or ask again.")
 
 
 def refused_note(reason):
@@ -669,6 +715,15 @@ class SettingsDialog(Gtk.Dialog):
         self.notify = notify or (lambda message, urgency="low": None)
         self._closed = False
         self.connect("destroy", lambda _w: setattr(self, "_closed", True))
+        # What was answered in this dialog about a saved key whose address now names
+        # another place: (key, origin) -> True to send it there. Kept for the dialog's
+        # life, by Test connection, a model list, Check attestation, Ask again... and
+        # Save alike, and saved with it (Assistant._ask_keys_follow).
+        self.key_answers = {}
+        # The secrets going over plain http to another machine as Settings opened,
+        # which are not asked about, and those said Yes to since (_may_send_plain).
+        self._plain_at_open = config.keys_in_the_clear()
+        self._plain_allowed = []
         self.set_default_size(680, -1)
         self.add_button("_Cancel", Gtk.ResponseType.CANCEL)
         self.save_button = save = self.add_button("_Save", Gtk.ResponseType.OK)
@@ -713,10 +768,122 @@ class SettingsDialog(Gtk.Dialog):
         self.save_held.set_no_show_all(True)
         content.pack_start(self.save_held, False, False, 0)
 
+        # Save asks first, where it must: before a key goes unencrypted, and about a
+        # saved key whose address was moved (_on_response).
+        self.connect("response", self._on_response)
         self.show_all()
         self._sync_url_warning()
         self._sync_search_sensitivity()
         self._sync_privacy()
+
+    # ---- what a key is sent to ---------------------------------------------------
+
+    def _ask_moved_keys(self, staged, saving=False):
+        """Each saved key whose address, as typed, names another place than it was
+        saved for (key_withheld), the key itself left as it was: whether to send it
+        there (use_saved_key_there, No the default), every answer kept for the dialog
+        (key_answers); a Yes takes it there in `staged`. Asked even about a place said
+        No to at an earlier Save, unless `saving`: a Test connection, a model list or
+        Check attestation sends the key now, and nothing else would say why it was not
+        sent; at Save a No once said is not asked again (Config.key_declined)."""
+        from ..config import KEYED, SECRETS
+        for key in SECRETS:
+            kept = getattr(self.config, key, "") or ""
+            if not kept or (getattr(staged, key, "") or "") != kept \
+                    or not staged.key_withheld(key):
+                continue
+            going_to = netguard.origin(staged.key_address(key))
+            answer = self.key_answers.get((key, going_to))
+            if answer is None:
+                if saving and self.config.key_declined_for(key) == going_to:
+                    continue
+                answer = use_saved_key_there(self, KEYED[key].name,
+                                             staged.key_saved_for(key), going_to)
+                self.key_answers[(key, going_to)] = answer
+            if answer:
+                staged.key_origins = dict(staged.key_origins or {}, **{key: going_to})
+
+    def _may_send_plain(self, staged, after_no):
+        """Before `staged` sends a secret over plain http to another machine on the
+        local network (Config.keys_in_the_clear), where anyone on it can read it: asked
+        first, every such secret at once, No the default (send_in_the_clear). Not one
+        going there already as Settings opened, nor one said Yes to in this dialog: the
+        same secret to the same scheme, host and port. True unless No."""
+        def same(entry, other):
+            return entry[2] == other[2] and \
+                netguard.origin(entry[1]) == netguard.origin(other[1])
+        new = []
+        for entry in staged.keys_in_the_clear():
+            if not any(same(entry, other)
+                       for other in self._plain_at_open + self._plain_allowed + new):
+                new.append(entry)
+        if not new:
+            return True
+        if not send_in_the_clear(self, new, after_no):
+            return False
+        self._plain_allowed += new
+        return True
+
+    def _ready_to_send(self, staged):
+        """`staged`, the settings as typed, asked about as Save would ask before a Test
+        connection, a model list or Check attestation sends them (_ask_moved_keys,
+        _may_send_plain); None when nothing is to be sent."""
+        self._ask_moved_keys(staged)
+        if not self._may_send_plain(staged, "No sends nothing."):
+            return None
+        return staged
+
+    def _on_response(self, _dialog, response):
+        """Save: a saved key whose address was moved is asked about (but not one said
+        No to at an earlier Save), and a secret about to go unencrypted to another
+        machine; No to that keeps the dialog open, to change the address or the key."""
+        if response != Gtk.ResponseType.OK:
+            return
+        staged = self._staged()
+        self._ask_moved_keys(staged, saving=True)
+        if not self._may_send_plain(staged, "No goes back to Settings, to change the "
+                                            "address or the key."):
+            self.stop_emission_by_name("response")
+            self.save_held.set_text("Not saved: a key or password would have gone "
+                                    "unencrypted. Change the address or the key, or "
+                                    "Save again and choose Yes.")
+            self.save_held.show()
+
+    def _held_back_box(self):
+        """On the Providers page, each saved key held back from the place its address
+        names (Config.key_withheld) as Settings opened: where it is for, where it is
+        not sent, and Ask again... (Save keeps the answer). None when none is."""
+        from ..config import KEYED, SECRETS
+        held = [key for key in SECRETS if held_back_words(self.config, key)]
+        if not held:
+            return None
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        title = Gtk.Label(xalign=0)
+        title.set_markup("<b>Keys held back</b>")
+        box.pack_start(title, False, False, 0)
+        self.held_back = {}
+        for key in held:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            words = Gtk.Label(label=held_back_words(self.config, key), xalign=0,
+                              wrap=True, max_width_chars=64)
+            row.pack_start(words, True, True, 0)
+            again = Gtk.Button.new_with_label("Ask again…")
+            again.set_valign(Gtk.Align.CENTER)
+            going_to = netguard.origin(self.config.key_address(key))
+
+            def ask(_widget, key=key, going_to=going_to, words=words):
+                answer = use_saved_key_there(self, KEYED[key].name,
+                                             self.config.key_saved_for(key), going_to)
+                self.key_answers[(key, going_to)] = answer
+                words.set_text(f"With Save, the saved {KEYED[key].name} key goes to "
+                               f"{going_to}." if answer
+                               else held_back_words(self.config, key))
+
+            again.connect("clicked", ask)
+            row.pack_end(again, False, False, 0)
+            box.pack_start(row, False, False, 0)
+            self.held_back[key] = (words, again)
+        return box
 
     @staticmethod
     def _page():
@@ -857,6 +1024,9 @@ class SettingsDialog(Gtk.Dialog):
                 grid.attach(entry, 1, row, 1, 1)
                 self.entries[kind.key_key] = entry
                 row += 1
+        held = self._held_back_box()
+        if held is not None:
+            page.pack_start(held, False, False, 0)
         return page
 
     def url_problem(self):
@@ -896,8 +1066,11 @@ class SettingsDialog(Gtk.Dialog):
         kind = "TEE " if private_only else ""
         combo = self.provider_combos.get(key, (None, None))[0]
         # The settings as typed, so that an address or a key entered a moment ago can
-        # be browsed with before it is saved.
-        browser = ModelBrowser(self, self._staged(),
+        # be browsed with before it is saved - asked about first, as Save would.
+        staged = self._ready_to_send(self._staged())
+        if staged is None:
+            return
+        browser = ModelBrowser(self, staged,
                                title=f"Choose a {kind}{'vision ' if vision_only else ''}"
                                      f"model",
                                vision_only=vision_only, private_only=private_only,
@@ -1224,9 +1397,13 @@ class SettingsDialog(Gtk.Dialog):
         if waiting:
             self.attest_result.set_text(waiting)
             return
+        staged = self._ready_to_send(
+            self.config.detached(**dict(self.values(), privacy_mode=True)))
+        if staged is None:
+            self.attest_result.set_text("Nothing was sent.")
+            return
         self.attest_button.set_sensitive(False)
         self.attest_result.set_text("Attesting…")
-        staged = self.config.detached(**dict(self.values(), privacy_mode=True))
 
         def worker():
             lines, tips = [], []
@@ -1845,13 +2022,17 @@ class SettingsDialog(Gtk.Dialog):
         if waiting:
             self.test_result.set_text(waiting)
             return
-        self.test_button.set_sensitive(False)
-        self.test_result.set_text("Contacting the provider…")
         # Tried out on a copy, with a client of its own. This used to write the staged
         # values into the live config and put the old ones back when the test returned -
         # so Save, clicked while it was still running, was undone a moment later, in
         # memory and then on disk by whatever saved next.
-        client = type(self.client)(self.config.detached(**self.values()))
+        staged = self._ready_to_send(self._staged())
+        if staged is None:
+            self.test_result.set_text("Nothing was sent.")
+            return
+        self.test_button.set_sensitive(False)
+        self.test_result.set_text("Contacting the provider…")
+        client = type(self.client)(staged)
 
         def worker():
             ok, message = client.test_connection()

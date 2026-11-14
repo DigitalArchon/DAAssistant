@@ -2,8 +2,12 @@
 saved for. Changing the address, in Settings or by hand in config.json, does not take
 the key with it: Settings asks, when it is saved, whether to use the key there (No the
 default), and until it is told so nothing that needs the key is sent there, with words
-that say why. A key kept before origins were recorded takes its address's on the first
-start that reads it, with no question. No key is ever deleted for it.
+that say why. A No is remembered for that place, not asked again at the next Save; the
+Providers page shows the key held back, with Ask again.... What sends the key at once -
+Test connection, a model list, Check attestation - asks every time, a place said No to
+included. A key kept before origins were recorded takes its address's on the first start
+that reads it, with no question. No key is ever deleted for it. And a key or a password
+that would go over plain http to another machine on the network is asked about first.
 
 Every Config here has a file of its own and a MemoryKeychain: nothing reads or writes the
 real keyring, and no request leaves the test.
@@ -177,7 +181,7 @@ class EditedByHand(Case):
 class SettingsAsks(Case):
     """Assistant.show_settings, with a stand-in for the dialog and for the question."""
 
-    def show(self, config, values, answer):
+    def show(self, config, values, answer, answers=None):
         from assistant import app as app_module
         app = app_module.Assistant.__new__(app_module.Assistant)
         app.config, app.client, app.encyclopedia = config, None, None
@@ -192,6 +196,8 @@ class SettingsAsks(Case):
         dialog = mock.Mock()
         dialog.run.return_value = Gtk.ResponseType.OK
         dialog.values.return_value = values
+        if answers is not None:
+            dialog.key_answers = answers
         asked = []
 
         def ask(parent, name, saved_for, going_to):
@@ -220,11 +226,23 @@ class SettingsAsks(Case):
         self.assertEqual(self.fresh().custom_url, ELSEWHERE, "the address is saved")
         self.assertEqual(providers.get(self.fresh(), providers.CUSTOM).api_key, "")
         self.assertEqual(self.keychain.get("custom_api_key"), "sk-ours")
-        # Asked again at the next Save, while the address stays where it went: that is
-        # how the refusal says to send it there.
+        # The No is remembered for that place, the key itself in the keyring only.
+        self.assertEqual(self.stored()["key_declined"],
+                         {"custom_api_key": "https://llm.elsewhere.example:443"})
+        self.assertIn("You said No to sending it there",
+                      self.fresh().key_withheld("custom_api_key"))
+        # Not asked again at the next Save: a question repeated at every Save is soon
+        # answered Yes without reading (the DA apps' standard, Nov 2026).
         asked, _dialog = self.show(self.fresh(), dict(values, custom_url=ELSEWHERE), True)
-        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked, [])
+        self.assertEqual(providers.get(self.fresh(), providers.CUSTOM).api_key, "")
+        # Asked again from the Providers page (the dialog's answer): it goes there.
+        answers = {("custom_api_key", "https://llm.elsewhere.example:443"): True}
+        asked, _dialog = self.show(self.fresh(), dict(values, custom_url=ELSEWHERE), False,
+                                   answers=answers)
+        self.assertEqual(asked, [])
         self.assertEqual(providers.get(self.fresh(), providers.CUSTOM).api_key, "sk-ours")
+        self.assertEqual(self.stored()["key_declined"], {})
 
     def test_yes_sends_it_there_from_then_on(self):
         config, values = self.kept()
@@ -252,6 +270,271 @@ class SettingsAsks(Case):
                          [("NanoGPT", "https://nano-gpt.com:443",
                            "https://nano-gpt.example.net:443")])
         self.assertEqual(self.fresh().key_for("api_key"), "")
+
+
+class ANoIsLetGo(Case):
+    def test_by_a_key_entered_for_the_new_place_or_the_address_put_back(self):
+        self.saved(custom_url=OURS, custom_api_key="sk-ours")
+        config = self.saved(custom_url=ELSEWHERE,
+                            key_declined={"custom_api_key": netguard.origin(ELSEWHERE)})
+        self.assertEqual(config.key_declined_for("custom_api_key"),
+                         "https://llm.elsewhere.example:443")
+        back = self.saved(custom_url=OURS)
+        self.assertEqual(back.key_declined_for("custom_api_key"), "")
+        self.assertEqual(self.stored()["key_declined"], {})
+        self.saved(custom_url=ELSEWHERE,
+                   key_declined={"custom_api_key": netguard.origin(ELSEWHERE)})
+        theirs = self.saved(custom_api_key="sk-theirs")
+        self.assertEqual(theirs.key_declined_for("custom_api_key"), "")
+        self.assertEqual(providers.get(theirs, providers.CUSTOM).api_key, "sk-theirs")
+        # Typed in Settings and not saved yet, the same.
+        held = self.saved(key_declined={"custom_api_key": "https://x.example:443"})
+        self.assertEqual(held.detached(custom_api_key="sk-new").key_declined_for(
+            "custom_api_key"), "")
+
+    def test_nonsense_written_there_by_hand_holds_back_nothing_more(self):
+        self.saved(custom_url=OURS, custom_api_key="sk-ours")
+        self.edit_file(key_declined={"custom_api_key": 5})
+        config = self.fresh()
+        self.assertEqual(config.key_declined_for("custom_api_key"), "")
+        self.assertEqual(providers.get(config, providers.CUSTOM).api_key, "sk-ours")
+
+
+class FakeClient:
+    """A stand-in for LLMClient in Settings: the config each test connection is made
+    with, and nothing sent."""
+
+    made = []
+
+    def __init__(self, config):
+        FakeClient.made.append(config)
+        self.config = config
+
+    def test_connection(self):
+        return True, "ok"
+
+
+class TheDialogAsks(Case):
+    """Settings itself, on a virtual display: what it asks before a Test connection, a
+    model list, Check attestation and Save send a key, and what it does with the
+    answers."""
+
+    def dialog(self, config):
+        from assistant.ui.dialogs import SettingsDialog
+        FakeClient.made = []
+        dialog = SettingsDialog(None, config, FakeClient(config))
+        FakeClient.made = []
+        self.addCleanup(dialog.destroy)
+        return dialog
+
+    def asking(self, moved=None, plain=None):
+        """The two questions, answered `moved` and `plain`; what each was asked."""
+        from assistant.ui import dialogs
+        asked = {"moved": [], "plain": []}
+
+        def moved_question(parent, name, saved_for, going_to):
+            asked["moved"].append((name, saved_for, going_to))
+            return moved
+
+        def plain_question(parent, entries, after_no):
+            asked["plain"].append(([(what, address) for what, address, _s in entries],
+                                   after_no))
+            return plain
+
+        patches = (mock.patch.object(dialogs, "use_saved_key_there", moved_question),
+                   mock.patch.object(dialogs, "send_in_the_clear", plain_question))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return asked
+
+    def saved_moved(self):
+        """A custom endpoint's key saved for OURS, its address since moved by hand."""
+        self.saved(custom_url=OURS, custom_api_key="sk-ours", text_provider="custom",
+                   text_model="m")
+        self.edit_file(custom_url=ELSEWHERE)
+        return self.fresh()
+
+    def test_an_action_asks_every_time_a_place_said_no_to_included(self):
+        config = self.saved_moved()
+        config.key_declined = {"custom_api_key": netguard.origin(ELSEWHERE)}
+        config.save()
+        config = self.fresh()
+        asked = self.asking(moved=True)
+        dialog = self.dialog(config)
+        dialog._on_test(None)
+        self.assertEqual(asked["moved"], [("Other OpenAI-compatible endpoint",
+                                           "https://llm.example:443",
+                                           "https://llm.elsewhere.example:443")])
+        tried = FakeClient.made[-1]
+        self.assertEqual(providers.get(tried, providers.CUSTOM).api_key, "sk-ours")
+        # The answer stands for the dialog, Save included: asked once.
+        dialog._on_test(None)
+        self.assertEqual(len(asked["moved"]), 1)
+        self.assertEqual(dialog.key_answers,
+                         {("custom_api_key", "https://llm.elsewhere.example:443"): True})
+
+    def test_a_no_to_an_action_sends_that_key_nowhere(self):
+        config = self.saved_moved()
+        self.asking(moved=False)
+        dialog = self.dialog(config)
+        dialog._on_test(None)
+        self.assertEqual(providers.get(FakeClient.made[-1], providers.CUSTOM).api_key, "")
+
+    def test_save_does_not_ask_again_about_a_place_said_no_to_and_ask_again_does(self):
+        config = self.saved_moved()
+        config.key_declined = {"custom_api_key": netguard.origin(ELSEWHERE)}
+        config.save()
+        asked = self.asking(moved=True)
+        dialog = self.dialog(self.fresh())
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(asked["moved"], [])
+        self.assertEqual(dialog.key_answers, {})
+        words, again = dialog.held_back["custom_api_key"]
+        self.assertIn("The saved Other OpenAI-compatible endpoint key is for "
+                      "https://llm.example:443, not sent to "
+                      "https://llm.elsewhere.example:443. You said No to sending it "
+                      "there.", words.get_text())
+        again.clicked()
+        self.assertEqual(len(asked["moved"]), 1)
+        self.assertEqual(words.get_text(), "With Save, the saved Other OpenAI-compatible "
+                                           "endpoint key goes to "
+                                           "https://llm.elsewhere.example:443.")
+        self.assertEqual(dialog.key_answers,
+                         {("custom_api_key", "https://llm.elsewhere.example:443"): True})
+
+    def test_no_key_held_back_no_box(self):
+        dialog = self.dialog(self.saved(custom_url=OURS, custom_api_key="sk-ours"))
+        self.assertFalse(hasattr(dialog, "held_back"))
+
+
+class InTheClear(Case):
+    """A key, or a password written into an address, that would go over plain http to
+    another machine on the local network - allowed, but anyone on that network reads it
+    - is asked about first, No the default (SealedLore's keys_in_the_clear, the DA apps'
+    standard, Nov 2026). To this machine itself nothing leaves it."""
+
+    LAN = "http://192.168.1.50:8000/v1/chat/completions"
+
+    def test_what_goes_unencrypted_to_another_machine_and_what_does_not(self):
+        self.assertTrue(netguard.in_the_clear(self.LAN))
+        self.assertTrue(netguard.in_the_clear("socks5h://10.0.0.2:1080"))
+        for not_in_the_clear in ("http://127.0.0.1:11434/v1", "http://localhost/v1",
+                                 "http://[::1]:8080/v1", "http://ai.localhost/v1",
+                                 "https://192.168.1.50/v1", "https://api.example/v1",
+                                 "http://192.168.1.50./v1", "not an address"):
+            self.assertFalse(netguard.in_the_clear(not_in_the_clear), not_in_the_clear)
+        self.assertTrue(netguard.is_loopback("127.8.9.10"))
+        self.assertTrue(netguard.is_loopback("::ffff:127.0.0.1"))
+        self.assertFalse(netguard.is_loopback("192.168.1.50"))
+        self.assertFalse(netguard.is_loopback("127.0.0.1."))
+        self.assertEqual(netguard.credentials("http://bob:hunter2@nas.local/v1"),
+                         "bob:hunter2")
+        self.assertEqual(netguard.credentials("http://nas.local/v1"), "")
+
+    def test_a_key_and_passwords_going_there_are_listed_never_one_held_back(self):
+        config = self.saved(custom_url=self.LAN, custom_api_key="sk-lan",
+                            ollama_url="http://bob:hunter2@192.168.1.60:11434",
+                            proxy="http://p:q@10.0.0.3:3128")
+        found = {(what, address) for what, address, _s in config.keys_in_the_clear()}
+        self.assertEqual(found, {
+            ("The Other OpenAI-compatible endpoint API key", self.LAN),
+            ("The password in Ollama's address", "http://bob:hunter2@192.168.1.60:11434"),
+            ("The proxy's user name and password", "http://p:q@10.0.0.3:3128")})
+        moved = self.saved(custom_url="http://192.168.1.99/v1/chat/completions")
+        self.assertNotIn("The Other OpenAI-compatible endpoint API key",
+                         {what for what, _a, _s in moved.keys_in_the_clear()})
+
+    def asking(self, plain):
+        from assistant.ui import dialogs
+        asked = []
+
+        def plain_question(parent, entries, after_no):
+            asked.append(([what for what, _a, _s in entries], after_no))
+            return plain
+
+        patch = mock.patch.object(dialogs, "send_in_the_clear", plain_question)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return asked
+
+    def dialog(self, config):
+        from assistant.ui.dialogs import SettingsDialog
+        dialog = SettingsDialog(None, config, FakeClient(config))
+        self.addCleanup(dialog.destroy)
+        reached = []
+        dialog.connect("response", lambda _d, response: reached.append(response))
+        return dialog, reached
+
+    def test_save_asks_and_no_keeps_the_dialog_open(self):
+        asked = self.asking(False)
+        dialog, reached = self.dialog(self.fresh())
+        dialog.entries["custom_url"].set_text(self.LAN)
+        dialog.entries["custom_api_key"].set_text("sk-lan")
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(asked, [(["The Other OpenAI-compatible endpoint API key"],
+                                  "No goes back to Settings, to change the address or "
+                                  "the key.")])
+        self.assertEqual(reached, [], "Save did not go through")
+        self.assertIn("would have gone unencrypted", dialog.save_held.get_text())
+        # Yes, and it goes through; asked once for the dialog.
+        asked[:] = []
+        self.asking(True)
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(reached, [Gtk.ResponseType.OK])
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(reached, [Gtk.ResponseType.OK] * 2)
+
+    def test_an_action_asks_and_no_sends_nothing(self):
+        asked = self.asking(False)
+        dialog, _reached = self.dialog(self.fresh())
+        dialog.entries["custom_url"].set_text(self.LAN)
+        dialog.entries["custom_api_key"].set_text("sk-lan")
+        FakeClient.made = []
+        dialog._on_test(None)
+        self.assertEqual([no for _what, no in asked], ["No sends nothing."])
+        self.assertEqual(FakeClient.made, [])
+        self.assertEqual(dialog.test_result.get_text(), "Nothing was sent.")
+
+    def test_not_asked_about_one_going_there_as_settings_opened_nor_to_this_machine(self):
+        asked = self.asking(False)
+        config = self.saved(custom_url=self.LAN, custom_api_key="sk-lan")
+        dialog, reached = self.dialog(config)
+        dialog.entries["custom_url"].set_text(self.LAN.replace("/chat/completions", ""))
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(asked, [])
+        self.assertEqual(reached, [Gtk.ResponseType.OK])
+        dialog, reached = self.dialog(self.fresh())
+        dialog.entries["custom_url"].set_text("http://127.0.0.1:8000/v1")
+        dialog.entries["custom_api_key"].set_text("sk-other")
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(asked, [])
+        # A new key to the same machine is asked about.
+        dialog, reached = self.dialog(self.fresh())
+        dialog.entries["custom_url"].set_text(self.LAN)
+        dialog.entries["custom_api_key"].set_text("sk-new")
+        dialog.response(Gtk.ResponseType.OK)
+        self.assertEqual(len(asked), 1)
+
+    def test_the_question_says_what_and_where_never_the_secret_and_no_is_the_default(self):
+        from assistant.ui import dialogs
+        seen = {}
+
+        def run(dialog):
+            no = dialog.get_widget_for_response(Gtk.ResponseType.NO)
+            seen["default is No"] = dialog.get_default_widget() is no
+            seen["secondary"] = dialog.get_property("secondary-text")
+            return Gtk.ResponseType.DELETE_EVENT
+
+        with mock.patch.object(Gtk.MessageDialog, "run", run):
+            answer = dialogs.send_in_the_clear(None, [
+                ("The proxy's user name and password", "http://p:q@10.0.0.3:3128", "p:q")],
+                "No sends nothing.")
+        self.assertIs(answer, False)
+        self.assertTrue(seen["default is No"])
+        self.assertIn("http://…@10.0.0.3:3128", seen["secondary"])
+        self.assertNotIn("p:q", seen["secondary"])
+        self.assertIn("No sends nothing.", seen["secondary"])
 
 
 class TheQuestion(unittest.TestCase):

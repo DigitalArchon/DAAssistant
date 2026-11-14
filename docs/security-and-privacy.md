@@ -68,9 +68,15 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   byte is sent. It is never rewritten to https for you, and certificates are always
   checked.
 - **Plain http on your own network is not encrypted.** The app allows it, because that is
-  how a model server next door is reached, and it does not ask first: the key and the
-  whole conversation cross that network as they are, readable by anyone on it - a café's
-  or a hotel's Wi-Fi too. Give the server an https address if it can have one.
+  how a model server next door is reached: the key and the whole conversation cross that
+  network as they are, readable by anyone on it - a café's or a hotel's Wi-Fi too. So
+  before a key, or a password written into an address (an endpoint's, Ollama's, the
+  proxy's), first goes that way to another machine, Settings asks *Send the key
+  unencrypted?*, **No** the default: at **Save**, where No goes back to the settings, and
+  before **Test connection**, a model list or **Check attestation**, where No sends
+  nothing. One going there already when Settings was opened is not asked about, nor one
+  to this machine itself (`localhost`, `127.0.0.1`), which never leaves it. (Up to 4.4.0
+  nothing was asked.) Give the server an https address if it can have one.
 - **An address is judged as written**, not by looking up where its name points. One with
   a space, a backslash or a control character in it is refused outright, and so is a
   plain http host with a `%` escape in it, since the parsers involved disagree on where
@@ -125,9 +131,14 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   was saved, which `config.json` records (not the key). An address changed since - in
   Settings, or edited into `config.json` by hand - is not sent the key, nor anything that
   needs it, until you say so: **Save** in Settings asks *Use the saved key with* the new
-  host, No the default, and until then each request to it is refused, saying why. A key
-  saved by 4.4.0 or earlier is taken to be for the address saved beside it, once, with no
-  question. No key is deleted for this. (Up to 4.4.0 a key went to whatever its
+  host, No the default, and until then each request to it is refused, saying why. A No
+  is remembered for that place and not asked again at later saves (a question asked at
+  every Save is soon answered Yes without reading): **Keys held back** on the Providers
+  page says where each such key is for and where it is not sent, with **Ask again…**,
+  and a key typed for the new address is that address's. **Test connection**, a model
+  list and **Check attestation**, which send the key at once, ask every time, a place
+  said No to included, and No sends it nowhere. A key saved by 4.4.0 or earlier is taken
+  to be for the address saved beside it, once, with no question. No key is deleted for this. (Up to 4.4.0 a key went to whatever its
   provider's address had been changed to.) Nor does Private Mode's relay ever get a user
   name and password written into NanoGPT's address.
 

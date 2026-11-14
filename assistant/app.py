@@ -1148,28 +1148,47 @@ class Assistant:
     def _ask_keys_follow(self, values, parent):
         """Settings' `values` about to be saved: for each API key kept for an address
         they put on another server - the address changed in Settings, or edited into
-        config.json since - with the key itself left as it was, ask whether it is to go
-        there (use_saved_key_there, No the default). The key origins to save, with the
-        Yes answers' new ones, or None when nothing was asked or every answer was No:
-        then each key goes on going only where it was saved for (Config.key_withheld).
-        A key changed here is for the address it is saved with, and is not asked about.
-        Asked at every Save while the address stays moved: that is how the message that
-        refuses a request says to send it there."""
+        config.json since - with the key itself left as it was, whether it is to go
+        there (use_saved_key_there, No the default). (origins, declined): the key
+        origins to save, with the Yes answers' new ones, and the places said No to
+        (Config.key_declined), each None when unchanged. A key goes on going only where
+        it was saved for until it is told otherwise (Config.key_withheld). A key changed
+        here is for the address it is saved with, and is not asked about.
+
+        The dialog has asked already, as Save was pressed (SettingsDialog.key_answers):
+        its answers stand. One it has none for is asked here; but not a place said No
+        to at an earlier Save - a question repeated at every Save is soon answered Yes
+        without reading (the DA apps' standard, Nov 2026) - which Settings > Providers
+        shows held back, with Ask again...."""
         from .config import KEYED, SECRETS
         staged = self.config.detached(**values)
         origins = dict(self.config.key_origins or {}) \
             if isinstance(self.config.key_origins, dict) else {}
-        said_yes = False
+        declined = dict(self.config.key_declined or {}) \
+            if isinstance(self.config.key_declined, dict) else {}
+        answers = getattr(parent, "key_answers", None)
+        answers = answers if isinstance(answers, dict) else {}
+        said_yes = said_no = False
         for key in SECRETS:
             kept = getattr(self.config, key, "") or ""
             if not kept or values.get(key, kept) != kept or not staged.key_withheld(key):
                 continue
             going_to = netguard.origin(staged.key_address(key))
-            if use_saved_key_there(parent, KEYED[key].name, staged.key_saved_for(key),
-                                   going_to):
+            answer = answers.get((key, going_to))
+            if answer is None:
+                if self.config.key_declined_for(key) == going_to:
+                    continue
+                answer = use_saved_key_there(parent, KEYED[key].name,
+                                             staged.key_saved_for(key), going_to)
+            if answer:
                 origins[key] = going_to
+                declined.pop(key, None)
                 said_yes = True
-        return origins if said_yes else None
+            elif declined.get(key) != going_to:
+                declined[key] = going_to
+                said_no = True
+        return (origins if said_yes else None,
+                declined if said_yes or said_no else None)
 
     def show_settings(self):
         # run() spins its own main loop, so a hotkey or --action=settings can arrive
@@ -1192,7 +1211,7 @@ class Assistant:
                     return
                 # Asked before anything changes: a kept key whose address this moves
                 # to another server goes there only if the answer is Yes.
-                follows = self._ask_keys_follow(values, dialog)
+                follows, declined = self._ask_keys_follow(values, dialog)
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
                           self.config.encyclopedia_enabled, action_labels(self.config))
                 was_private = bool(self.config.privacy_mode)
@@ -1205,6 +1224,8 @@ class Assistant:
                         setattr(self.config, key, value)
                 if follows is not None:
                     self.config.key_origins = follows
+                if declined is not None:
+                    self.config.key_declined = declined
                 try:
                     self.config.save()
                 except OSError as e:

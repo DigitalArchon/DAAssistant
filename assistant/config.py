@@ -175,6 +175,13 @@ DEFAULTS = {
     # for it. A key kept before this was recorded takes its address's origin at the
     # first start that reads it, with no question asked.
     "key_origins": {},
+    # The address each key's place was said No to, when Settings asked whether to send
+    # the saved key there: {"custom_api_key": "https://llm.elsewhere.example:443"}. It is
+    # not asked about again at later saves - a question repeated at every Save is soon
+    # answered Yes without reading - and Settings > Providers says the key is held back
+    # there, with Ask again.... A key entered for that address, or the address put back
+    # where the key was saved for, lets the No go. No key in it.
+    "key_declined": {},
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.
@@ -192,6 +199,11 @@ KEYED = {kind.key_key: kind for kind in providers.KINDS.values() if kind.key_key
 # 4.1.0 the whole address went into the file, password and all.
 ADDRESSES = ("proxy", "custom_url", "ollama_url")
 ADDRESS_SECRET = "{}_with_password"
+# Each of ADDRESSES, as the question before a password in it goes unencrypted names it
+# (Config.keys_in_the_clear).
+ADDRESS_SAID = {"proxy": "The proxy's user name and password",
+                "custom_url": "The password in the other endpoint's address",
+                "ollama_url": "The password in Ollama's address"}
 
 # Defaults that were, and that their provider no longer lists or this app can no longer
 # use: a file still holding one (save() writes every setting) is moved to today's
@@ -343,9 +355,12 @@ class Config:
             if name in SECRETS and value != getattr(self, name, None):
                 # A key entered now is for these settings' address, which save()
                 # records for it: until then it goes with the address as it stands.
-                origins = getattr(self, "key_origins", None)
-                if isinstance(origins, dict) and name in origins:
-                    self.key_origins = {k: v for k, v in origins.items() if k != name}
+                # A No said to sending the key it replaces somewhere goes with it.
+                for kept in ("key_origins", "key_declined"):
+                    origins = getattr(self, kept, None)
+                    if isinstance(origins, dict) and name in origins:
+                        setattr(self, kept, {k: v for k, v in origins.items()
+                                             if k != name})
         object.__setattr__(self, name, value)
 
     def _read_file(self, warnings=None):
@@ -486,6 +501,34 @@ class Config:
                                                                    dict) else None
         return str(recorded) if recorded else netguard.origin(self.key_address(key))
 
+    def key_declined_for(self, key):
+        """The origin said No to sending `key` to (key_declined), or ""."""
+        declined = self.key_declined if isinstance(self.key_declined, dict) else {}
+        found = declined.get(key)
+        return found if isinstance(found, str) else ""
+
+    def keys_in_the_clear(self):
+        """(what, address, secret) for each secret these settings would send over plain
+        http to another machine on the local network, where anyone on that network can
+        read it on its way - a café's or a hotel's Wi-Fi included: an API key, unless it
+        is held back from its address (key_withheld), and a user name and password
+        written into an address (ADDRESSES), which go with every request to it. To this
+        machine itself (netguard.is_loopback) nothing leaves it, and nothing is counted.
+        Settings asks before any of them is sent (SettingsDialog._may_send_plain), as
+        SealedLore's keys_in_the_clear does (Nov 2026)."""
+        found = []
+        for key in SECRETS:
+            secret = self.key_for(key)
+            address = self.key_address(key)
+            if secret and netguard.in_the_clear(address):
+                found.append((f"The {KEYED[key].name} API key", address, secret))
+        for name, what in ADDRESS_SAID.items():
+            address = str(getattr(self, name, "") or "")
+            secret = netguard.credentials(address)
+            if secret and netguard.in_the_clear(address):
+                found.append((what, address, secret))
+        return found
+
     def key_withheld(self, key, url=None):
         """Why `key`'s secret is not sent with a request to `url` - its own address, when
         not given - or None when it may be. A key goes only to the origin it was saved
@@ -503,11 +546,14 @@ class Config:
         name = KEYED[key].name
         where = (f"the address in {os.path.basename(self.config_file)}"
                  if KEYED[key].id == providers.NANOGPT else f"{name}'s address")
+        declined = " You said No to sending it there." if (
+            going_to and self.key_declined_for(key) == going_to) else ""
         return (f"The {name} API key was saved for {saved_for or 'another address'}, "
                 f"and {where} is now {going_to or netguard.shown(self.key_address(key))}: "
-                f"the key is not sent there. If it is meant for that address, open "
-                f"Settings and save, and say Yes when asked to use it there; or enter "
-                f"that address's own key in Settings > Providers.")
+                f"the key is not sent there.{declined} If it is meant for that address, "
+                f"open Settings and save, and say Yes when asked to use it there (Ask "
+                f"again... in Settings > Providers, if you said No); or enter that "
+                f"address's own key in Settings > Providers.")
 
     def key_for(self, key, url=None):
         """`key`'s secret, if it may go with a request to `url` (key_withheld), else ""."""
@@ -604,6 +650,15 @@ class Config:
                     origins.pop(key, None)
         if origins != self.key_origins:
             self.key_origins = origins          # dirty, so written below
+        # A No said to sending a key somewhere goes once there is nothing to hold back:
+        # the key taken out, or its address put back where it was saved for.
+        declined = dict(self.key_declined) if isinstance(self.key_declined, dict) else {}
+        for key in list(declined):
+            if key not in SECRETS or not isinstance(declined[key], str) \
+                    or not getattr(self, key, "") or not self.key_withheld(key):
+                declined.pop(key)
+        if declined != self.key_declined:
+            self.key_declined = declined
         merged = dict(DEFAULTS)
         on_disk, error = self._read_file()
         if error:
@@ -731,11 +786,12 @@ class Config:
         # A key given here that is not the one kept is one typed for these settings -
         # Settings' own, being tried out - and goes with their address, as one entered
         # does (__setattr__). One kept goes only where it was saved for.
-        origins = values.get("key_origins")
-        if isinstance(origins, dict):
-            values["key_origins"] = {
-                key: origin for key, origin in origins.items()
-                if not (key in overrides and overrides[key] != getattr(self, key, None))}
+        for kept in ("key_origins", "key_declined"):
+            origins = values.get(kept)
+            if isinstance(origins, dict):
+                values[kept] = {
+                    key: origin for key, origin in origins.items()
+                    if not (key in overrides and overrides[key] != getattr(self, key, None))}
         for key, value in values.items():
             setattr(copy, key, value)
         object.__setattr__(copy, "_loading", False)

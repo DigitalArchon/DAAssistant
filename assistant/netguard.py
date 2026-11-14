@@ -108,6 +108,52 @@ def is_local(host):
                for network in LOCAL_NETWORKS)
 
 
+def is_loopback(host):
+    """Whether `host`, as written, is this machine itself - 127.0.0.0/8, ::1, localhost
+    and a name under .localhost - where what is sent never leaves it. Any other local
+    host (is_local) is taken for another machine, nothing being looked up, and plain http
+    to it can be read by anyone on the network between, a café's or a hotel's Wi-Fi
+    included. As SealedLore's is_loopback_host (Nov 2026)."""
+    text = (host or "").strip().lower()
+    if not is_local(text):
+        return False
+    name = _unescaped(text.rstrip(".")) or ""
+    if name in LOCAL_NAMES or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    mapped = getattr(address, "ipv4_mapped", None)
+    return (mapped or address).is_loopback
+
+
+def in_the_clear(url):
+    """Whether a request to `url` crosses a network unencrypted: plain http - or a proxy
+    spoken to in anything but https, SOCKS included - to another machine on this one
+    (is_local, not is_loopback). Allowed - problem() lets it go - but anyone on that
+    network can read it, a key and a password with it. Anywhere else plain http is
+    refused outright (problem)."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = parsed.hostname or ""
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    return bool(scheme) and scheme != "https" and is_local(host) and not is_loopback(host)
+
+
+def credentials(url):
+    """The user name and password written into `url`, as one text - "" if it has none,
+    or cannot be read as an address. They go with every request to it, as Basic
+    credentials: in the clear over plain http, key or no key."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        return ":".join(part for part in (parsed.username, parsed.password) if part)
+    except ValueError:
+        return ""
+
+
 def is_onion(host):
     """Whether `host` is a Tor onion service."""
     host = (host or "").strip().lower().rstrip(".")

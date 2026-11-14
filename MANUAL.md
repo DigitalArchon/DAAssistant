@@ -260,7 +260,12 @@ an endpoint's address and leave its key as it is, and **Save** asks *Use the sav
 with* the new host - **No** is the default. Until you say Yes, or enter that address's own
 key, the key is not sent there, and nothing that needs it is: every request to it says
 so, and how to send it. The same goes for an address edited into `config.json` by hand,
-NanoGPT's included: the next **Save** in Settings asks. A key saved by 4.4.0 or earlier
+NanoGPT's included: the next **Save** in Settings asks. A **No** is remembered for that
+address, so later saves do not ask again: under **Keys held back** on the Providers page,
+each such key says where it is for and where it is not sent, with **Ask again…** to be
+asked once more (**Save** keeps the answer). **Test connection**, **Browse…** and **Check
+attestation**, which send the key at once, ask every time, an address said No to
+included; No sends it nowhere. A key saved by 4.4.0 or earlier
 is taken to be for the address saved beside it the first time the app starts, with no
 question; no key is deleted for any of this, and putting the address back sends it
 again.
@@ -1227,7 +1232,13 @@ accepted only for this machine and its local network - `localhost`, `127.x`, `10
 model server of your own is reached. For any other address, Settings will not save it,
 and a `config.json` edited by hand to hold one sends nothing: the chat says why instead.
 The address is never rewritten to https for you, and certificates are always checked.
-(Up to 3.2.0 such a URL was only warned about, and then used.) An onion service
+(Up to 3.2.0 such a URL was only warned about, and then used.) Plain http to another
+machine on your network is not encrypted: before a key, or a password written into an
+address, first goes that way, Settings asks *Send the key unencrypted?*, **No** the
+default - at **Save**, where No goes back to the settings, and before **Test
+connection**, **Browse…** or **Check attestation**, where No sends nothing. One going
+there already when Settings was opened is not asked about again, nor one to this
+machine itself. An onion service
 (`.onion`) may be plain http, since it is encrypted end to end. An address with a
 backslash, a space or a control character in it is refused outright: Python's parser and
 the one requests uses do not agree on where its host ends. So is a plain `http://` name

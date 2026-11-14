@@ -246,8 +246,10 @@ def private_entries(private_ids, entries):
 
 
 def private_list_url(api_url):
-    """Where the Private Mode relay lists its models: public, no key is sent."""
-    parsed = urlparse(api_url)
+    """Where the Private Mode relay lists its models: public, no key is sent - nor a
+    user name and password written into the address (relay_url), which requests and
+    httpx would send as a Basic login."""
+    parsed = urlparse(netguard.without_password(api_url))
     return f"{parsed.scheme}://{parsed.netloc}{RELAY_MODELS_PATH}"
 
 

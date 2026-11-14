@@ -129,7 +129,11 @@ def check(then=None):
 
 
 def relay_url(api_url):
-    parsed = urlparse(api_url)
+    """The relay's address, without a user name and password written into NanoGPT's: the
+    relay takes the API key, never those, and httpx sends an address's own as a Basic
+    login - to the relay, and to everything Tinfoil's client fetches through it. Taken
+    out, as DA Toolkit does (Nov 2026)."""
+    parsed = urlparse(netguard.without_password(api_url))
     return f"{parsed.scheme}://{parsed.netloc}{RELAY_PATH}"
 
 

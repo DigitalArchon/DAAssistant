@@ -290,6 +290,52 @@ class ListingsKeepNoPassword(Case):
                          [{"id": "llama-4"}])
 
 
+class PrivateModesRelayGetsNoPassword(unittest.TestCase):
+    """NanoGPT's address, edited by hand to carry a user name and password, gave them to
+    the Private Mode relay as a Basic login - its preflight, the sealed request, the
+    enclave's attestation fetched through it - and to the public list of its models,
+    fetched with no key at all. Taken out, as DA Toolkit's relay_url does (Nov 2026)."""
+
+    NANOGPT = "https://dave:pa55@nano-gpt.com/api/v1/chat/completions"
+
+    def test_the_relay_and_its_list_are_addressed_without_them(self):
+        from assistant import models, sealed
+        self.assertEqual(sealed.relay_url(self.NANOGPT),
+                         "https://nano-gpt.com/api/v1/private/tinfoil")
+        self.assertEqual(models.private_list_url(self.NANOGPT),
+                         "https://nano-gpt.com/api/v1/private/tinfoil/models")
+        self.assertEqual(sealed.relay_url("https://nano-gpt.com/api/v1/chat/completions"),
+                         "https://nano-gpt.com/api/v1/private/tinfoil")
+
+    def test_nothing_sent_to_the_relay_carries_them(self):
+        import httpx
+
+        from assistant import sealed
+        seen = []
+
+        def relay(request):
+            seen.append(request)
+            if request.url.path.endswith("/models"):
+                return httpx.Response(200, json={"data": [{"id": "private/glm-5-3"}]})
+            return httpx.Response(200, json={"cacheScope": "c" * 64,
+                                             "upstreamModel": "glm-5.3"})
+
+        enclave = sealed.Enclave(sealed.relay_url(self.NANOGPT),
+                                 verifier=lambda *_a: self.fail("not attested here"))
+        client = sealed.PrivateModeClient(
+            self.NANOGPT, "k", enclave=enclave,
+            preflight_client=httpx.Client(transport=httpx.MockTransport(relay)))
+        self.assertEqual(client.private_ids(), ["private/glm-5-3"])
+        client._preflight("private/glm-5-3", 10)
+        self.assertEqual(len(seen), 2)
+        for request in seen:
+            self.assertNotIn("dave", str(request.url))
+            self.assertNotIn("pa55", str(request.url))
+            self.assertNotIn("Basic", request.headers.get("Authorization", ""))
+        self.assertEqual(seen[1].headers["Authorization"], "Bearer k")
+        self.assertNotIn("dave", client.endpoint)
+
+
 class EveryAddressSetting(unittest.TestCase):
     def test_they_are_the_settings_that_hold_an_address(self):
         from assistant.config import DEFAULTS

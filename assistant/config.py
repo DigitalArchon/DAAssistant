@@ -19,7 +19,7 @@ import stat
 import tempfile
 from urllib.parse import urlparse
 
-from . import netguard, providers
+from . import netguard, providers, safejson
 from .keychain import KeychainError, MemoryKeychain, SystemKeychain
 
 DEFAULTS = {
@@ -372,7 +372,9 @@ class Config:
             return {}, None
         try:
             with open(self.config_file, "r") as f:
-                loaded = json.load(f)
+                # Edited by hand, or by anything else of this user's: nested past
+                # reading is refused as unreadable, never a crash at start.
+                loaded = safejson.load(f)
             if not isinstance(loaded, dict):
                 raise ValueError("config root is not an object")
         except (OSError, ValueError) as e:

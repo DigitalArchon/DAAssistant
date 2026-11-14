@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import netguard, paths, privacy, providers
+from . import netguard, paths, privacy, providers, safejson
 
 CACHE_DIR = paths.CACHE_DIR
 CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
@@ -320,7 +320,7 @@ def load_cache(max_age=CACHE_TTL, url=None, provider=providers.NANOGPT):
         return None
     try:
         with open(path) as f:
-            payload = json.load(f)
+            payload = safejson.load(f)      # a cache anyone of this user's could edit
     except (OSError, ValueError):
         return None
     if not isinstance(payload, dict):

@@ -56,8 +56,9 @@ def research_context(passages):
 
 def read_json(text):
     """The first JSON object in a model's reply, or {} - models wrap it in prose and
-    code fences however they are asked."""
-    import json
+    code fences however they are asked. Nested past 200 levels it is no object
+    (safejson)."""
+    from .. import safejson
     text = text or ""
     start = text.find("{")
     while start != -1:
@@ -69,7 +70,7 @@ def read_json(text):
                 depth -= 1
                 if depth == 0:
                     try:
-                        found = json.loads(text[start:end + 1])
+                        found = safejson.loads(text[start:end + 1])
                     except ValueError:
                         break
                     return found if isinstance(found, dict) else {}

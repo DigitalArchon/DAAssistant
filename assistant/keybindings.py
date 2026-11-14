@@ -30,7 +30,6 @@ removed when found (remove_kde_legacy).
 
 import ast
 import glob
-import json
 import os
 import re
 import shlex
@@ -41,7 +40,7 @@ import zlib
 
 from gi.repository import GLib
 
-from . import hostenv, shortcuts
+from . import hostenv, safejson, shortcuts
 
 PREFIX = "da-assistant"
 NAME = "DA Assistant"
@@ -834,7 +833,7 @@ def _hyprland_live(run):
     if code != 0:
         return None
     try:
-        binds = json.loads(output)
+        binds = safejson.loads(output)
     except (TypeError, ValueError):
         return None
     if not isinstance(binds, list):

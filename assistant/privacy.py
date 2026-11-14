@@ -72,7 +72,7 @@ from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
-from . import dcap, netguard, nras
+from . import dcap, netguard, nras, safejson
 from .ethsig import keccak256, recover_personal
 
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -543,7 +543,7 @@ class Receipt:
 def _json(value):
     if isinstance(value, str):
         try:
-            return json.loads(value)
+            return safejson.loads(value)
         except ValueError:
             return None
     return value
@@ -615,7 +615,7 @@ def _jwt_claims(value):
     if isinstance(value, str) and value.count(".") == 2:
         part = value.split(".")[1]
         try:
-            claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+            claims = safejson.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
         except (ValueError, binascii.Error):
             return found
         if isinstance(claims, dict):
@@ -872,7 +872,7 @@ def _session_record(session, session_id):
     finally:
         response.close()
     try:
-        record = json.loads(bytes(body))
+        record = safejson.loads(bytes(body))
         named = (isinstance(record, dict)
                  and hashlib.sha256(_canonical(record)).hexdigest() == session_id)
     except (ValueError, TypeError, RecursionError):
@@ -1491,7 +1491,7 @@ class TeeClient:
             raise PrivacyError(f"{self.model}'s instance {name} signed with a key its TDX "
                                f"quote does not bind")
         try:
-            attested = json.loads(signed)
+            attested = safejson.loads(signed)
             evidence = attested["evidence"]
             if not isinstance(evidence, dict):
                 raise TypeError(type(evidence).__name__)

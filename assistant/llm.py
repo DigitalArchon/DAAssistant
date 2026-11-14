@@ -19,7 +19,7 @@ import time
 import requests
 
 from . import (models as catalogue, netguard, privacy as privacy_module, prompts,
-               providers, websearch)
+               providers, safejson, websearch)
 from .streams import LineTooLong, read_lines
 from .privacy import ModelRetired, PrivacyError
 
@@ -903,8 +903,8 @@ class LLMClient:
                     done = True
                     break
                 try:
-                    chunk = json.loads(line)
-                except json.JSONDecodeError:
+                    chunk = safejson.loads(line)
+                except json.JSONDecodeError:    # NestedTooDeep among them
                     continue
                 if not isinstance(chunk, dict):
                     continue
@@ -956,7 +956,7 @@ class LLMClient:
     def _plain_reply(body):
         """(text, finish_reason, done, error) from a reply that was never a stream."""
         try:
-            parsed = json.loads(body)
+            parsed = safejson.loads(body)
         except ValueError:
             return "", None, False, ("the reply was not an answer: "
                                      + " ".join(body.split())[:200])

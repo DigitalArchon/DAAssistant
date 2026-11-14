@@ -338,6 +338,16 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
   that goes on with no end - from a provider, or anything answering at its address - is
   not read on or held past that. What came before it is kept, cut off, saying why; a
   sealed reply's is refused.
+- **A whole answer is read no further than 32 MB**, counted as it is unpacked - a reply
+  not streamed, a model list, an attestation, Intel's and NVIDIA's answers, nano-gpt's
+  relay - and an error's or a redirect's words no further than 64 KB, the rest left
+  unread. Every request asks for its answer compressed as gzip or deflate alone, whose
+  output for each piece read is bounded, and one compressed any other way is refused
+  unread: a few KB can otherwise unpack to gigabytes.
+- **JSON from outside** - answers and their streams, nano-gpt's relay, `config.json`
+  edited by hand, the model-list cache, a desktop program's answer, a model's plan for
+  Ask Encyclopedia - nested more than 200 levels deep is refused as no JSON, never read
+  into a crash.
 - **Builds can be checked.** Every AppImage can be rebuilt from its source and compared
   byte for byte with the one published, and everything in it is pinned by hash; see
   [packaging/README.md](../packaging/README.md).

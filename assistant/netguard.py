@@ -39,9 +39,28 @@ import re
 from urllib.parse import urljoin, urlparse
 
 try:
+    from requests.exceptions import ContentDecodingError as _Undecodable
     from requests.exceptions import InvalidURL as _InvalidURL
+    from requests.exceptions import RequestException as _RequestException
 except ImportError:         # the policy itself needs nothing but the standard library
-    _InvalidURL = ValueError
+    _InvalidURL = _RequestException = _Undecodable = ValueError
+
+# How much of an answer is read whole (session): a reply not streamed, a model list, an
+# attestation, Intel's and NVIDIA's answers - decoded, counted as it is unpacked. Past
+# it, TooLarge, and nothing more is read. A streamed reply is held to its lines instead
+# (streams.read_lines, 32 MB a line).
+MAX_BODY_BYTES = 32 * 1024 * 1024
+# The most of an error's, or a redirect's, answer that is read: its words are a few
+# hundred bytes, and the rest is left unread.
+MAX_ERROR_BYTES = 64 * 1024
+# What every request says it takes compressed: gzip and deflate, whose output for each
+# piece read is bounded, so that the caps count what was unpacked. Never br or zstd,
+# whose output for one piece has no bound: requests asks for them itself wherever their
+# libraries are installed (urllib3's make_headers). An answer coded any other way is
+# refused unread (Undecodable). The DA apps' security standard (Nov 2026).
+ACCEPT_ENCODING = "gzip, deflate"
+_ASKED_CODINGS = ("gzip", "deflate", "identity")
+_READ_PIECE = 64 * 1024
 
 LOCAL_NAMES = ("localhost",)
 LOCAL_SUFFIXES = (".localhost", ".local")
@@ -62,6 +81,16 @@ class InsecureURL(ValueError):
 class RedirectRefused(_InvalidURL):
     """A redirect to somewhere the request could not have been sent in the first place.
     A requests exception, so that every caller already handles it, and a ValueError."""
+
+
+class TooLarge(_RequestException):
+    """An answer far larger than any it should be, once unpacked: not read on. A requests
+    exception, so that every caller already says it as a failed request."""
+
+
+class Undecodable(_Undecodable):
+    """An answer compressed in a way it was not asked for (ACCEPT_ENCODING): refused
+    unread, as requests would refuse one it could not decode."""
 
 
 class ProxyRefused(_InvalidURL):
@@ -394,6 +423,10 @@ def session(follow=False):
     from . import proxy
 
     class GuardedSession(requests.Session):
+        def __init__(self):
+            super().__init__()
+            self.headers["Accept-Encoding"] = ACCEPT_ENCODING
+
         def get_redirect_target(self, response):
             target = super().get_redirect_target(response)
             if target:
@@ -426,6 +459,88 @@ def session(follow=False):
             elif proxy.refusal():
                 raise ProxyRefused(f"Nothing was sent: the proxy set in Settings cannot "
                                    f"be used. {proxy.refusal()}", request=request)
-            return super().send(request, **kwargs)
+            # Read here, never by requests, which reads a body whole whatever its size:
+            # a reply not streamed to MAX_BODY_BYTES, and an error's or a redirect's
+            # words - streamed or not, since what reads them reads them whole - to
+            # MAX_ERROR_BYTES (_read_whole).
+            streamed = kwargs.get("stream", False)
+            kwargs["stream"] = True
+            response = super().send(request, **kwargs)
+            coding = _unasked_coding(response.headers)
+            if coding:
+                response.close()
+                raise Undecodable(f"{shown(request.url)} answered compressed as {coding}, "
+                                  f"which was not asked for; it was not read",
+                                  request=request, response=response)
+            if not streamed or response.status_code >= 300:
+                _read_whole(response)
+            response.json = lambda **_kwargs: _json_of(response)
+            return response
 
     return GuardedSession()
+
+
+def _unasked_coding(headers):
+    """The content coding an answer was sent in that was not asked for (ACCEPT_ENCODING),
+    or None."""
+    for coding in str(headers.get("Content-Encoding") or "").lower().split(","):
+        if coding.strip() and coding.strip() not in _ASKED_CODINGS:
+            return coding.strip()
+    return None
+
+
+def _read_whole(response):
+    """`response`'s body, read once and kept (requests' `_content`): at most
+    MAX_BODY_BYTES unpacked for one that answered, TooLarge past it with nothing more
+    read; at most MAX_ERROR_BYTES of an error's or a redirect's, the rest left unread."""
+    if response._content_consumed or response._content is not False:
+        return                          # read already, or given whole
+    cut = response.status_code >= 300
+    limit = MAX_ERROR_BYTES if cut else MAX_BODY_BYTES
+    most = limit if cut else limit + 1  # one byte too many says it is too large
+    body = bytearray()
+    while len(body) < most:
+        piece = _read_piece(response, min(_READ_PIECE, most - len(body)))
+        if not piece:
+            break
+        body += piece
+    if len(body) > limit:
+        if not cut:
+            response.close()
+            raise TooLarge(f"{shown(response.url)} sent more than "
+                           f"{limit // (1024 * 1024)} MB, once unpacked, which is no "
+                           f"answer; it was not read further", response=response)
+        del body[limit:]
+    response._content = bytes(body)
+    response._content_consumed = True
+    if cut:
+        response.close()                # the rest of it unread
+
+
+def _read_piece(response, amount):
+    """Up to `amount` more bytes of `response`'s body, unpacked, with urllib3's errors
+    as requests would raise them (Response.iter_content)."""
+    import requests
+    import urllib3
+
+    raw = response.raw
+    try:
+        if hasattr(raw, "stream"):
+            return raw.read(amount, decode_content=True)
+        return raw.read(amount)
+    except urllib3.exceptions.ProtocolError as e:
+        raise requests.exceptions.ChunkedEncodingError(e) from e
+    except urllib3.exceptions.DecodeError as e:
+        raise requests.exceptions.ContentDecodingError(e) from e
+    except urllib3.exceptions.ReadTimeoutError as e:
+        raise requests.exceptions.ConnectionError(e) from e
+    except urllib3.exceptions.SSLError as e:
+        raise requests.exceptions.SSLError(e) from e
+
+
+def _json_of(response):
+    """`response.json()`, read to its cap (_read_whole) and through safejson: JSON nested
+    past 200 levels is refused as no JSON (a ValueError), never a crash."""
+    from . import safejson
+    _read_whole(response)
+    return safejson.loads(response.content)

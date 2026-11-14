@@ -49,7 +49,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
-from . import models, netguard, proxy, sdk_guard
+from . import models, netguard, proxy, safejson, sdk_guard
 from .dcap import since_boot
 from .streams import LineTooLong, read_lines
 from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, is_private_mode,
@@ -430,11 +430,13 @@ class PrivateModeClient:
             return []
         client = self._preflight_client or httpx.Client(follow_redirects=False)
         try:
-            response = client.get(models.private_list_url(self.api_url),
-                                  timeout=PREFLIGHT_TIMEOUT_SECONDS)
-            return models.private_ids_in(response.json()
-                                         if response.status_code < 400 else {})
-        except (httpx.HTTPError, ValueError):
+            with client.stream("GET", models.private_list_url(self.api_url),
+                               headers={"Accept-Encoding": netguard.ACCEPT_ENCODING},
+                               timeout=PREFLIGHT_TIMEOUT_SECONDS) as response:
+                if response.status_code >= 400:
+                    return []
+                return models.private_ids_in(safejson.loads(_body(response)))
+        except (httpx.HTTPError, ValueError, PrivacyError):
             return []
         finally:
             if self._preflight_client is None:
@@ -449,7 +451,8 @@ class PrivateModeClient:
             raise ModelRetired(model, ids)
 
     def _headers(self):
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json",
+                   "Accept-Encoding": netguard.ACCEPT_ENCODING}
         if self.api_key:
             unfit = netguard.key_problem(self.api_key, "NanoGPT")
             if unfit:
@@ -481,27 +484,32 @@ class PrivateModeClient:
         import httpx
         client = self._preflight_client or httpx.Client(follow_redirects=False)
         try:
-            response = client.post(self.enclave.relay + "/preflight",
-                                   json={"model": model, "requestBodyBytes": body_bytes},
-                                   headers=self._headers(),
-                                   timeout=PREFLIGHT_TIMEOUT_SECONDS)
+            with client.stream("POST", self.enclave.relay + "/preflight",
+                               json={"model": model, "requestBodyBytes": body_bytes},
+                               headers=self._headers(),
+                               timeout=PREFLIGHT_TIMEOUT_SECONDS) as response:
+                status = response.status_code
+                if 300 <= status < 400:
+                    # It carries the key: never followed (follow_redirects=False), and
+                    # said.
+                    raise PrivacyError(_redirected(self.enclave.relay + "/preflight",
+                                                   response))
+                body = _body(response, netguard.MAX_ERROR_BYTES if status >= 400
+                             else netguard.MAX_BODY_BYTES)
         except httpx.HTTPError as e:
             raise PrivacyError(f"nano-gpt's Private Mode check failed: {e}") from e
         finally:
             if self._preflight_client is None:
                 client.close()
-        if 300 <= response.status_code < 400:
-            # It carries the key: never followed (follow_redirects=False), and said.
-            raise PrivacyError(_redirected(self.enclave.relay + "/preflight", response))
-        if response.status_code >= 400:
+        if status >= 400:
             # Every path's backstop - a model retired mid-conversation, the connection
             # test: say why, not just that it was refused.
             self.check_offered(model)
             raise PrivacyError(f"nano-gpt refused the Private Mode request "
-                               f"(HTTP {response.status_code}; its relay said: "
-                               f"{_error_text(response)})")
+                               f"(HTTP {status}; its relay said: "
+                               f"{_error_text(body, status)})")
         try:
-            data = response.json()
+            data = safejson.loads(body)
         except ValueError as e:
             raise PrivacyError("nano-gpt's Private Mode check was not JSON") from e
         scope = str(data.get("cacheScope") or "").strip()
@@ -571,9 +579,17 @@ class PrivateModeClient:
             except httpx.HTTPError as e:
                 raise PrivacyError(f"the sealed request failed: {e}") from e
 
+            coding = _unasked_coding(response)
+            if coding:
+                response.close()
+                raise PrivacyError(f"nano-gpt's relay answered compressed as {coding}, "
+                                   f"which was not asked for; it was not read")
             if response.status_code >= 400:
-                response.read()
-                text = _error_text(response)
+                try:
+                    text = _error_text(_body(response, netguard.MAX_ERROR_BYTES),
+                                       response.status_code)
+                except httpx.HTTPError:
+                    text = f"HTTP {response.status_code}"
                 response.close()
                 # Resent only as the relay's own refusal before dispatch: one carrying
                 # the enclave's nonce came back the encrypted way, so the request may
@@ -634,13 +650,45 @@ class PrivateModeClient:
             raise PrivacyError("the encrypted reply ended before it was complete")
 
 
-def _error_text(response):
-    """What the relay wrote in an error, as an error may quote it: never sealed, so on
-    one line, short and with nothing a reader cannot see (privacy.unsealed_words)."""
+def _unasked_coding(response):
+    """The content coding an answer was sent in that was not asked for
+    (netguard.ACCEPT_ENCODING: gzip and deflate, whose output for each piece read is
+    bounded), or None; before its body is read."""
+    for coding in str(response.headers.get("content-encoding") or "").lower().split(","):
+        if coding.strip() and coding.strip() not in ("gzip", "deflate", "identity"):
+            return coding.strip()
+    return None
+
+
+def _body(response, limit=None):
+    """An open (streamed) answer's body, read only so far: at most `limit` bytes, counted
+    as they are unpacked - netguard.MAX_BODY_BYTES unless told, past which it is refused
+    unread; netguard.MAX_ERROR_BYTES for an error's words, cut there and the rest left
+    unread. Never coded in a way that was not asked for (_unasked_coding)."""
+    limit = netguard.MAX_BODY_BYTES if limit is None else limit
+    coding = _unasked_coding(response)
+    if coding:
+        raise PrivacyError(f"nano-gpt's relay answered compressed as {coding}, which was "
+                           f"not asked for; it was not read")
+    body = bytearray()
+    for piece in response.iter_bytes():
+        body += piece
+        if len(body) > limit:
+            if limit < netguard.MAX_BODY_BYTES:
+                return bytes(body[:limit])
+            raise PrivacyError(f"nano-gpt's relay sent more than {limit // (1024 * 1024)} "
+                               f"MB, which is no answer; it was not read further")
+    return bytes(body)
+
+
+def _error_text(body, status):
+    """What the relay wrote in an error (`body`, read to netguard.MAX_ERROR_BYTES), as an
+    error may quote it: never sealed, so on one line, short and with nothing a reader
+    cannot see (privacy.unsealed_words)."""
     try:
-        body = response.json()
+        body = safejson.loads(body)
     except ValueError:
-        return unsealed_words(response.text) or f"HTTP {response.status_code}"
+        return unsealed_words(body.decode("utf-8", "replace")) or f"HTTP {status}"
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict) and error.get("message"):

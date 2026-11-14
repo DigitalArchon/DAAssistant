@@ -858,6 +858,55 @@ class RealEvidence(unittest.TestCase):
                                                      "Intel could not be read"):
             client.attest()
 
+    def test_collateral_that_cannot_be_read_is_not_kept_for_the_hour(self):
+        """A 200 that was not Intel's - a proxy's page, a portal's - was cached as it came,
+        and refused every quote for the hour the cache lasts, however soon Intel's service
+        answered again. Now what is fetched for a quote is kept once all of it has been
+        read and its signatures checked. From DA Toolkit (322cdb1)."""
+        portal = json.loads(json.dumps(self.fixture))
+        for item in portal["collateral"]:
+            item["body"] = base64.b64encode(b"<html>Sign in to the Wi-Fi</html>").decode()
+        with self.assertRaisesRegex(dcap.DcapError, "could not be read"):
+            self.intel(session=FixtureSession(portal))
+        self.assertEqual(dcap._cache, {}, "nothing of it kept")
+        # Intel's own answer, a moment later, is read and checked - and then kept.
+        self.assertEqual(self.intel().status, "UpToDate")
+        self.assertEqual({key[0] for key in dcap._cache},
+                         {item["url"] for item in self.fixture["collateral"]})
+        gone = FixtureSession(self.fixture, intel_status=503)
+        self.assertTrue(self.intel(session=gone).collateral, "served from what was kept")
+        # One whose signature fails is not kept either.
+        dcap._cache.clear()
+        forged = json.loads(json.dumps(self.fixture))
+        body = json.loads(base64.b64decode(forged["collateral"][2]["body"]))
+        body["signature"] = "00" * 64
+        forged["collateral"][2]["body"] = base64.b64encode(json.dumps(body).encode()).decode()
+        with self.assertRaises(dcap.DcapError):
+            self.intel(session=FixtureSession(forged))
+        self.assertEqual(dcap._cache, {})
+
+    def test_a_quote_or_collateral_that_cannot_be_read_is_refused_as_that(self):
+        """Read in ways the checks did not foresee, they raised Python's own errors -
+        a PCK chain that is no PEM, a key of another kind - which went up as they were.
+        A DcapError now, saying the quote could not be read. From DA Toolkit (0a4a8af)."""
+        quote = dcap.parse_quote(self.quote)
+        broken = self.quote.replace(quote.pck_chain_pem,
+                                    b"x" * len(quote.pck_chain_pem))
+        with self.assertRaisesRegex(dcap.DcapError, "PCK chain could not be read"):
+            self.intel(broken)
+        for error in (AttributeError("'str' object has no attribute 'get'"),
+                      RecursionError("maximum recursion depth exceeded"),
+                      TypeError("unsupported operand")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(dcap, "verify_chain", side_effect=error), \
+                    self.assertRaisesRegex(dcap.DcapError,
+                                           f"could not be read \\({type(error).__name__}\\)"):
+                self.intel()
+        # What says what it is goes up as it is: no cryptography is nothing verified.
+        with mock.patch.object(dcap, "verify_chain", side_effect=ImportError("no")), \
+                self.assertRaises(ImportError):
+            self.intel()
+
     def test_the_quoting_enclave_is_intels_whether_or_not_its_collateral_can_be_had(self):
         """It is what makes the attestation key the QE's, not any enclave's the platform
         certified. It was checked only against Intel's QE identity, fetched with the
@@ -904,6 +953,33 @@ class RealEvidence(unittest.TestCase):
         answer[0][1] = f"{header}.{claims}.{signature}"
         with self.assertRaisesRegex(nras.NrasError, "signature does not verify"):
             self.nvidia(answer)
+
+    def test_a_token_in_no_shape_to_read_is_refused_as_that(self):
+        """A token whose header or claims are no objects, or whose validity window is no
+        times, and anything else reading NVIDIA's answer raises, went up as the Python
+        error it was. An NrasError now. From DA Toolkit (0a4a8af)."""
+        def part(data):
+            return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+        nonce = self.fixture["nonce"]
+        for header, claims in (([1], {}), ({"alg": "ES384"}, "claims"),
+                               ({"alg": "ES384"}, [1, 2])):
+            token = f"{part(header)}.{part(claims)}.{part('x' * 72)}"
+            with self.subTest(header=header, claims=claims), \
+                    self.assertRaisesRegex(nras.NrasError, "malformed token"):
+                nras.verify_token(token, self.session, nonce, self.now, signed=False)
+        for window in ({"nbf": "yesterday", "exp": self.now}, {"exp": [self.now]},
+                       {"nbf": None}):
+            claims = dict(window, iss=nras.ISSUER, eat_nonce=nonce)
+            with self.subTest(window=window), \
+                    self.assertRaisesRegex(nras.NrasError, "not given as times"):
+                nras.check_claims(claims, nonce, self.now)
+        with mock.patch.object(nras, "_public_key", side_effect=KeyError("x")), \
+                self.assertRaisesRegex(nras.NrasError, r"could not be read \(KeyError\)"):
+            self.nvidia()
+        with mock.patch.object(nras, "_verify", side_effect=ImportError("no")), \
+                self.assertRaises(ImportError):
+            self.nvidia()
 
     def test_a_gpu_token_swapped_for_another_is_refused(self):
         answer = json.loads(json.dumps(self.fixture["nras_answer"]))
@@ -1433,6 +1509,42 @@ class AttestationShapesAndOutages(unittest.TestCase):
 
 
 class Session(TempConfig):
+    def test_an_attestation_that_raised_something_else_is_refused_on_one_plain_line(self):
+        """Whatever raised it wrote the words - the SDK, or what it quoted of the relay
+        or the enclave's host - and they went into the banner and the chat as they came:
+        line breaks, bidi overrides and all. As DA Media Browser's."""
+        class Raises:
+            def attest(self):
+                raise RuntimeError("the host said:\nall is well\u202edrow" + "y" * 2000)
+
+        session = PrivacySession(API_URL, "k", TEXT, VISION,
+                                 tee_factory=lambda *_a: Raises())
+        with self.assertRaisesRegex(PrivacyError, "could not be attested: the host said: "
+                                                  "all is well") as caught:
+            session.ensure(TEXT)
+        said = str(caught.exception)
+        self.assertNotIn("\n", said)
+        self.assertNotIn("\u202e", said)
+        self.assertLess(len(said), 700)
+        self.assertTrue(said.endswith("; nothing was sent"))
+
+    def test_intels_and_nvidias_refusals_are_quoted_on_one_plain_line(self):
+        """A refusal can name a certificate of the quote's own chain, or a token's
+        fields: anyone could have written them. As DA Toolkit's (0a4a8af)."""
+        for intel, nvidia, said in (
+                (dcap.DcapError("CN=Intel\nSGX\u202eAC" + "z" * 900 + " is outside"), 8,
+                 "Intel TDX quote failed verification: CN=Intel SGX"),
+                (UP_TO_DATE, nras.NrasError("a token was issued by evil\n\u2066x"),
+                 "GPU attestation failed: a token was issued by evil x")):
+            server = FakeNanoGpt(intel=intel, nvidia=nvidia)
+            client = server.tee_client(API_URL, "k", TEXT)
+            with self.subTest(said=said), self.assertRaises(PrivacyError) as caught:
+                client.attest()
+            message = str(caught.exception)
+            self.assertIn(said, message)
+            self.assertFalse(set(message) & {"\n", "\u202e", "\u2066"}, message)
+            self.assertLess(len(message), 400)
+
     def test_off_means_no_session(self):
         self.config.privacy_mode = False
         self.assertIsNone(PrivacySession.start(self.config))

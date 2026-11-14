@@ -1344,7 +1344,7 @@ class TeeClient:
         return attestation
 
     def _check_instance(self, item, nonce, verify_signature):
-        name = str(item.get("instance_id") or "an instance")[:8]
+        name = unsealed_words(item.get("instance_id"), 8) or "an instance"
         try:
             raw = base64.b64decode(item["quote"])
             quote = dcap.parse_quote(raw)
@@ -1399,7 +1399,11 @@ class TeeClient:
             # whatever key they named.
             raise PrivacyError(_unchecked_without_cryptography(self.model))
         except dcap.DcapError as e:
-            raise PrivacyError(f"{self.model}'s Intel TDX quote failed verification: {e}")
+            # On one line, without what cannot be seen (unsealed_words): a refusal can
+            # name a certificate of the quote's own chain, which anyone could have made.
+            # As DA Toolkit's (Nov 2026).
+            raise PrivacyError(f"{self.model}'s Intel TDX quote failed verification: "
+                               f"{unsealed_words(e, 300)}")
         else:
             check.note(*intel.notes)
             check.tcb(intel.status)
@@ -1440,12 +1444,14 @@ class TeeClient:
                 for token in claims:
                     nras.check_claims(token, nonce, time.time())
             except nras.NrasError as refused:
-                raise PrivacyError(f"{self.model}'s GPU attestation failed: {refused}")
+                raise PrivacyError(f"{self.model}'s GPU attestation failed: "
+                                   f"{unsealed_words(refused, 300)}")
             check.summary_gpu.add("NVIDIA's verdict unchecked")
             check.fall_short("NVIDIA signature unchecked")
             check.note(f"{e}, so NVIDIA's verdict is unchecked")
         except nras.NrasError as e:
-            raise PrivacyError(f"{self.model}'s GPU attestation failed: {e}")
+            raise PrivacyError(f"{self.model}'s GPU attestation failed: "
+                               f"{unsealed_words(e, 300)}")
         else:
             check.gpus += gpus
             check.note(f"NVIDIA's signed verdict vouches for {gpus} GPU"
@@ -2014,7 +2020,11 @@ class PrivacySession:
             self._refuse(model, str(e))
             raise PrivacyError(f"{e}; nothing was sent") from e
         except Exception as e:  # the SDK's own errors, network failures
-            message = f"{model}'s enclave could not be attested: {e}"
+            # Whatever raised it wrote these words - the SDK, or what it quotes of the
+            # relay or the enclave's host - and they go into the banner and the chat:
+            # on one line, short, without what a reader cannot see. As DA Media
+            # Browser's.
+            message = f"{model}'s enclave could not be attested: {unsealed_words(e, 500)}"
             self._refuse(model, message)
             raise PrivacyError(f"{message}; nothing was sent") from e
         self._accept(model, attestation, started,

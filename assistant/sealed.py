@@ -52,6 +52,7 @@ from urllib.parse import urljoin, urlparse
 
 from . import models, netguard, proxy
 from .dcap import since_boot
+from .streams import LineTooLong, read_lines
 from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, is_private_mode,
                       offers_private_mode, unsealed_words)
 
@@ -859,15 +860,19 @@ class PrivateModeClient:
 
     @staticmethod
     def lines(response):
-        """The decrypted lines of a sealed stream."""
+        """The decrypted lines of a sealed stream, as bytes (streams.read_lines: not
+        httpx's iter_lines, which holds a line without end, and splits at U+2028 and
+        U+2029 inside a reply's JSON too)."""
         import httpx
         from ehbp import EHBPError
         try:
-            yield from response.iter_lines()
+            yield from read_lines(response.iter_bytes())
         except EHBPError as e:
             raise PrivacyError(f"the encrypted reply could not be opened: {e}") from e
         except httpx.HTTPError as e:
             raise PrivacyError(f"the sealed reply was cut off: {e}") from e
+        except LineTooLong as e:
+            raise PrivacyError(f"the sealed reply was not read on: {e}") from e
 
     @staticmethod
     def finish(finish_reason, saw_done):

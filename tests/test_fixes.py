@@ -460,8 +460,9 @@ class Citations(unittest.TestCase):
             def __init__(self, lines):
                 self.lines = lines
 
-            def iter_lines(self):
-                return iter(self.lines)
+            def iter_content(self, chunk_size=1):
+                # Each line with its end: llm reads the bytes (streams.read_lines).
+                return iter([line + b"\n" for line in self.lines])
 
             def close(self):
                 pass

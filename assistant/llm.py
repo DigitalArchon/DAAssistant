@@ -20,6 +20,7 @@ import requests
 
 from . import (models as catalogue, netguard, privacy as privacy_module, prompts,
                providers, websearch)
+from .streams import LineTooLong, read_lines
 from .privacy import ModelRetired, PrivacyError
 
 RETRY_STATUS = {408, 429, 500, 502, 503, 504}
@@ -867,7 +868,7 @@ class LLMClient:
         cut there and no more is read - which, the caller closing the response, is also
         what stops the model.
 
-        `lines` may be bytes (requests) or str (httpx, for the sealed stream). The
+        `lines` are bytes, as streams.read_lines gives them (the sealed stream's too). The
         completion's id is kept because a TEE reply's signature is filed under it.
 
         How it ended goes back too, for _ending to say: `done` is whether [DONE]
@@ -942,6 +943,10 @@ class LLMClient:
                         citations.append(source)
         except requests.exceptions.RequestException as e:
             error = f"the connection broke ({e})"
+        except LineTooLong as e:
+            # Never read on, nor held: what had arrived before it stands, with why it
+            # stopped (streams.read_lines).
+            error = str(e)
         if not streamed and plain and error is None:
             text, finish_reason, done, error = LLMClient._plain_reply("\n".join(plain))
         return {"text": text, "id": response_id, "finish_reason": finish_reason,
@@ -1002,7 +1007,9 @@ class LLMClient:
         # A model that has to be told where to stop is one that does not stop.
         runaway = bool(payload.get("stop"))
         try:
-            result = self._consume(response.iter_lines(), cancel, on_delta, citations,
+            # Not requests' iter_lines: quadratic in a line's length, and without end.
+            result = self._consume(read_lines(response.iter_content(chunk_size=512)),
+                                   cancel, on_delta, citations,
                                    halt=runaway_start if runaway else None)
         finally:
             response.close()
@@ -1127,24 +1134,13 @@ class LLMClient:
 
     @staticmethod
     def _hashed_lines(response, digest):
-        """A stream's lines, as requests' iter_lines gives them, every byte fed to
-        `digest` as it is read, decoded of any content encoding: a TEE reply's record
-        names the hash of the exact bytes the stream carried (privacy.TeeClient.
-        check_reply). As SealedLore's stream reads them (openai_compat._lines, Nov
-        2026)."""
-        pending = None
-        for chunk in response.iter_content(chunk_size=512):     # iter_lines' own size
-            digest.update(chunk)
-            if pending is not None:
-                chunk = pending + chunk
-            lines = chunk.splitlines()
-            if lines and lines[-1] and chunk and lines[-1][-1] == chunk[-1]:
-                pending = lines.pop()
-            else:
-                pending = None
-            yield from lines
-        if pending is not None:
-            yield pending
+        """A stream's lines (streams.read_lines), every byte fed to `digest` as it is
+        read, decoded of any content encoding: a TEE reply's record names the hash of the
+        exact bytes the stream carried (privacy.TeeClient.check_reply). As SealedLore's
+        stream reads them (streaming.read_lines, Nov 2026). It used to split them as
+        requests' iter_lines does: quadratic in a line's length, and without end."""
+        # 512: requests' iter_lines' own size, so that pieces come as they did.
+        return read_lines(response.iter_content(chunk_size=512), digest)
 
     @staticmethod
     def _read_to_the_end(lines):
@@ -1153,7 +1149,7 @@ class LLMClient:
         try:
             for _rest in lines:
                 pass
-        except requests.exceptions.RequestException:
+        except (requests.exceptions.RequestException, LineTooLong):
             return False
         return True
 

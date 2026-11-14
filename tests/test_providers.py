@@ -93,8 +93,11 @@ def streamed(text, finish="stop", pieces=None):
     chunks = [{"id": "c1", "choices": [{"delta": {"content": piece}}]}
               for piece in (pieces or [text])]
     chunks.append({"id": "c1", "choices": [{"delta": {}, "finish_reason": finish}]})
-    response.iter_lines.return_value = iter(
-        [f"data: {json.dumps(chunk)}".encode() for chunk in chunks] + [b"data: [DONE]"])
+    # As the bytes come, a line and its end a piece (llm reads them through
+    # streams.read_lines, not requests' line reader).
+    response.iter_content.return_value = iter(
+        [f"data: {json.dumps(chunk)}\n".encode() for chunk in chunks]
+        + [b"data: [DONE]\n"])
     return response
 
 
@@ -340,7 +343,7 @@ class AModelOllamaDoesNotStop(Case):
     def test_where_it_starts_over_it_is_cut_off_and_no_more_is_read(self):
         copies = [PROSE + "\n"] * 40
         response = streamed(None, finish="length", pieces=copies)
-        lines = response.iter_lines.return_value
+        lines = response.iter_content.return_value
         client = self.client(response)
         self.assertEqual(self.ask(client), PROSE)
         self.assertGreater(len(list(lines)), 30, "it read on to the end")
@@ -375,7 +378,7 @@ class AModelOllamaDoesNotStop(Case):
                             pieces=[table] + ["NO TEXT FOUND\n"] * 300)
         client = self.client(response)
         self.assertEqual(self.ask(client), table + "NO TEXT FOUND")
-        self.assertGreater(len(list(response.iter_lines.return_value)), 200)
+        self.assertGreater(len(list(response.iter_content.return_value)), 200)
 
     def test_a_few_lines_said_round_and_round_are_kept_once(self):
         """Seen from glm-ocr:q8_0 under the same table: three lines, 79 times round,

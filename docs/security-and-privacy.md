@@ -301,6 +301,10 @@ badges' labels with it.
   model's words: nothing vouches for it.
 - **The clipboard** is read only when an operation asks for it, at most 8 MB of text or a
   64 MB picture.
+- **A streamed reply is read a line at a time, and a line no further than 32 MB**: one
+  that goes on with no end - from a provider, or anything answering at its address - is
+  not read on or held past that. What came before it is kept, cut off, saying why; a
+  sealed reply's is refused.
 - **Builds can be checked.** Every AppImage can be rebuilt from its source and compared
   byte for byte with the one published, and everything in it is pinned by hash; see
   [packaging/README.md](../packaging/README.md).

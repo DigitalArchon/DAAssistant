@@ -160,8 +160,10 @@ class FakeResponse:
     def __init__(self, lines):
         self._lines = lines
 
-    def iter_lines(self):
-        yield from self._lines
+    def iter_content(self, chunk_size=1):
+        """Each line with its end: llm reads the bytes through streams.read_lines."""
+        for line in self._lines:
+            yield line + b"\n"
 
     def close(self):
         pass

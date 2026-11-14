@@ -6,21 +6,16 @@ Toolkit's httpx client where this app has netguard's requests session (TRANSPORT
 one of them listed). Anything else is drift, which fails here rather than waiting for a
 review: a change is made in DA Toolkit's copy first, then carried here.
 
-Skipped where DA Toolkit's repository is not beside this one.
+sdk_guard.py is SealedLore's (providers/sdk_guard.py, which DA Toolkit's is too), and
+may differ only in its module docstring and imports.
 
-Not here: sdk_guard.py. SealedLore's (= DA Toolkit's) holds Tinfoil's and Sigstore's
-fetches to a redirect rule of its own; this app's guard (sealed.guard_sdk_requests) holds
-them to netguard's, which is stricter - the whole address rule for a redirect's target, a
-fetcher given as None in its place still guarded, the refused redirect named in the
-attestation's error - and the canonical copy has not taken those up yet
-(tests/test_sdk_redirects.py fails 11 of 19 against it).
+Each is skipped where the canonical copy's repository is not beside this one.
 """
 
 import ast
 import difflib
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HERE = Path(__file__).resolve().parents[1] / "assistant"
 TOOLKIT = Path(__file__).resolve().parents[2] / "DAToolkit" / "src" / "datoolkit" / "llm"
 SHARED = ("dcap.py", "nras.py", "ethsig.py")
+SEALEDLORE = Path(__file__).resolve().parents[2] / "SealedLore" / "src" / "sealedlore" / "providers"
 
 # DA Toolkit's words for the HTTP call, and this app's: the only words of the code that
 # may differ.
@@ -87,6 +83,18 @@ class SharedFilesAreDaToolkitsCopy(unittest.TestCase):
                         canonical, ours, "DA Toolkit", "DA Assistant", lineterm="", n=1))
                     self.fail(f"assistant/{name} has drifted from DA Toolkit's copy: "
                               f"change it there first, then carry it here\n{diff[:4000]}")
+
+
+@unittest.skipUnless(SEALEDLORE.is_dir(), "SealedLore's repository is not beside this one")
+class TheGuardIsSealedLoresCopy(unittest.TestCase):
+    def test_sdk_guard_is_sealedlores_copy_line_for_line(self):
+        ours = comparable((HERE / "sdk_guard.py").read_text(encoding="utf-8"))
+        canonical = comparable((SEALEDLORE / "sdk_guard.py").read_text(encoding="utf-8"))
+        if ours != canonical:
+            diff = "\n".join(difflib.unified_diff(canonical, ours, "SealedLore",
+                                                  "DA Assistant", lineterm="", n=1))
+            self.fail(f"assistant/sdk_guard.py has drifted from SealedLore's copy: change "
+                      f"it there first, then carry it here\n{diff[:4000]}")
 
 
 class TheComparisonForgivesOnlyWhatItSays(unittest.TestCase):

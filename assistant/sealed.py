@@ -45,12 +45,11 @@ import hashlib
 import json
 import secrets
 import threading
-import types
 from contextlib import contextmanager
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
-from . import models, netguard, proxy
+from . import models, netguard, proxy, sdk_guard
 from .dcap import since_boot
 from .streams import LineTooLong, read_lines
 from .privacy import (E2EE, Attestation, ModelRetired, PrivacyError, is_private_mode,
@@ -178,290 +177,33 @@ def _around_the_proxy():
                            f"around it: {refused}")
 
 
-class _GuardedRequests(types.ModuleType):
-    """requests, as Tinfoil's SDK is given it: its functions each send through a session
-    of netguard's (netguard.session(follow=True): what it fetches is public - releases,
-    certificates, the enclave's report - and carries no key), and Session is that
-    session's class; everything else - its exceptions, Response, the rest - is requests'
-    own."""
-
-    def __init__(self, real):
-        super().__init__(real.__name__, real.__doc__)
-        self._real = real
-        with netguard.session(follow=True) as made:
-            self.Session = type(made)
-
-    def __getattr__(self, name):
-        if name == "_real":
-            raise AttributeError(name)
-        return getattr(self._real, name)
-
-    def request(self, method, url, **kwargs):
-        with netguard.session(follow=True) as session:
-            return session.request(method=method, url=url, **kwargs)
-
-    def get(self, url, params=None, **kwargs):
-        return self.request("get", url, params=params, **kwargs)
-
-    def options(self, url, **kwargs):
-        return self.request("options", url, **kwargs)
-
-    def head(self, url, **kwargs):
-        kwargs.setdefault("allow_redirects", False)
-        return self.request("head", url, **kwargs)
-
-    def post(self, url, data=None, json=None, **kwargs):
-        return self.request("post", url, data=data, json=json, **kwargs)
-
-    def put(self, url, data=None, **kwargs):
-        return self.request("put", url, data=data, **kwargs)
-
-    def patch(self, url, data=None, **kwargs):
-        return self.request("patch", url, data=data, **kwargs)
-
-    def delete(self, url, **kwargs):
-        return self.request("delete", url, **kwargs)
-
-
-# What a module may have taken from requests by name, as well as requests itself.
-_REQUESTS_NAMES = ("request", "get", "options", "head", "post", "put", "patch", "delete",
-                   "Session")
-# The most redirects one fetch of Sigstore's trust root follows, each judged by
-# netguard.redirect_problem.
-TUF_MAX_REDIRECTS = 5
-# sigstore's modules never loaded to be guarded: its command line, which the SDK never
-# runs (and __main__ would run it).
-_SIGSTORE_SKIPPED = ("sigstore.__main__", "sigstore._cli")
-
-
-class Unguarded(RuntimeError):
-    """sigstore's or TUF's internals are not where guard_sigstore expects them (another
-    version than packaging/private-mode.lock pins: sigstore 4.5, tuf 7.0), so Sigstore's
-    trust root could not be fetched with its redirects held to the rule: nothing may be
-    attested, and so nothing sent (tinfoil_verify). DA Vibe Manager's (Nov 2026)."""
+# The guard of Tinfoil's SDK and of Sigstore's trust root: the DA apps' shared module, held
+# to SealedLore's copy (tests/test_shared_code.py), given netguard's reading of this machine
+# and its network.
+Unguarded = sdk_guard.Unguarded
+TUF_MAX_REDIRECTS = sdk_guard.TUF_MAX_REDIRECTS
 
 
 def guard_sdk_requests(package="tinfoil"):
-    """Have Tinfoil's SDK fetch through netguard's session: a redirect then goes only
-    where a request could have gone in the first place, and never from https to plain
-    http. Returns the names of the modules given it.
+    """Have Tinfoil's SDK fetch only over https, following no redirect off https and none
+    from the internet into this machine or its network (sdk_guard.guard), and what it
+    verifies with - sigstore-python, its trust root through TUF's own client - too. Returns
+    the names of the modules changed. Raises Unguarded where sigstore's or TUF's internals
+    are not as the guard expects, rather than leave a fetch unguarded.
 
-    The SDK fetches with bare requests.get and .post - the router's latest release and
-    its Sigstore bundle from GitHub's proxy (tinfoil.github), AMD's VCEK and Intel's
-    collateral (attestation.verify_sev, .collateral_tdx), an enclave's report
-    (attestation.attestation) - and requests follows a redirect anywhere, https to http
-    included: a 30x from any of them, or from whatever answered at their address, and
-    the next fetch went in the clear, through no check of the app's.
-
-    It is not changed on disk. Each of its modules loaded is handed a stand-in for
-    requests (_GuardedRequests) in place of the real one, and for any of its functions
-    taken by name. Every module of the package is loaded first, so that one the SDK
-    would import only when it needs it - another version may - is not missed; one that
-    cannot be loaded is left, as the SDK could not use it either.
-
-    The SDK checks the router's release with sigstore-python, which fetches too: for the
-    SDK, that is guarded with it (guard_sigstore), and Unguarded raised where it cannot
-    be."""
-    import sys
-
-    root = sys.modules.get(package)
-    if root is None:
-        return []
-    given = _guard_requests(root, package)
-    if package == "tinfoil":
-        given += guard_sigstore()
-    return sorted(given)
+    The SDK fetches with bare requests.get and .post - the router's latest release and its
+    Sigstore bundle from GitHub's proxy (tinfoil.github), AMD's VCEK and Intel's collateral
+    (attestation.verify_sev, .collateral_tdx), an enclave's report - and requests follows a
+    redirect anywhere, https to http included: a 30x from any of them, or from whatever
+    answered at their address, sent the next fetch in the clear, through no check of the
+    app's. It is not changed on disk."""
+    return sorted(sdk_guard.guard(netguard.is_local, package))
 
 
 def guard_sigstore():
-    """sigstore-python, as Tinfoil's SDK verifies the router's release with it: its users
-    of requests given the stand-in, and its TUF client a fetcher that holds redirects to
-    the rule (_guard_tuf). Returns the names of the modules changed; nothing where
-    sigstore is not installed, as then nothing fetches through it.
-
-    Its trust root comes from Sigstore's TUF repository through TUF's own client, whose
-    fetcher asks urllib3, and urllib3 follows a redirect anywhere, https to plain http
-    included: a 30x from tuf-repo-cdn.sigstore.dev, or from whatever answered at its
-    address, sent the next fetch in the clear. sigstore's own users of requests -
-    Rekor's, Fulcio's, a timestamp authority's and OIDC's clients - fetch nothing while
-    an attestation is verified, all of them while signing; they are given the stand-in
-    all the same, one loaded only later included.
-
-    Raises Unguarded where sigstore's or TUF's internals are not as this expects."""
-    import importlib
-
-    try:
-        root = importlib.import_module("sigstore")
-    except ImportError:
-        return []
-    return (_guard_requests(root, "sigstore", skipped=_SIGSTORE_SKIPPED)
-            + _guard_tuf())
-
-
-def _guard_requests(root, package, skipped=()):
-    """`package`'s modules, every one loaded first (but those `skipped`), given the
-    requests stand-in. Returns the names of those that have it."""
-    import importlib
-    import pkgutil
-    import sys
-
-    import requests
-
-    try:
-        for found in pkgutil.walk_packages(getattr(root, "__path__", []), package + ".",
-                                           onerror=lambda _name: None):
-            if found.name not in sys.modules and found.name not in skipped:
-                try:
-                    importlib.import_module(found.name)
-                except Exception:
-                    pass
-    except Exception:           # a package that cannot be walked: what is loaded is
-        pass                    # still guarded below
-    guarded, given = None, []
-    for name, module in list(sys.modules.items()):
-        if module is None or not (name == package or name.startswith(package + ".")):
-            continue
-        changed = False
-        if getattr(module, "requests", None) is requests:
-            guarded = guarded or _GuardedRequests(requests)
-            module.requests = guarded
-            changed = True
-        for attribute in _REQUESTS_NAMES:
-            if getattr(module, attribute, None) is getattr(requests, attribute):
-                guarded = guarded or _GuardedRequests(requests)
-                setattr(module, attribute, getattr(guarded, attribute))
-                changed = True
-        if changed or isinstance(getattr(module, "requests", None), _GuardedRequests):
-            given.append(name)
-    return given
-
-
-def _tuf_fetcher_class():
-    """TUF's own urllib3 fetcher - its proxies from the environment, as
-    proxy.let_tuf_use_socks lets them be a SOCKS one too, and its User-Agent - asking
-    urllib3 to follow no redirect, and following one itself only where
-    netguard.redirect_problem allows: https only, and never from the internet into this
-    machine or its network; TUF_MAX_REDIRECTS at most. One it may not follow is a TUF
-    DownloadError, as TUF expects of a failed fetch: the trust root's refresh fails, and
-    with it the attestation."""
-    import urllib3
-    from tuf.api import exceptions
-    from tuf.ngclient import Urllib3Fetcher
-
-    class NotFollowed(exceptions.DownloadError):
-        """A redirect of Sigstore's trust root not followed: a failed fetch to TUF, and
-        found by Enclave.current in what the SDK raises (_not_followed)."""
-        redirect_refused = True
-
-    class GuardedFetcher(Urllib3Fetcher):
-        def _fetch(self, url):
-            for _hop in range(TUF_MAX_REDIRECTS + 1):
-                try:
-                    response = self._proxy_env.request(
-                        "GET", url, preload_content=False,
-                        timeout=urllib3.Timeout(self.socket_timeout), redirect=False)
-                except urllib3.exceptions.MaxRetryError as e:
-                    if isinstance(e.reason, urllib3.exceptions.TimeoutError):
-                        raise exceptions.SlowRetrievalError from e
-                    raise
-                if 300 <= response.status < 400:
-                    location = response.get_redirect_location()
-                    try:
-                        response.drain_conn()
-                        response.release_conn()
-                    except Exception:
-                        pass
-                    if not location:
-                        raise exceptions.DownloadHTTPError(
-                            f"HTTP {response.status} with no address to go to",
-                            response.status)
-                    target = urljoin(url, location)
-                    found = netguard.redirect_problem(url, target)
-                    if found:
-                        raise NotFollowed(found)
-                    url = target
-                    continue
-                if response.status >= 400:
-                    response.close()
-                    raise exceptions.DownloadHTTPError(
-                        f"HTTP error occurred with status {response.status}",
-                        response.status)
-                return self._chunks(response)
-            raise NotFollowed(
-                f"Sigstore's trust root was sent on more than {TUF_MAX_REDIRECTS} times, "
-                f"which was not followed")
-
-    return GuardedFetcher
-
-
-def _guard_tuf():
-    """sigstore's TrustUpdater builds tuf.ngclient.Updater, by the name its module
-    imported, with no fetcher, so TUF's own fetched for it. That name becomes an Updater
-    given, when it is given none, the guarded fetcher (_tuf_fetcher_class). Raises
-    Unguarded, saying why, where sigstore's or TUF's internals are not where this
-    expects them, rather than leave the trust root fetched unguarded."""
-    import importlib
-    import inspect
-
-    try:
-        place = importlib.import_module("sigstore._internal.tuf")
-        from tuf.api import exceptions
-        from tuf.ngclient import Updater, Urllib3Fetcher
-    except Exception as e:
-        raise Unguarded(f"sigstore's TUF client could not be found "
-                        f"({type(e).__name__}: {e})") from e
-    current = getattr(place, "Updater", None)
-    if getattr(current, "fetches_guarded", False):
-        return []
-    problems = []
-    if current is not Updater:
-        problems.append("sigstore._internal.tuf.Updater is not tuf.ngclient.Updater")
-    if not callable(getattr(place, "TrustUpdater", None)):
-        problems.append("sigstore._internal.tuf has no TrustUpdater")
-    try:
-        names = list(inspect.signature(Updater.__init__).parameters)
-    except (TypeError, ValueError):
-        names = []
-    if names[1:7] != ["metadata_dir", "metadata_base_url", "target_dir",
-                      "target_base_url", "fetcher", "config"]:
-        problems.append("tuf.ngclient.Updater does not take (metadata_dir, "
-                        "metadata_base_url, target_dir, target_base_url, fetcher, "
-                        "config) as expected")
-    try:
-        proxies = getattr(Urllib3Fetcher(), "_proxy_env", None)
-    except Exception:
-        proxies = None
-    if not callable(getattr(proxies, "request", None)) \
-            or not callable(getattr(Urllib3Fetcher, "_chunks", None)):
-        problems.append("tuf.ngclient.Urllib3Fetcher has no _proxy_env.request or "
-                        "_chunks")
-    if not (isinstance(getattr(exceptions, "DownloadError", None), type)
-            and isinstance(getattr(exceptions, "DownloadHTTPError", None), type)):
-        problems.append("tuf.api.exceptions has no DownloadError or DownloadHTTPError")
-    if problems:
-        raise Unguarded("Sigstore's trust root cannot be fetched with its redirects held "
-                        "to https, so nothing is attested: " + "; ".join(problems))
-    fetcher_class = _tuf_fetcher_class()
-
-    class GuardedUpdater(Updater):
-        fetches_guarded = True
-
-        def __init__(self, *args, **kwargs):
-            # (metadata_dir, metadata_base_url, target_dir, target_base_url, fetcher,
-            # config): a fetcher given, by name or in its place, is kept.
-            args = list(args)
-            config = args[5] if len(args) > 5 else kwargs.get("config")
-            if len(args) > 4:
-                if args[4] is None:
-                    args[4] = fetcher_class(
-                        app_user_agent=getattr(config, "app_user_agent", None))
-            elif kwargs.get("fetcher") is None:
-                kwargs["fetcher"] = fetcher_class(
-                    app_user_agent=getattr(config, "app_user_agent", None))
-            super().__init__(*args, **kwargs)
-
-    place.Updater = GuardedUpdater
-    return [place.__name__]
+    """sigstore-python, as Tinfoil's SDK verifies the router's release with it, guarded
+    (sdk_guard.guard_sigstore). Raises Unguarded where it cannot be."""
+    return sdk_guard.guard_sigstore(netguard.is_local)
 
 
 def tinfoil_verify(relay, cache_secret):
@@ -510,13 +252,20 @@ def tinfoil_verify(relay, cache_secret):
 
 
 def _not_followed(error):
-    """What a redirect of Sigstore's trust root that the guarded fetcher did not follow
-    (_tuf_fetcher_class) says, found among the causes of what the SDK raised - sigstore
-    says only "Failed to refresh TUF metadata" - or ''."""
+    """What a redirect the guard did not follow says (sdk_guard: a TUF download error of
+    Sigstore's trust root, or the SDK's requests refused), found among the causes of what
+    the SDK raised - sigstore says only "Failed to refresh TUF metadata" - or ''."""
+    try:
+        from tuf.api.exceptions import DownloadError, DownloadHTTPError
+    except ImportError:             # no TUF: nothing fetched through it either
+        DownloadError = DownloadHTTPError = ()
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
-        if getattr(error, "redirect_refused", False):
+        refused = (isinstance(error, DownloadError)
+                   and not isinstance(error, DownloadHTTPError)
+                   or type(error).__name__ == "RedirectRefused")
+        if refused and "not followed" in str(error):
             return str(error)
         error = error.__cause__ or error.__context__
     return ""

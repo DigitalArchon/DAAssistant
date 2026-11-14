@@ -3525,6 +3525,25 @@ class Sealed(unittest.TestCase):
         self.assertEqual(len(attempts), 2)
         self.assertEqual(calls["verify"], 2)
 
+    def test_a_refusal_the_enclave_sealed_is_never_sent_again(self):
+        """With the enclave's nonce on it the request went the encrypted way and may
+        have run (and been paid for): the proxy never resends it
+        (isMissingEncryptedBodyHeaderResponse), and neither do we."""
+        import httpx
+        attempts = []
+
+        def handler(request):
+            attempts.append(1)
+            return httpx.Response(400, headers={"Ehbp-Response-Nonce": "ab" * 32},
+                                  json={"error": "missing_encrypted_body_header"})
+
+        client, calls = self.make(handler)
+        with self.assertRaisesRegex(PrivacyError, "HTTP 400"):
+            with client.request(self.MODEL, {"messages": []}) as response:
+                response.read()
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(calls["verify"], 1)
+
     def test_a_failed_attestation_sends_nothing(self):
         def refuse():
             raise RuntimeError("bad measurement")

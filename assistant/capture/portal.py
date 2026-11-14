@@ -16,7 +16,7 @@ import urllib.parse
 from gi.repository import Gio, GLib
 from PIL import Image
 
-from .. import session
+from .. import coredumps, session
 from .base import CaptureError, ScreenshotBackend
 
 PORTAL_BUS = "org.freedesktop.portal.Desktop"
@@ -150,7 +150,12 @@ class PortalBackend(ScreenshotBackend):
         if interactive and self.supports_interactive():
             options["interactive"] = GLib.Variant("b", True)
 
+        # Dumpable until the portal has answered the call: it refuses a process that is
+        # not (coredumps.py).
+        answered = coredumps.asking_the_portal()
+
         def on_called(src, res):
+            answered()
             try:
                 src.call_finish(res)
             except GLib.Error as e:
@@ -159,11 +164,15 @@ class PortalBackend(ScreenshotBackend):
                     state["sub"] = None
                 on_error(f"Screenshot portal call failed: {e.message}")
 
-        bus.call(
-            PORTAL_BUS, PORTAL_PATH, SCREENSHOT_IFACE, "Screenshot",
-            GLib.Variant("(sa{sv})", ("", options)),
-            GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, None,
-            on_called)
+        try:
+            bus.call(
+                PORTAL_BUS, PORTAL_PATH, SCREENSHOT_IFACE, "Screenshot",
+                GLib.Variant("(sa{sv})", ("", options)),
+                GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, None,
+                on_called)
+        except Exception:
+            answered()
+            raise
 
     @staticmethod
     def _load_uri(uri):

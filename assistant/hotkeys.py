@@ -32,7 +32,7 @@ import re
 from . import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import GLib
 
-from . import APP_ID, keybindings, shortcuts
+from . import APP_ID, coredumps, keybindings, shortcuts
 
 # (action, menu label, suggested key). The suggestions are what "Use suggested keys"
 # fills in; none is bound until the user says so.
@@ -454,11 +454,14 @@ class PortalHotkeys:
         except OSError as e:
             print(f"[hotkeys] no .desktop entry for the portal: {e}")
         try:
-            bus.call_sync("org.freedesktop.portal.Desktop",
-                          "/org/freedesktop/portal/desktop",
-                          "org.freedesktop.host.portal.Registry", "Register",
-                          GLib.Variant("(sa{sv})", (APP_ID, {})), None,
-                          Gio.DBusCallFlags.NONE, 5000, None)
+            # Dumpable while the portal answers: it refuses a process that is not
+            # (coredumps.py), and knows this connection from then on.
+            with coredumps.for_the_portal():
+                bus.call_sync("org.freedesktop.portal.Desktop",
+                              "/org/freedesktop/portal/desktop",
+                              "org.freedesktop.host.portal.Registry", "Register",
+                              GLib.Variant("(sa{sv})", (APP_ID, {})), None,
+                              Gio.DBusCallFlags.NONE, 5000, None)
         except GLib.Error as e:
             # Known already by its scope, or a portal from before the call (1.19):
             # CreateSession says whether that is enough.
@@ -491,15 +494,39 @@ class PortalHotkeys:
 
         options = {"handle_token": GLib.Variant("s", token),
                    "session_handle_token": GLib.Variant("s", token)}
-        self.bus.call_sync(
-            "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.GlobalShortcuts", "CreateSession",
-            GLib.Variant("(a{sv})", (options,)), GLib.VariantType("(o)"),
-            Gio.DBusCallFlags.NONE, -1, None)
+        with coredumps.for_the_portal():
+            self.bus.call_sync(
+                "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                "org.freedesktop.portal.GlobalShortcuts", "CreateSession",
+                GLib.Variant("(a{sv})", (options,)), GLib.VariantType("(o)"),
+                Gio.DBusCallFlags.NONE, -1, None)
         return True
 
-    def _bind(self):
+    def _ask(self, path, interface, method, parameters, reply_type=None):
+        """One request of the portal's, not waited for: dumpable until it is answered
+        (coredumps.asking_the_portal), and what went wrong, if anything, said."""
         from gi.repository import Gio
+        answered = coredumps.asking_the_portal()
+
+        def finished(bus, result):
+            answered()
+            try:
+                bus.call_finish(result)
+            except GLib.Error as e:
+                # Closed with it unanswered - stop() closes the connection after its
+                # Close - is no news.
+                if not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CLOSED):
+                    print(f"[hotkeys] the portal's {method}: {e.message}")
+
+        try:
+            self.bus.call("org.freedesktop.portal.Desktop", path, interface, method,
+                          parameters, reply_type, Gio.DBusCallFlags.NONE, -1, None,
+                          finished)
+        except Exception:
+            answered()
+            raise
+
+    def _bind(self):
         from . import session
         desktop = session.desktop()
         listed = [(name, {"description": GLib.Variant("s", self.labels.get(name, label)),
@@ -517,13 +544,12 @@ class PortalHotkeys:
             self._take(results.get("shortcuts") or [])
 
         self._on_response(token, bound)
-        self.bus.call(
-            "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.GlobalShortcuts", "BindShortcuts",
-            GLib.Variant("(oa(sa{sv})sa{sv})", (
-                self.session_handle, listed, "",
-                {"handle_token": GLib.Variant("s", token)})),
-            GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, None, None)
+        self._ask("/org/freedesktop/portal/desktop",
+                  "org.freedesktop.portal.GlobalShortcuts", "BindShortcuts",
+                  GLib.Variant("(oa(sa{sv})sa{sv})", (
+                      self.session_handle, listed, "",
+                      {"handle_token": GLib.Variant("s", token)})),
+                  GLib.VariantType("(o)"))
 
     def _take(self, listed):
         """Note what the desktop says each shortcut is bound to.
@@ -579,15 +605,11 @@ class PortalHotkeys:
 
     def configure(self):
         """Open the desktop's own dialog for these shortcuts (portal version 2+)."""
-        from gi.repository import Gio
-        self.bus.call(
-            "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.GlobalShortcuts", "ConfigureShortcuts",
-            GLib.Variant("(osa{sv})", (self.session_handle, "", {})),
-            None, Gio.DBusCallFlags.NONE, -1, None, None)
+        self._ask("/org/freedesktop/portal/desktop",
+                  "org.freedesktop.portal.GlobalShortcuts", "ConfigureShortcuts",
+                  GLib.Variant("(osa{sv})", (self.session_handle, "", {})))
 
     def stop(self):
-        from gi.repository import Gio
         if self.bus is not None:
             for sub in self._subs:
                 self.bus.signal_unsubscribe(sub)
@@ -595,10 +617,8 @@ class PortalHotkeys:
             if self.session_handle:
                 # Otherwise the compositor keeps the shortcuts bound to a session
                 # nobody is listening to.
-                self.bus.call(
-                    "org.freedesktop.portal.Desktop", self.session_handle,
-                    "org.freedesktop.portal.Session", "Close", None, None,
-                    Gio.DBusCallFlags.NONE, -1, None, None)
+                self._ask(self.session_handle, "org.freedesktop.portal.Session", "Close",
+                          None)
                 self.session_handle = None
             # Ours alone: the portal ends whatever is left on it when it goes.
             self.bus.flush_sync(None)

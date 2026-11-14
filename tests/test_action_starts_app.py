@@ -30,10 +30,10 @@ class FakeApp:
 class WithNothingRunning(unittest.TestCase):
     def setUp(self):
         FakeApp.made, FakeApp.primary = [], True
-        # Not the suite's own process's core size limit: main() sets it for good.
+        # Not the suite's own process: main() makes it undumpable (coredumps.py).
         for patch in (mock.patch.object(app_module, "Assistant", FakeApp),
                       mock.patch.object(ipc, "is_running", return_value=False),
-                      mock.patch.object(entry, "no_core_files")):
+                      mock.patch.object(entry, "no_core_dumps")):
             patch.start()
             self.addCleanup(patch.stop)
 

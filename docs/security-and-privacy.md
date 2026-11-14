@@ -285,10 +285,15 @@ Tinfoil's router - beside its badge: *TEE · verified · run by Fortanix*.
 
 Kept in memory only, and gone when the app quits: conversations and their captures and
 attachments, what each enclave proved, the RedPill session records read (64 at most),
-and a key typed in with no keyring to keep it - unless the app crashes, where the
-system's crash collector may keep its memory (see [Limits](#limits)). **Copy** in a chat window puts the
-conversation on the clipboard as Markdown, and **Save** writes it where you choose, the
-badges' labels with it.
+and a key typed in with no keyring to keep it. If the app crashes, none of its memory is
+written to disk: it turns core dumps off as it starts, so neither a core file nor the
+system's crash collector (`systemd-coredump`) keeps a copy, and other programs of yours
+cannot read its memory while it runs. The one exception is the moment it asks the
+desktop's portal for a screenshot or for its global shortcuts on Wayland, from the
+request to the portal's answer: the portal answers no process whose memory is closed
+that way. (For the same reason its file dialogs are GTK's own, even where the desktop
+asks for the portal's.) **Copy** in a chat window puts the conversation on the clipboard
+as Markdown, and **Save** writes it where you choose, the badges' labels with it.
 
 ## Other protections
 
@@ -332,18 +337,16 @@ badges' labels with it.
   they vouch for. nano-gpt still sees your account and when, and how much, you send.
 - **Plain http on your own network is not encrypted** (see
   [The network rules](#the-network-rules)).
-- **Anything running as you on this computer** can read your settings, the cache, the
-  keyring once it is unlocked, and the app's memory.
-- **A crash can put what the app held in memory on disk.** The app asks for no core file
-  (its core size limit is 0, for the processes it starts too, WebKit's among them). But
-  the crash collector most distributions run, `systemd-coredump`, keeps a crashed
-  program's memory whatever that limit says, in `/var/lib/systemd/coredump`, readable by
-  you and the administrator, for a few days: the conversations open then,
-  their captures and attachments, and the keys would be in it. `coredumpctl list` shows
-  what it kept; `Storage=none` in `/etc/systemd/coredump.conf` stops it keeping any. The
-  app's process is not made undumpable, which would stop the collector: the desktop's
-  portal then refuses everything the app asks of it, its screenshots and global
-  shortcuts on Wayland among them.
+- **Anything running as you on this computer** can read your settings, the cache and
+  the keyring once it is unlocked. The app's own memory is closed to other programs but
+  for the moments it asks the desktop's portal for something (see
+  [What is kept on this computer](#what-is-kept-on-this-computer)); the administrator can
+  read it whenever they like.
+- **WebKit's processes**, which draw the conversation and the articles, are programs of
+  their own: they write no core file either (the limit passes to them), but the system's
+  crash collector may keep one of a WebKit process that crashes, with what it was drawing.
+  `coredumpctl list` shows what it kept; `Storage=none` in `/etc/systemd/coredump.conf`
+  stops it keeping any.
 - **A screenshot can hold more than you meant to send.** Look at it, and black out what
   should not go, before you press Send.
 - **Answers are written by language models**, and web search results come from the open

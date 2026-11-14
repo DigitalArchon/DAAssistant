@@ -132,6 +132,15 @@ def canonical(value):
                       ensure_ascii=False).encode()
 
 
+# When the gateway says it served a reply (its receipt's `served_at`), when a test's
+# request went, and the time the check is made, by the client's clock (TeeClient's
+# `wall`): for a receipt dated as RedPill's session records are (TINFOIL, below). A
+# FakeNanoGpt given no `served_at` dates its receipts by the clock, as they are looked up.
+SERVED = 1_800_000_000
+SENT = SERVED - 2.0
+CHECKED = SERVED + 3.0
+
+
 class FakeNanoGpt:
     """A requests.Session standing in for nano-gpt: TEE attestation and the records of
     replies, NRAS, and the chat endpoint. Records every request so a test can say none
@@ -147,10 +156,11 @@ class FakeNanoGpt:
     listing the signing key as its e2ee key ("e2ee", as nano-gpt relays it), bound by
     the quote itself in RedPill's statement ("statement"), or neither ("none"). With it,
     `receipts` puts the gateway's receipt in each record: its upstream `upstream`,
-    signed by the keyset's key or `receipt_key`, under the keyset's digest or `digest`.
-    `receipt_id` and `route` are the headers a reply names them in, and the first
-    `not_ready` lookups of a record find none yet. The stream carries `tail` after its
-    [DONE], or, `cut`, ends before it.
+    signed by the keyset's key or `receipt_key`, under the keyset's digest or `digest`,
+    served at `served_at` (by default the time it is looked up; given, its TeeClients'
+    clock reads CHECKED). `receipt_id` and `route` are the headers a reply names them in,
+    and the first `not_ready` lookups of a record find none yet. The stream carries
+    `tail` after its [DONE], or, `cut`, ends before it.
 
     `aci` is what `report=aci` answers (Nov 10 2026, gateway_report): RedPill's
     gateway's own report binding the keyset `tied` makes ("e2ee" when not given) to our
@@ -170,7 +180,7 @@ class FakeNanoGpt:
                  signed_bytes=None, tied=None, receipts=False, upstream="verified",
                  receipt_key=None, digest=None, not_after=4_000_000_000, receipt_id=None,
                  route=None, not_ready=0, tail=b"", cut=False, aci=None, record=None,
-                 record_body=None, record_status=200, record_length=None):
+                 record_body=None, record_status=200, record_length=None, served_at=None):
         if aci is not None and tied is None:
             tied = "e2ee"
         self.aci = aci
@@ -191,6 +201,7 @@ class FakeNanoGpt:
         self.tied, self.receipts, self.upstream = tied, receipts, upstream
         self.receipt_key, self.digest, self.not_after = receipt_key, digest, not_after
         self.receipt_id, self.route, self.not_ready = receipt_id, route, not_ready
+        self.served_at = served_at
         self.tail, self.cut = tail, cut
         self.record, self.record_body = record, record_body
         self.record_status, self.record_length = record_status, record_length
@@ -273,7 +284,9 @@ class FakeNanoGpt:
         keyset = self.keyset
         receipt = {
             "api_version": "aci/1", "receipt_id": "rcpt-1",
-            "key_id": "dstack-kms-receipt-ed25519-v1", "served_at": 1_800_000_000,
+            "key_id": "dstack-kms-receipt-ed25519-v1",
+            "served_at": (int(time.time()) if self.served_at is None
+                          else self.served_at),
             "workload_keyset_digest": (self.digest or "sha256:"
                                        + hashlib.sha256(canonical(keyset)).hexdigest()),
             "event_log": [
@@ -301,8 +314,9 @@ class FakeNanoGpt:
         return self.nvidia
 
     def tee_client(self, url, key, model):
+        wall = time.time if self.served_at is None else (lambda: CHECKED)
         return TeeClient(url, key, model, session=self, intel=self.intel_verify,
-                         nvidia=self.nvidia_verify)
+                         nvidia=self.nvidia_verify, wall=wall)
 
     def get(self, url, params=None, headers=None, timeout=None, stream=False,
             allow_redirects=True):
@@ -1928,6 +1942,30 @@ class PrivateRequests(TempConfig):
                                                 if "/tee/signature/" in g][-1])
         self.assertEqual(server.lookups[-1].get("X-TEE-Verification-Route"), "r2")
 
+    def test_a_reply_is_dated_by_when_its_request_went_and_its_receipt_held_to_it(self):
+        """The request's own time goes with the reply to its check: an earlier
+        exchange's record and receipt handed back, bytes and hashes as they were, is
+        "failed", where it read "verified". From SealedLore (1a61096)."""
+        def sent(served_at=None):
+            server = FakeNanoGpt(tied="e2ee", receipts=True, receipt_id="rcpt-7",
+                                 served_at=served_at)
+            session = session_for(server)
+            with mock.patch.object(privacy, "RECEIPT_RETRY_SECONDS", 0):
+                text = self.client(server).stream(
+                    TEXT, [{"role": "user", "content": "hi"}], privacy=session)
+            self.assertEqual(text, "Hello there")
+            return session.pop_receipt()
+
+        before = time.time()
+        with mock.patch.object(TeeClient, "check", autospec=True,
+                               side_effect=TeeClient.check) as check:
+            self.assertEqual(sent().state, privacy.VERIFIED)
+        sent_at = check.call_args.kwargs["sent_at"]
+        self.assertTrue(before <= sent_at <= time.time())
+        replayed = sent(served_at=int(time.time()) - 3600)
+        self.assertEqual(replayed.state, privacy.FAILED, replayed.detail)
+        self.assertIn("served it at another time", replayed.detail)
+
     def test_a_private_tee_request_is_streamed_even_when_no_one_watches_it(self):
         """nano-gpt rebuilds a whole (unstreamed) TEE reply - pricing, the model's
         name - so its bytes never match the record's hash unless it is asked for in its
@@ -2188,6 +2226,7 @@ class Receipts(unittest.TestCase):
 
     def check(self, client, server, **record):
         record.setdefault("body_hash", stream_hash(server.stream()))
+        record.setdefault("sent_at", time.time())
         return client.check_reply("chatcmpl-42", **record)
 
     def test_a_streamed_reply_is_checked_to_its_exact_bytes_and_its_receipt(self):
@@ -2278,6 +2317,41 @@ class Receipts(unittest.TestCase):
             state, _detail = self.check(client, server, receipt_id="rcpt-1")
         self.assertEqual(state, privacy.UNCHECKED)
         self.assertEqual(len(server.lookups), 1)
+
+    def test_a_receipt_served_at_another_time_than_its_request_fails(self):
+        """Only the response's hash tied a receipt to the stream, and its served_at was
+        held to the keys' expiry alone: a relay could hand back an earlier signed stream
+        with its receipt, and it read "verified". From SealedLore (1a61096)."""
+        skew = privacy.RECEIPT_CLOCK_SKEW_SECONDS
+
+        def found(served_at):
+            client, server = self.client(served_at=served_at)
+            return self.check(client, server, receipt_id="rcpt-1", sent_at=SENT)
+
+        self.assertEqual(found(SERVED)[0], privacy.VERIFIED)
+        self.assertEqual(found(int(SENT - skew))[0], privacy.VERIFIED,
+                         "this computer's clock a little ahead")
+        self.assertEqual(found(int(CHECKED + skew))[0], privacy.VERIFIED,
+                         "or a little behind")
+        state, detail = found(int(SENT) - 3600)
+        self.assertEqual(state, privacy.FAILED, "an hour-old exchange handed back")
+        self.assertIn("served it at another time than this request was sent", detail)
+        self.assertEqual(found(int(SENT - skew) - 1)[0], privacy.FAILED)
+        self.assertEqual(found(int(CHECKED + skew) + 1)[0], privacy.FAILED,
+                         "served after it was checked")
+        label, tone, tip = privacy.receipt_badge(privacy.Receipt(TEXT, privacy.TEE,
+                                                                 state, detail))
+        self.assertEqual((label, tone), ("⚠ TEE · check failed", "bad"))
+        self.assertIn("one served before this request was sent", tip)
+
+    def test_a_receipt_with_no_time_its_request_was_sent_is_unchecked(self):
+        client, server = self.client()
+        state, detail = self.check(client, server, receipt_id="rcpt-1", sent_at=None)
+        self.assertEqual(state, privacy.UNCHECKED)
+        self.assertIn("when its request was sent is not known", detail)
+        # Nothing to date: a record with no receipt reads as before.
+        bare, server = self.client(receipts=False)
+        self.assertEqual(self.check(bare, server, sent_at=None)[0], privacy.VERIFIED)
 
 
 # ---- the chat window -----------------------------------------------------------------
@@ -2621,7 +2695,7 @@ class ChatStaysPrivate(TempConfig):
         self.addCleanup(patch.stop)
         self.config.tee_name_upstreams = True
         server = FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1",
-                             record=TINFOIL)
+                             record=tinfoil_now())
         client = LLMClient(self.config)
         client.session = server
         window = ChatWindow(StubApp(self.config, client), "Query text",
@@ -3748,6 +3822,7 @@ class GatewaysOwnReport(unittest.TestCase):
 
     def check(self, client, server, receipt_id="rcpt-1", **record):
         record.setdefault("body_hash", stream_hash(server.stream()))
+        record.setdefault("sent_at", time.time())
         return client.check_reply("chatcmpl-42", receipt_id=receipt_id, **record)
 
     def test_the_gateways_report_binds_the_receipt_keys(self):
@@ -4171,6 +4246,13 @@ TINFOIL = {
 }
 
 
+def tinfoil_now():
+    """TINFOIL's record with its session around now: for a reply sent, served and
+    checked by the clock, as the app sends and checks one."""
+    now = int(time.time())
+    return dict(TINFOIL, established_at=now - 1000, expires_at=now + 2600)
+
+
 class OneAnswer:
     """A requests transport adapter that answers every request with one response and
     keeps the requests it was sent: for a real netguard session, with no network."""
@@ -4209,11 +4291,13 @@ class ProviderBehindAReply(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def named(self, server, model=TEXT, receipt_id="rcpt-1"):
+        # Served inside the session TINFOIL's record names, sent just before.
+        server.served_at = SERVED
         client = server.tee_client(API_URL, "k", model)
         client.attest()
         return client, client.check("chatcmpl-42", receipt_id=receipt_id,
                                     body_hash=stream_hash(server.stream()),
-                                    name_upstream=True)
+                                    name_upstream=True, sent_at=SENT)
 
     def test_a_reply_names_its_provider_by_redpills_record_read_once_a_session(self):
         server = FakeNanoGpt(aci="bound", receipts=True, record=TINFOIL)
@@ -4240,12 +4324,15 @@ class ProviderBehindAReply(unittest.TestCase):
         # The next reply in the same session reads no record again; one not asked to
         # name its provider asks nothing of RedPill at all.
         again = client.check("chatcmpl-42", receipt_id="rcpt-1",
-                             body_hash=stream_hash(server.stream()), name_upstream=True)
+                             body_hash=stream_hash(server.stream()), name_upstream=True,
+                             sent_at=SENT)
         self.assertEqual(again.upstream.name, "tinfoil")
         self.assertEqual(client.check_reply("chatcmpl-42", receipt_id="rcpt-1",
-                                            body_hash=stream_hash(server.stream()))[0],
+                                            body_hash=stream_hash(server.stream()),
+                                            sent_at=SENT)[0],
                          privacy.VERIFIED)
-        self.assertIsNone(client.check("chatcmpl-42", receipt_id="rcpt-1").upstream)
+        self.assertIsNone(client.check("chatcmpl-42", receipt_id="rcpt-1",
+                                       sent_at=SENT).upstream)
         self.assertEqual(len(server.records_asked), 1)
 
     def test_a_provider_label_is_redpills_name_without_its_number(self):
@@ -4385,7 +4472,7 @@ class NamingTheProvider(TempConfig):
     def test_it_is_off_by_default_and_asked_for_only_while_settings_say(self):
         self.assertIs(Config(os.path.join(self.dir, "new.json")).tee_name_upstreams, False)
         server = FakeNanoGpt(aci="bound", receipts=True, receipt_id="rcpt-1",
-                             record=TINFOIL)
+                             record=tinfoil_now())
         session = session_for(server)
         receipt = self.send(server, session)
         self.assertEqual(receipt.state, privacy.VERIFIED, receipt.detail)

@@ -31,8 +31,9 @@ Anything that breaks one of DA Assistant's promises, which
   attested enclave did not seal;
 - flaws in TEE attestation (a model's own evidence, Chutes' instances, or RedPill's gateway's
   report it may be attested through) or in the reply checks: a reply checked against a key no
-  attested quote binds, verified for other bytes than arrived, or verified through RedPill's
-  gateway alone without a receipt that holds;
+  attested quote binds, verified for other bytes than arrived or with a receipt served before
+  its request was sent, or verified through RedPill's gateway alone without a receipt that
+  holds;
 - anything reaching a TEE model while its attestation is under way or after it was refused, or
   a banner, badge or message mark claiming more than was attested (RedPill's gateway is not
   the machine that runs the model);

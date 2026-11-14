@@ -404,9 +404,12 @@ first step's and its answering model's, then any chosen along the way.
   hashes every byte of the reply as it arrives: the two must match, so the answer you
   read is the one the attested key signed for. Where the gateway's own signed
   receipt for the reply comes with the record (RedPill's, Nov 2026), it is checked too:
-  signed by a key the attestation published, for the same reply, and saying the model
-  it came from was verified. (Up to 4.2.0 only the record's signer was checked, which
-  said nothing of the text shown.) The enclave is attested again before the next message
+  signed by a key the attestation published, for the same reply, saying the model it
+  came from was verified, and served after the request was sent (five minutes' leeway
+  either way for the two clocks), so that an earlier exchange handed back whole, its
+  record and receipt with it, fails. (Up to 4.2.0 only the record's signer was checked,
+  which said nothing of the text shown; up to 4.4.0 a receipt was not held to the
+  request's time.) The enclave is attested again before the next message
   once its attestation is 15 minutes old - time the computer spent asleep counts - and
   the banner follows it. Your text still passes nano-gpt's gateway in the clear on its
   way in - attestation proves where the model runs, not that nano-gpt cannot read the
@@ -504,7 +507,8 @@ What you see:
   compared*, in amber, is a record the attested key signed whose text could not be
   compared with the reply: nano-gpt rebuilds some models' streams (`TEE/gemma-4-31b-it`),
   and a reply cut short has no whole to compare. *TEE · check failed*, in red, is a
-  record signed by another key or for other text, or a receipt that does not hold; a
+  record signed by another key or for other text, or a receipt that does not hold or
+  that the gateway served at another time than this request; a
   reply no record could be read for, or one Chutes answered, which signs none, reads
   *TEE · reply not verified*, in amber. (Up to 4.2.0 an answer read *signed by attested
   enclave* whatever its text.) Each badge's tooltip says what its check showed and

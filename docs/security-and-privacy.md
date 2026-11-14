@@ -210,7 +210,11 @@ it arrives:
 - *TEE · signed, text not compared*: signed by the attested key, but the text could not
   be compared (nano-gpt rebuilds some models' streams; a reply cut short has no whole).
 - *TEE · check failed*: signed by another key, for other text, or its receipt does not
-  hold.
+  hold: another key, another reply, or one the gateway served before this request was
+  sent (an earlier exchange handed back whole). A receipt must have been served after
+  the request went and before it was checked, five minutes either way for the two
+  clocks; one whose request's time is not known is not read, and the reply reads *reply
+  not verified*.
 - *TEE · reply not verified*: no record could be read - Chutes signs none, or the check
   could not be made. For a model attested through RedPill's gateway alone, a reply also
   reads this unless its receipt holds, since only the receipt says the model's own

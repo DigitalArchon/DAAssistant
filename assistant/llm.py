@@ -1086,6 +1086,9 @@ class LLMClient:
             # hand edit can change under an open conversation (see PrivacySession).
             attested = self.config.detached(api_url=privacy.api_url,
                                             api_key=privacy.api_key)
+            # When the request went: its receipt must have been served after it, or it
+            # is another request's handed back (privacy.TeeClient._served_for).
+            sent_at = time.time()
             response = self._post(payload, True, cancel,
                                   providers.get(attested, providers.NANOGPT))
             if response is None:
@@ -1109,7 +1112,8 @@ class LLMClient:
                                      or headers.get("X-TEE-Signature-Id")),
                       "route": headers.get("X-TEE-Verification-Route"),
                       # A stream that broke or was cut short has no whole to compare.
-                      "body_hash": "sha256:" + digest.hexdigest() if whole else None}
+                      "body_hash": "sha256:" + digest.hexdigest() if whole else None,
+                      "sent_at": sent_at}
             say("Checking the reply's signature…")
         # And who ran a TEE/ reply's model, where Settings > Privacy asks for it: read at
         # each reply, as SealedLore reads it, so that switching it off stops the lookups

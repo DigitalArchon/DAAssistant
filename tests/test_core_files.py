@@ -4,13 +4,19 @@ typed in with no keyring live only there (docs/security-and-privacy.md). And the
 portal, which refuses a process that is not dumpable, is still answered: the process is
 dumpable while it asks (coredumps.py).
 
-The real thing runs in processes of their own: made undumpable, the test run's own
-process would stay so.
+The real thing runs in processes of their own, each started from a shell's state: the
+suite's own process has no core dumps either (support.py), and what it starts inherits
+its core limit of 1 and its filter of 0, which would read as the app's doing whatever the
+app did. TheSuiteItself checks the suite's own.
 """
 
+import json
 import os
+import resource
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -47,9 +53,16 @@ print("filter", open("/proc/self/coredump_filter").read().strip())
 """
 
 
+# Before each probe: the kernel's own filter, as a shell started at login has it, where
+# the suite's would leave 0 (support.py). A process started is dumpable again, and may
+# write its own.
+AS_A_SHELL_HAS_IT = ("with open('/proc/self/coredump_filter', 'w', encoding='ascii') as f:\n"
+                     "    f.write('0x33')\n")
+
+
 def run(code, *args, env=None):
-    return subprocess.run([sys.executable, "-c", code, *args], capture_output=True,
-                          text=True, timeout=60, cwd=ROOT, env=env)
+    return subprocess.run([sys.executable, "-c", AS_A_SHELL_HAS_IT + code, *args],
+                          capture_output=True, text=True, timeout=120, cwd=ROOT, env=env)
 
 
 class NoCoreDumps(unittest.TestCase):
@@ -218,6 +231,64 @@ class NoCoreDumps(unittest.TestCase):
         # Refused undumpable; answered while it asks; and on that connection from then
         # on, undumpable again.
         self.assertEqual(done.stdout.strip(), "refused answered answered")
+
+
+# A Python started from a test, as a test window's WebKit process is: its core limit and
+# its filter.
+WHAT_IT_STARTS = ("import resource\n"
+                  "with open('/proc/self/coredump_filter', encoding='ascii') as f:\n"
+                  "    print(resource.getrlimit(resource.RLIMIT_CORE)[0], f.read().strip())\n")
+
+
+class TheSuiteItself(unittest.TestCase):
+    """The suite has no core dumps either, with the app's own guard (support.py): a
+    test's WebKitWebProcess that aborted left a core of 5-6 MB in systemd-coredump on the
+    lab's Fedora and Omarchy (Nov 14 2026)."""
+
+    REPORT = "DA_ASSISTANT_CORE_REPORT"
+
+    def test_its_process_and_what_it_starts_leave_no_core(self):
+        """Its core limit and its filter, which every test window's WebKit process
+        inherits. Whether it is undumpable is asked of a run of this test alone (below):
+        in the whole suite, a test that asks the portal opens the window for a while."""
+        soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        with open("/proc/self/coredump_filter", encoding="ascii") as f:
+            own = f.read().strip()
+        child = subprocess.run([sys.executable, "-c", WHAT_IT_STARTS], capture_output=True,
+                               text=True, timeout=60, check=False).stdout.split()
+        report = os.environ.get(self.REPORT)
+        if report:
+            with open(report, "w", encoding="utf-8") as f:
+                json.dump({"dumpable": coredumps.dumpable(), "limit": [soft, hard],
+                           "filter": own, "child": child}, f)
+        limit = 0 if hard == 0 else 1          # where the hard limit is 0, 0 stands
+        self.assertEqual((soft, own), (limit, "00000000"))
+        self.assertEqual(child, [str(limit), "00000000"])
+
+    def test_a_run_of_it_started_from_a_shell_is_undumpable_from_the_start(self):
+        """Started as a shell with `ulimit -c unlimited` starts it, with the kernel's own
+        filter: the suite's documented runner (MANUAL.md, Tests), for the test above."""
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        report = os.path.join(folder, "report.json")
+        starter = ("import os, resource, sys\n"
+                   "soft, hard = resource.getrlimit(resource.RLIMIT_CORE)\n"
+                   "if hard == 0:\n"
+                   "    print('already none')\n"
+                   "    sys.exit(0)\n"
+                   "resource.setrlimit(resource.RLIMIT_CORE, (hard, hard))\n"
+                   "os.execv(sys.executable, [sys.executable, '-m', 'unittest', 'discover',"
+                   " '-s', 'tests', '-p', 'test_core_files.py',"
+                   " '-k', 'test_its_process_and_what_it_starts_leave_no_core'])\n")
+        done = run(starter, env=dict(os.environ, **{self.REPORT: report}))
+        if "already none" in done.stdout:
+            self.skipTest("this test's own process may have no core file at all")
+        self.assertEqual(done.returncode, 0, done.stderr[-3000:])
+        with open(report, encoding="utf-8") as f:
+            state = json.load(f)
+        hard = resource.getrlimit(resource.RLIMIT_CORE)[1]
+        self.assertEqual(state, {"dumpable": 0, "limit": [1, hard], "filter": "00000000",
+                                 "child": ["1", "00000000"]})
 
 
 class TheRequestsItMakes(unittest.TestCase):

@@ -1523,10 +1523,13 @@ systemd-run --user --scope -p MemoryMax=2500M -p MemorySwapMax=0 \
 GTK's own Broadway backend runs the suite too, but WebKit lays pages out nonsensically
 there - a negative device pixel ratio - so it is no use for looking at anything.
 
-The suite keeps out of your own cache and off the network: `tests/support.py`, imported
-first by every test module, points `XDG_CACHE_HOME` at a directory of the run's own, and
-turns the model lists' requests into a refusal for any test that does not stand in for
-them itself.
+The suite leaves no core dumps, keeps out of your own cache and stays off the network:
+`tests/support.py`, imported first by every test module, turns core dumps off with the
+app's own guard before any test runs - the run's process is undumpable, and what it
+starts, every test window's WebKit process among them, inherits a core size limit of 1,
+so one that crashes leaves no core - points `XDG_CACHE_HOME` at a directory of the run's
+own, and turns the model lists' requests into a refusal for any test that does not stand
+in for them itself.
 
 The dictionary tests build their dictionaries on the spot. Keep it that way: no real
 dictionary or encyclopedia text belongs in this repository.

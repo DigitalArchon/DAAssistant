@@ -435,7 +435,14 @@ class FakePortalBus:
         pass
 
     def call(self, *args):
-        pass
+        # Taken at once, as the portal takes a request: the window it was opened for
+        # closes (coredumps.py). Never answered, it left the suite's own process, which
+        # has no core dumps (support.py), dumpable for the rest of the run.
+        if args[-1] is not None:
+            args[-1](self, None)
+
+    def call_finish(self, _result):
+        return None
 
 
 class TheReviewIsNotTheCapture(ToolCase):

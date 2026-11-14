@@ -30,7 +30,7 @@ class FakeApp:
 class WithNothingRunning(unittest.TestCase):
     def setUp(self):
         FakeApp.made, FakeApp.primary = [], True
-        # Not the suite's own process: main() makes it undumpable (coredumps.py).
+        # main()'s guard (coredumps.py) has run for the suite already (support.py).
         for patch in (mock.patch.object(app_module, "Assistant", FakeApp),
                       mock.patch.object(ipc, "is_running", return_value=False),
                       mock.patch.object(entry, "no_core_dumps")):

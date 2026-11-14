@@ -236,6 +236,46 @@ class RedirectsOffHttpsAreRefused(FakeSdk):
         with self.assertRaises(requests.exceptions.InvalidURL):
             self.module("byname").send("https://pcs.example/tcb", session)
 
+    def test_a_refused_redirect_is_named_as_one(self):
+        """What the guard raises for a redirect it refused says it is one (the shared
+        guard's RedirectNotFollowed), and _not_followed finds it among the causes."""
+        sealed.guard_sdk_requests()
+        self.answers[self.URL] = "http://evil.example/release"
+        with self.assertRaises(sdk_guard.RedirectNotFollowed) as refused:
+            self.module("github").fetch_latest_release("owner/repo")
+        self.assertTrue(refused.exception.redirect_refused)
+        try:
+            raise RuntimeError("Failed to refresh TUF metadata") from refused.exception
+        except RuntimeError as wrapped:
+            self.assertEqual(sealed._not_followed(wrapped), str(refused.exception))
+
+    def test_a_redirect_is_held_to_netguards_whole_rule(self):
+        """Not to its scheme alone, as this app's own guard held it (up to Nov 14 2026):
+        an address netguard refuses is not followed, nor one that cannot be read."""
+        sealed.guard_sdk_requests()
+        for target in ("https://exa mple.com/release", "https://0.0.0.0/release",
+                       "https://127.0.0.1%2eevil.example/release"):
+            self.sent.clear()
+            self.answers[self.URL] = target
+            with self.assertRaises(sdk_guard.RedirectNotFollowed):
+                self.module("github").fetch_latest_release("owner/repo")
+            self.assertEqual(self.sent, [self.URL])
+        self.sent.clear()
+        self.answers[self.URL] = "https://objects.example/release"
+        with mock.patch.object(netguard, "problem", return_value="Not one of ours."), \
+                self.assertRaisesRegex(sdk_guard.RedirectNotFollowed, "Not one of ours"):
+            self.module("github").fetch_latest_release("owner/repo")
+        self.assertEqual(self.sent, [self.URL])
+
+    def test_every_request_asks_for_gzip_or_deflate_alone(self):
+        sealed.guard_sdk_requests()
+        asked = []
+        real = self.adapter_send
+        self.adapter_send = lambda request: asked.append(
+            request.headers.get("Accept-Encoding")) or real(request)
+        self.module("byname").requests.get(self.URL, headers={"Accept-Encoding": "br"})
+        self.assertEqual(asked, ["gzip, deflate"])
+
     def test_the_rest_of_requests_is_requests_own_and_twice_is_once(self):
         sealed.guard_sdk_requests()
         stand_in = self.module("github").requests
@@ -457,13 +497,10 @@ class SigstoresTrustRoot(unittest.TestCase):
         self.assertNotIn("sigstore._internal.tuf", sealed.guard_sigstore())  # twice is
         self.assertIs(sigstore_tuf.Updater, guarded)                          # once
 
-    @unittest.expectedFailure
     def test_a_fetcher_given_as_none_in_its_place_is_the_guarded_one_too(self):
-        """Not yet: SealedLore's sdk_guard, the canonical copy, gives the guarded fetcher
-        only where none is given by name or position, and a None in the fetcher's place
-        is left to TUF's own, unguarded. This app's own guard (up to Nov 14 2026) gave it
-        there too. sigstore's TrustUpdater names no fetcher, so the SDK never meets this;
-        it is the canonical copy's to fix, and then this passes."""
+        """As this app's own guard gave it (up to Nov 14 2026), and SealedLore's canonical
+        copy does since its final pass: None in the fetcher's place is no fetcher, and
+        TUF's own would fetch unguarded."""
         from sigstore._internal import tuf as sigstore_tuf
         from sigstore._utils import read_embedded
 

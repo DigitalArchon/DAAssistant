@@ -1263,11 +1263,12 @@ address that could have been used in the first place, never from https to plain 
 and never from a server on the internet into this machine or its network - the router's
 admin page, a printer, a model server of your own - over https or not (up to 4.2.0 one
 over https was); a server on your network may still send a request on to another there.
-A refused redirect sends nothing further, and says where it pointed. Tinfoil's client is held to a rule like
-it: by itself it followed a redirect anywhere, plain http included (up to 4.1.0 it did);
-now it follows one only to https, and never from a server on the internet into this
-machine or its network, by the module every DA app that uses Tinfoil's client shares
-(sdk_guard.py). So is Sigstore's trust root, which it checks the router's
+A refused redirect sends nothing further, and says where it pointed. Tinfoil's client is held to the same
+rule: by itself it followed a redirect anywhere, plain http included (up to 4.1.0 it did);
+now it follows one only to https, never from a server on the internet into this machine or
+its network, and never to an address the assistant would refuse, by the module every DA app
+that uses Tinfoil's client shares (sdk_guard.py), which also asks for gzip or deflate only
+and reads what comes back to 32 MB at most (an error's or a redirect's text to 64 KB). So is Sigstore's trust root, which it checks the router's
 release against: TUF's client, which fetches it, followed a redirect anywhere too (up to
 4.3.1 it did), and now follows five at most, each held to that rule. Should a newer Tinfoil client change what that rests on,
 a `private/` model is not attested, and the error says why, rather than the trust root

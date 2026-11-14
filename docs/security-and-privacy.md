@@ -94,9 +94,11 @@ plain http, and only on this machine, on your local network or as a Tor onion se
   releases and certificates, Sigstore's trust root, RedPill's session records - follow a
   redirect only to an address that could have been used in the first place: never from
   https to plain http, and never from a server on the internet into this machine or its
-  network. Tinfoil's client's own fetches follow one only to https, and never from the
-  internet into this machine or its network (the module every DA app that uses the
-  client shares), and so does Sigstore's trust root, which it fetches through TUF's
+  network. Tinfoil's client's own fetches follow one only to https, never from the
+  internet into this machine or its network, and never to an address the assistant would
+  refuse (the module every DA app that uses the client shares, which also asks for gzip
+  or deflate only and reads a reply to 32 MB, an error's or a redirect's text to 64 KB),
+  and so does Sigstore's trust root, which it fetches through TUF's
   client (five redirects at most; up to 4.3.1 it followed one anywhere). If that cannot be done, a `private/` model is not attested.
 - **A proxy** (Settings > Advanced > Proxy) carries every request the app makes - the
   models, the web search, the model lists, the attestation services, RedPill's session

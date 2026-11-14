@@ -275,7 +275,8 @@ Tinfoil's router - beside its badge: *TEE · verified · run by Fortanix*.
 
 Kept in memory only, and gone when the app quits: conversations and their captures and
 attachments, what each enclave proved, the RedPill session records read (64 at most),
-and a key typed in with no keyring to keep it. **Copy** in a chat window puts the
+and a key typed in with no keyring to keep it - unless the app crashes, where the
+system's crash collector may keep its memory (see [Limits](#limits)). **Copy** in a chat window puts the
 conversation on the clipboard as Markdown, and **Save** writes it where you choose, the
 badges' labels with it.
 
@@ -319,6 +320,16 @@ badges' labels with it.
   [The network rules](#the-network-rules)).
 - **Anything running as you on this computer** can read your settings, the cache, the
   keyring once it is unlocked, and the app's memory.
+- **A crash can put what the app held in memory on disk.** The app asks for no core file
+  (its core size limit is 0, for the processes it starts too, WebKit's among them). But
+  the crash collector most distributions run, `systemd-coredump`, keeps a crashed
+  program's memory whatever that limit says, in `/var/lib/systemd/coredump`, readable by
+  you and the administrator, for a few days: the conversations open then,
+  their captures and attachments, and the keys would be in it. `coredumpctl list` shows
+  what it kept; `Storage=none` in `/etc/systemd/coredump.conf` stops it keeping any. The
+  app's process is not made undumpable, which would stop the collector: the desktop's
+  portal then refuses everything the app asks of it, its screenshots and global
+  shortcuts on Wayland among them.
 - **A screenshot can hold more than you meant to send.** Look at it, and black out what
   should not go, before you press Send.
 - **Answers are written by language models**, and web search results come from the open

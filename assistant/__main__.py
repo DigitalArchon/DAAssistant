@@ -15,6 +15,28 @@ from . import APP_NAME, __version__, gtkcompat  # noqa: F401  (pins GI versions)
 from .hotkeys import action_names
 
 
+def no_core_files():
+    """Ask for no core file if this process crashes: a conversation, its captures and
+    attachments, and a key typed in with no keyring live nowhere but in its memory, and
+    a core file is that memory on disk. The limit is the hard one too, and passes to
+    every process started from here - WebKit's, which draw the conversation, among them.
+
+    Only a core file, though. The crash collector most distributions run,
+    systemd-coredump, is handed an unlimited size by the kernel's core_pattern, whatever
+    this says, and keeps the dump (measured on Mint 22, systemd 255). What stops it is
+    making the process undumpable (prctl PR_SET_DUMPABLE 0, as SealedLore does), which
+    is not done: xdg-desktop-portal then refuses every request of the process's,
+    "Portal operation not allowed: Unable to open /proc/PID/root" (measured with 1.20.0),
+    and the screenshots and global shortcuts of a Wayland desktop go through it.
+    docs/security-and-privacy.md says so, under Limits. Failures are ignored: nothing
+    here is worth not starting for."""
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ImportError, ValueError, OSError):
+        pass
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="run-assistant", description=f"{APP_NAME} {__version__}")
@@ -143,6 +165,9 @@ def import_encyclopedia(folder):
 
 
 def main(argv=None):
+    # First of all: every way in - the tray app, --action, --probe, the import - is the
+    # app, and the tray app may start from --action.
+    no_core_files()
     args = build_parser().parse_args(argv)
 
     if args.probe:

@@ -1312,6 +1312,13 @@ not repeat it. `--probe` shows a provider's address without any user name or pas
 written into it, and so does every message that names an address or the proxy - why it
 cannot be used, in Settings, the chat or the startup notice included.
 
+A conversation, its captures and attachments are kept nowhere but in the app's memory -
+unless it crashes. It asks for no core file, but `systemd-coredump`, which most
+distributions run, keeps a crashed program's memory whatever that says, in
+`/var/lib/systemd/coredump`, for a few days; `Storage=none` in
+`/etc/systemd/coredump.conf` stops it. See
+[Limits](docs/security-and-privacy.md#limits).
+
 A value edited into `config.json` by hand is read as its setting's kind where that is
 plain (`"3600"` for a number, `"true"` for a tick); one that cannot be is left out, its
 default used instead, and the startup notice says so. So is a number its setting cannot

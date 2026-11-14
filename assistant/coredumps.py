@@ -2,16 +2,25 @@
 
 A conversation, its captures and attachments, and a key typed in with no keyring live
 only in the app's memory (docs/security-and-privacy.md), and a core dump is that memory
-on disk. no_core_dumps(), the first thing every way in does (__main__.main):
+on disk. no_core_dumps(), the first thing every way in does (__main__.main), as every DA
+app does (the DA apps' security standard, Nov 2026):
 
-  - sets the core size limit to 0, soft and hard: no core file, for this process or any
-    it starts - WebKit's, which draw the conversation, among them;
-  - and makes the process undumpable (prctl PR_SET_DUMPABLE 0). The crash collector most
-    distributions run, systemd-coredump, is handed an unlimited size by the kernel's
-    core_pattern whatever the limit says, and kept a crashed process's memory with the
-    limit at 0 (measured on Mint 22, systemd 255); it keeps nothing of one that is not
-    dumpable. Nor can another program of the user's read its memory, as a debugger
-    would. As SealedLore's gui/app.py _no_core_dumps.
+  - leaves the process's memory out of any dump (/proc/self/coredump_filter 0), for it
+    and every process it starts - WebKit's, which draw the conversation, among them: the
+    filter is inherited and kept across exec. First, since once the process is
+    undumpable its /proc entries are root's, and writing the filter is refused (EACCES,
+    measured on MintDev, Nov 14 2026);
+  - makes the process undumpable (prctl PR_SET_DUMPABLE 0). The crash collector most
+    distributions run, systemd-coredump, is handed a size by the kernel's core_pattern
+    whatever the limit says, and kept a crashed process's memory with the limit at 0
+    (measured on Mint 22, systemd 255); it keeps nothing of one that is not dumpable.
+    Nor can another program of the user's read its memory, as a debugger would;
+  - and sets the core size limit's soft part to 1, the hard part left as it is: at
+    exactly 1 the kernel skips the dump altogether ("RLIMIT_CORE is set to 1, aborting
+    core"), even of a dumpable process - this one while it asks the portal (below), a
+    program it starts - where 0 is ignored by systemd-coredump's pipe (measured on
+    MintDev, Nov 14 2026). Where the hard limit is 0 already, nothing can be raised to
+    1, and 0 stands. As DA Privacy Kit's no_core_dumps.
 
 xdg-desktop-portal refuses every request of a process that is not dumpable: "Portal
 operation not allowed: Unable to open /proc/PID/root" (measured with 1.20.0). It opens
@@ -21,7 +30,9 @@ its global shortcuts on Wayland, so it is dumpable while it asks: from the momen
 request goes until the portal has answered it (asking_the_portal, for_the_portal). The
 portal knows the connection from its first answer on, and asks /proc no more for it.
 GTK's file dialogs are its own, never the portal's (GTK_USE_PORTAL=0, for this process
-alone: hostenv.set_own).
+alone: hostenv.set_own); every program it starts gets the value back (hostenv.host_env).
+While it is dumpable for the portal, a crash still leaves nothing: the core limit of 1,
+and the filter.
 """
 
 import os
@@ -31,6 +42,8 @@ from contextlib import contextmanager
 
 PR_GET_DUMPABLE = 3
 PR_SET_DUMPABLE = 4
+# The core size limit set: at exactly 1 the kernel skips the dump (see the module).
+CORE_LIMIT = 1
 
 _lock = threading.Lock()
 _undumpable = False         # no_core_dumps made the process so
@@ -55,16 +68,26 @@ def dumpable():
 
 def no_core_dumps():
     """No core file and no crash collector's copy for this process (see the module).
-    Failures are ignored: nothing here is worth not starting for."""
+    Linux only; failures are ignored: nothing here is worth not starting for."""
     global _undumpable
+    if not sys.platform.startswith("linux"):
+        return
     try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    except (ImportError, ValueError, OSError):
+        # First: an undumpable process may not write its own /proc entries.
+        with open("/proc/self/coredump_filter", "w", encoding="ascii") as f:
+            f.write("0")
+    except OSError:
         pass
     with _lock:
         if _prctl(PR_SET_DUMPABLE, 0) == 0:
             _undumpable = True
+    try:
+        import resource
+        _soft, hard = resource.getrlimit(resource.RLIMIT_CORE)
+        if hard == resource.RLIM_INFINITY or hard >= CORE_LIMIT:
+            resource.setrlimit(resource.RLIMIT_CORE, (CORE_LIMIT, hard))
+    except (ImportError, ValueError, OSError):
+        pass
     if _undumpable and os.environ.get("GTK_USE_PORTAL", "").startswith("1"):
         # Where the desktop asks GTK for the portal's file dialogs (some KDE desktops):
         # the portal would answer none of them. The programs the app starts get the

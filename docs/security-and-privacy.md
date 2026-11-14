@@ -312,11 +312,13 @@ attachments, what each enclave proved, the RedPill session records read (64 at m
 and a key typed in with no keyring to keep it. If the app crashes, none of its memory is
 written to disk: it turns core dumps off as it starts, so neither a core file nor the
 system's crash collector (`systemd-coredump`) keeps a copy, and other programs of yours
-cannot read its memory while it runs. The one exception is the moment it asks the
-desktop's portal for a screenshot or for its global shortcuts on Wayland, from the
-request to the portal's answer: the portal answers no process whose memory is closed
-that way. (For the same reason its file dialogs are GTK's own, even where the desktop
-asks for the portal's.) **Copy** in a chat window puts the conversation on the clipboard
+cannot read its memory while it runs. It leaves its memory out of any dump, sets the
+size a core may have to the one at which the kernel writes none at all, and closes its
+memory to other programs. That last it opens only for the moment it asks the desktop's
+portal for a screenshot or for its global shortcuts on Wayland, from the request to the
+portal's answer, since the portal answers no process whose memory is closed: a crash then
+still leaves no dump. (For the same reason its file dialogs are GTK's own, even where the
+desktop asks for the portal's; the programs it starts get the desktop's choice back.) **Copy** in a chat window puts the conversation on the clipboard
 as Markdown, and **Save** writes it where you choose, the badges' labels with it.
 
 ## Other protections
@@ -377,10 +379,11 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
   [What is kept on this computer](#what-is-kept-on-this-computer)); the administrator can
   read it whenever they like.
 - **WebKit's processes**, which draw the conversation and the articles, are programs of
-  their own: they write no core file either (the limit passes to them), but the system's
-  crash collector may keep one of a WebKit process that crashes, with what it was drawing.
-  `coredumpctl list` shows what it kept; `Storage=none` in `/etc/systemd/coredump.conf`
-  stops it keeping any.
+  their own: the core size limit and the memory left out of dumps pass to them, so a
+  WebKit process that crashes leaves no dump either, but their memory is not closed to
+  other programs of yours as the app's is. The programs the app starts - a browser for a
+  link - get the same limit. `coredumpctl list` shows anything the system's crash
+  collector kept; `Storage=none` in `/etc/systemd/coredump.conf` stops it keeping any.
 - **A screenshot can hold more than you meant to send.** Look at it, and black out what
   should not go, before you press Send.
 - **Answers are written by language models**, and web search results come from the open

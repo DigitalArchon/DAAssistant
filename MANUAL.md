@@ -1340,9 +1340,10 @@ cannot be used, in Settings, the chat or the startup notice included.
 
 A conversation, its captures and attachments are kept nowhere but in the app's memory,
 and a crash writes none of it to disk: the app turns core dumps off as it starts, for
-the system's crash collector too, but for the moment it asks the desktop's portal for a
-screenshot or its shortcuts, which answers no process that has. Its file dialogs are
-GTK's own for the same reason. See
+the system's crash collector too - its memory left out of any dump, and a core size at
+which the kernel writes none - and closes its memory to other programs but for the
+moment it asks the desktop's portal for a screenshot or its shortcuts, which answers no
+process that has. Its file dialogs are GTK's own for the same reason. See
 [What is kept on this computer](docs/security-and-privacy.md#what-is-kept-on-this-computer).
 
 A value edited into `config.json` by hand is read as its setting's kind where that is

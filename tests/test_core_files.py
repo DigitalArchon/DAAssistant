@@ -41,8 +41,9 @@ try:
     runpy.run_path(sys.argv[0], run_name="__main__")
 except SystemExit:
     pass
-print("limit", resource.getrlimit(resource.RLIMIT_CORE))
+print("limit", resource.getrlimit(resource.RLIMIT_CORE), "of", hard)
 print("dumpable", ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))
+print("filter", open("/proc/self/coredump_filter").read().strip())
 """
 
 
@@ -60,8 +61,13 @@ class NoCoreDumps(unittest.TestCase):
                 done = run(CHILD, os.path.join(ROOT, "run-assistant"), *args)
                 if "already none" in done.stdout:
                     self.skipTest("this test's own process may have no core file at all")
-                self.assertIn("limit (0, 0)", done.stdout, done.stderr)
+                # A soft limit of 1, at which the kernel skips the dump even of a
+                # dumpable process, the hard one left as it was; undumpable; and no
+                # memory in any dump (the DA apps' security standard, Nov 2026).
+                hard = done.stdout.split(" of ")[1].split()[0]
+                self.assertIn(f"limit (1, {hard}) of {hard}", done.stdout, done.stderr)
                 self.assertIn("dumpable 0", done.stdout, done.stderr)
+                self.assertIn("filter 00000000", done.stdout, done.stderr)
 
     def test_a_process_it_starts_has_no_core_file_either(self):
         """WebKit's processes, which draw the conversation, are started from the app.
@@ -70,13 +76,49 @@ class NoCoreDumps(unittest.TestCase):
         probe = ("import resource, subprocess, sys\n"
                  "sys.path.insert(0, sys.argv[1])\n"
                  "from assistant.coredumps import no_core_dumps\n"
-                 "soft, hard = resource.getrlimit(resource.RLIMIT_CORE)\n"
-                 "resource.setrlimit(resource.RLIMIT_CORE, (hard, hard))\n"
+                 "resource.setrlimit(resource.RLIMIT_CORE, (0, resource.RLIM_INFINITY))\n"
                  "no_core_dumps()\n"
                  "print(subprocess.run([sys.executable, '-c', 'import resource; "
-                 "print(resource.getrlimit(resource.RLIMIT_CORE))'], capture_output=True,"
-                 " text=True).stdout.strip())\n")
-        self.assertEqual(run(probe, ROOT).stdout.strip(), "(0, 0)")
+                 "print(resource.getrlimit(resource.RLIMIT_CORE)[0], "
+                 "open(\"/proc/self/coredump_filter\").read().strip())'], "
+                 "capture_output=True, text=True).stdout.strip())\n")
+        done = run(probe, ROOT)
+        if "Operation not permitted" in done.stderr:
+            self.skipTest("this test's own process may not raise its hard limit")
+        self.assertEqual(done.stdout.strip(), "1 00000000", done.stderr)
+
+    def test_with_a_hard_limit_of_0_already_0_stands_and_the_rest_holds(self):
+        probe = ("import ctypes, resource, sys\n"
+                 "sys.path.insert(0, sys.argv[1])\n"
+                 "from assistant.coredumps import no_core_dumps\n"
+                 "resource.setrlimit(resource.RLIMIT_CORE, (0, 0))\n"
+                 "no_core_dumps()\n"
+                 "print(resource.getrlimit(resource.RLIMIT_CORE),"
+                 " ctypes.CDLL(None).prctl(3, 0, 0, 0, 0),"
+                 " open('/proc/self/coredump_filter').read().strip())\n")
+        self.assertEqual(run(probe, ROOT).stdout.strip(), "(0, 0) 0 00000000")
+
+    def test_the_filter_is_written_before_the_process_is_undumpable(self):
+        """Once undumpable, a process's /proc entries are root's, and writing its own
+        coredump_filter is refused (EACCES, measured): written after, it was never set."""
+        probe = ("import sys\n"
+                 "sys.path.insert(0, sys.argv[1])\n"
+                 "from assistant import coredumps\n"
+                 "order = []\n"
+                 "real_open, real_prctl = open, coredumps._prctl\n"
+                 "import builtins\n"
+                 "def opened(path, *a, **k):\n"
+                 "    if str(path).endswith('coredump_filter'): order.append('filter')\n"
+                 "    return real_open(path, *a, **k)\n"
+                 "def prctl(option, value=0):\n"
+                 "    order.append(('prctl', option, value))\n"
+                 "    return real_prctl(option, value)\n"
+                 "builtins.open, coredumps._prctl = opened, prctl\n"
+                 "coredumps.no_core_dumps()\n"
+                 "builtins.open = real_open\n"
+                 "print(order[:2], real_open('/proc/self/coredump_filter').read().strip())\n")
+        self.assertEqual(run(probe, ROOT).stdout.strip(),
+                         "['filter', ('prctl', 4, 0)] 00000000")
 
     def test_it_is_dumpable_only_while_the_portal_is_asked(self):
         probe = ("import sys\n"

@@ -301,6 +301,12 @@ Tinfoil's router - beside its badge: *TEE · verified · run by Fortanix*.
 | A hidden launcher entry, for desktops whose shortcuts go through the GlobalShortcuts portal | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
 | Shortcuts, where the app writes them into your desktop's own keybindings | that desktop's own settings |
 
+The app's folders - `~/.config/da-assistant`, `~/.cache/da-assistant`,
+`~/.local/share/da-assistant` - are readable only by you, made so if an older version or
+anything else left them open. Each file is written whole or not at all: to a file of its
+own name beside it, flushed to the disk, then put in its place, so that a crash or a power
+cut leaves the old file or the new, never half of one.
+
 Kept in memory only, and gone when the app quits: conversations and their captures and
 attachments, what each enclave proved, the RedPill session records read (64 at most),
 and a key typed in with no keyring to keep it. If the app crashes, none of its memory is

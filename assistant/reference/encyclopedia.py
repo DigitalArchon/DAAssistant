@@ -33,6 +33,7 @@ import time
 import unicodedata
 from collections import Counter
 
+from .. import atomic, paths
 from .axion import AxionError, Table, unpack  # noqa: F401  (AxionError: for callers)
 from .axion import MAX_VALUE
 from .files import open_file
@@ -918,7 +919,7 @@ def _assembly_row(key, kind, value):
             media.group(1) if media else None, value)
 
 
-def import_dvd(dvd, dest=None, progress=None, cancel=None):
+def import_dvd(dvd, dest=None, progress=None, cancel=None, building=None):
     """Build the database from the DVD folder `dvd`. Returns what it holds.
 
     `progress(fraction, message)` is called as it goes; `cancel`, a threading.Event,
@@ -931,10 +932,10 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
     dest = dest or os.path.join(DATA_DIR, DATABASE)
     progress = progress or (lambda fraction, message: None)
     dvd = os.path.abspath(os.path.expanduser(dvd))
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    building = dest + ".importing"
-    if os.path.exists(building):
-        os.unlink(building)
+    paths.own_folder(os.path.dirname(dest))
+    # A file of its own name to build in (atomic.temp_beside), unless given one: two
+    # imports never share one, and sqlite takes the empty file for a new database.
+    building = building or str(atomic.temp_beside(dest))
 
     def stopped():
         return cancel is not None and cancel.is_set()
@@ -1030,7 +1031,7 @@ def import_dvd(dvd, dest=None, progress=None, cancel=None):
             raise EncyclopediaError("Import cancelled") from e
         raise
     db.close()
-    os.replace(building, dest)
+    atomic.replace(building, dest)          # flushed, in place, and its folder flushed
     progress(1.0, "Done")
     return meta
 
@@ -1071,6 +1072,9 @@ class Encyclopedia:
         # and cleaned up after itself (see stop_import).
         self._stop = None
         self._ended = threading.Event()
+        # The files the import under way builds in (import_from), for stop_import to
+        # remove: each a name of its own.
+        self._partial = ()
         self._ended.set()
 
     # ---- the database -----------------------------------------------------
@@ -1160,29 +1164,45 @@ class Encyclopedia:
         self._ended.clear()
         try:
             report(0.0, "Starting…")
-            meta = import_dvd(dvd, self.path + ".new", report, cancel)
+            paths.own_folder(os.path.dirname(self.path))
+            # Built in a file of its own name, moved to another, and into place once the
+            # old one is closed (atomic.py): never a fixed name two imports share.
+            new = str(atomic.temp_beside(self.path))
+            building = str(atomic.temp_beside(self.path))
+            self._partial = (building, new)
+            try:
+                meta = import_dvd(dvd, new, report, cancel, building=building)
+            except BaseException:
+                self._remove_partial()
+                raise
             self.close()
-            os.replace(self.path + ".new", self.path)
+            atomic.replace(new, self.path)
             return meta
         finally:
             self.importing = None
             self._stop = None
+            self._partial = ()
             self._ended.set()
 
     def stop_import(self, wait=10):
         """Stop the import running, if one is, and wait as long as `wait` seconds for
         it to remove what it had built - for the app to quit. A thread left to run as
         the app quit was stopped in the middle, and left a database of gigabytes half
-        built, .new.importing, until the next import. One that has not stopped by then
-        has its file removed all the same: it writes on to a file that is no longer
-        there, and that goes with it as the app ends."""
+        built until the next import. One that has not stopped by then has its files
+        removed all the same: it writes on to a file that is no longer there, and that
+        goes with it as the app ends."""
         stop = self._stop
         if stop is None:
             return
         stop.set()
         if not self._ended.wait(wait):
+            self._remove_partial()
+
+    def _remove_partial(self):
+        """The files the import under way builds in, removed (stop_import)."""
+        for path in self._partial:
             try:
-                os.unlink(self.path + ".new.importing")
+                os.unlink(path)
             except OSError:
                 pass
 

@@ -40,7 +40,7 @@ import zlib
 
 from gi.repository import GLib
 
-from . import hostenv, safejson, shortcuts
+from . import atomic, hostenv, safejson, shortcuts
 
 PREFIX = "da-assistant"
 NAME = "DA Assistant"
@@ -142,10 +142,9 @@ def app_entry(data_home=None):
     except OSError:
         pass
     os.makedirs(folder, exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    # Whole or not at all, from a temp file of its own (atomic.py), readable as any new
+    # file of the user's is: the desktop reads it.
+    atomic.write_text(path, text, mode=atomic.AS_A_NEW_FILE)
     return path
 
 
@@ -582,21 +581,26 @@ class ConfigFileKeybindings:
             where += f", a link to {real},"
         if not os.access(real, os.W_OK):
             raise OSError(f"{where} cannot be written; nothing was changed")
-        tmp = real + ".da-assistant.tmp"
+        # A temp file of its own beside it (atomic.temp_beside: two writers never
+        # share one), flushed to the disk before it replaces the file, with the file's
+        # own permissions, and the folder flushed after (atomic.replace).
+        tmp = None
         try:
             try:
+                tmp = atomic.temp_beside(real)
                 with open(tmp, "w", encoding="utf-8", errors="surrogateescape",
                           newline="") as f:
                     f.write(text)
-                os.chmod(tmp, os.stat(real).st_mode & 0o7777)
+                mode = os.stat(real).st_mode & 0o7777
             except OSError as e:
                 raise OSError(f"{where} cannot be written ({e.strerror or e}); nothing "
                               f"was changed") from None
             shutil.copy2(self.path, self.path + ".da-assistant.bak")
-            os.replace(tmp, real)
+            atomic.replace(tmp, real, mode=mode)
         finally:
             try:
-                os.unlink(tmp)              # left over only if something failed
+                if tmp is not None:
+                    os.unlink(tmp)          # left over only if something failed
             except OSError:
                 pass
 

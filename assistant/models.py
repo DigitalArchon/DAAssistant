@@ -16,16 +16,14 @@ Results are cached on disk, a file per provider, because NanoGPT's detailed list
 """
 
 import copy
-import json
 import os
-import tempfile
 import threading
 import time
 from urllib.parse import urlparse
 
 import requests
 
-from . import netguard, paths, privacy, providers, safejson
+from . import atomic, netguard, paths, privacy, providers, safejson
 
 CACHE_DIR = paths.CACHE_DIR
 CACHE_FILE = os.path.join(CACHE_DIR, "models.json")
@@ -341,20 +339,11 @@ def _without_password_kept(path, payload, stat):
     """An older cache's address, written over without its password, and the file's age
     as it was: the list is as old as it ever was. The address without it, either way."""
     payload = dict(payload, url=netguard.without_password(payload["url"]))
-    tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
-                                   prefix=os.path.basename(path) + ".", suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            json.dump(payload, f)
-        os.replace(tmp, path)
+        atomic.write_json(path, payload)
         os.utime(path, (stat.st_atime, stat.st_mtime))
     except OSError:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
+        pass
     return payload["url"]
 
 
@@ -366,27 +355,18 @@ def save_cache(models, url, provider=providers.NANOGPT):
     written here as typed, beside the keychain's copy. From SealedLore 0db15a2, for its
     picture and video listings."""
     path = cache_file(provider)
-    tmp = None
     try:
-        os.makedirs(CACHE_DIR, exist_ok=True)
-        # A file of its own to write, then renamed into place. The start-up refresh
-        # and a first request's ensure_listed can save the same list at once, on two
-        # threads, and with one name for that file they wrote into the same one: one
-        # renamed the other's half-written copy into place, and the other's rename
-        # failed.
-        fd, tmp = tempfile.mkstemp(dir=CACHE_DIR, prefix=os.path.basename(path) + ".",
-                                   suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            json.dump({"version": CACHE_VERSION, "url": netguard.without_password(url),
-                       "fetched": time.time(), "models": models}, f)
-        os.replace(tmp, path)
+        paths.own_folder(CACHE_DIR)
+        # A file of its own to write, then renamed into place, whole (atomic.py). The
+        # start-up refresh and a first request's ensure_listed can save the same list
+        # at once, on two threads, and with one name for that file they wrote into the
+        # same one: one renamed the other's half-written copy into place, and the
+        # other's rename failed.
+        atomic.write_json(path, {"version": CACHE_VERSION,
+                                 "url": netguard.without_password(url),
+                                 "fetched": time.time(), "models": models})
     except OSError:
-        if tmp is not None:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        # a cache failure must never break the browser
+        pass        # a cache failure must never break the browser
 
 
 def _listed(body):

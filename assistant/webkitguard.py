@@ -31,7 +31,7 @@ after installing a matching webkit2gtk, say.
 import os
 import time
 
-from . import __version__
+from . import __version__, atomic, paths
 from .errors import LOG_DIR      # same per-user cache directory as the error log
 
 STATE_FILE = os.path.join(LOG_DIR, "webkit-crash")
@@ -86,10 +86,8 @@ def note_attempt(view=None):
         return                  # this run's breadcrumb is down already
     count = _strikes() + 1      # read before the open below truncates the file
     try:
-        os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-        with open(os.open(STATE_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
-                  "w", encoding="utf-8") as fh:
-            fh.write(f"{count} {time.time():.0f} {__version__}\n")
+        paths.own_folder(LOG_DIR)
+        atomic.write_text(STATE_FILE, f"{count} {time.time():.0f} {__version__}\n")
     except OSError:
         pass
 

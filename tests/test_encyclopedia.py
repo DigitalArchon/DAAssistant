@@ -388,10 +388,12 @@ class Import(DvdCase):
         # An import left running as the app quit was stopped in the middle, and its
         # half-built database of gigabytes stayed on disk until the next import.
         encyclopedia = Encyclopedia(self.config, data_dir=self.data)
-        partial = encyclopedia.path + ".new.importing"
         thread, raised = self._import_held(encyclopedia,
                                            lambda: encyclopedia._stop.wait(10))
-        self.assertTrue(os.path.exists(partial))
+        # Built in files of their own names (atomic.temp_beside), never a fixed one.
+        building, new = encyclopedia._partial
+        self.assertTrue(os.path.exists(building))
+        self.assertNotEqual(building, encyclopedia.path + ".new.importing")
         encyclopedia.stop_import()
         thread.join(10)
         self.assertFalse(thread.is_alive())

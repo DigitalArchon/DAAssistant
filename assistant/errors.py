@@ -13,7 +13,7 @@ import os
 import sys
 import traceback
 
-from . import paths
+from . import atomic, paths
 
 LOG_DIR = paths.CACHE_DIR
 LOG_FILE = os.path.join(LOG_DIR, "errors.log")
@@ -43,13 +43,12 @@ def describe(error):
 def record(text):
     """Append to the log, trimming it first so it cannot grow without bound."""
     try:
-        os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
+        paths.own_folder(LOG_DIR)
         if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > MAX_BYTES:
             with open(LOG_FILE, "rb") as fh:
                 fh.seek(-MAX_BYTES // 2, os.SEEK_END)
                 tail = fh.read()
-            with open(os.open(LOG_FILE, os.O_WRONLY | os.O_TRUNC, 0o600), "wb") as fh:
-                fh.write(tail)
+            atomic.write_bytes(LOG_FILE, tail)      # the log is never left half there
         with open(os.open(LOG_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600),
                   "a", encoding="utf-8") as fh:
             fh.write(text if text.endswith("\n") else text + "\n")

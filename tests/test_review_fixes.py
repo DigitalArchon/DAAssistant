@@ -27,7 +27,7 @@ import requests
 from PIL import Image
 
 from assistant import gtkcompat  # noqa: F401
-from assistant import (clipboard, errors, imaging, models, session, theming,
+from assistant import (atomic, clipboard, errors, imaging, models, session, theming,
                        webkitguard)
 from assistant.capture import cli
 from assistant.config import Config
@@ -215,18 +215,18 @@ class ModelCacheBelongsToAProvider(TempDir):
         import threading
         cache = os.path.join(self.dir, "models.json")
         both_writing = threading.Barrier(2, timeout=10)
-        real_dump = json.dump
+        real_fsync = os.fsync
 
-        def dump(payload, f, **kwargs):
-            real_dump(payload, f, **kwargs)
-            f.flush()
+        def fsync(fd):
+            # Both temp files written, neither yet in place (atomic.write_bytes).
+            real_fsync(fd)
             both_writing.wait()
 
         lists = {"long": [{"id": f"vendor/model-{n}"} for n in range(500)],
                  "short": [{"id": "a/b"}]}
         with mock.patch.object(models, "CACHE_DIR", self.dir), \
                 mock.patch.object(models, "CACHE_FILE", cache), \
-                mock.patch.object(models.json, "dump", dump):
+                mock.patch.object(atomic.os, "fsync", fsync):
             savers = [threading.Thread(target=models.save_cache,
                                        args=(listed, "https://one.example/v1/models"))
                       for listed in lists.values()]

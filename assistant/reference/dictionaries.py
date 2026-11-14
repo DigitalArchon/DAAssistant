@@ -325,7 +325,7 @@ class Library:
 
     def _connection(self):
         if self._db is None:
-            os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
+            paths.own_folder(self.cache_dir)
             db = sqlite3.connect(os.path.join(self.cache_dir, INDEX_FILE),
                                  check_same_thread=False)
             try:

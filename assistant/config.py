@@ -15,11 +15,9 @@ What matters here:
 import json
 import math
 import os
-import stat
-import tempfile
 from urllib.parse import urlparse
 
-from . import netguard, providers, safejson
+from . import atomic, netguard, paths, providers, safejson
 from .keychain import KeychainError, MemoryKeychain, SystemKeychain
 
 DEFAULTS = {
@@ -633,7 +631,7 @@ class Config:
         return {key: getattr(self, key) for key in DEFAULTS}
 
     def save(self):
-        os.makedirs(self.config_dir, mode=0o700, exist_ok=True)
+        paths.own_folder(self.config_dir)
 
         # Start from what is on disk now, not from what we loaded at startup, then apply
         # only the keys we deliberately changed. Anything edited elsewhere in the
@@ -720,16 +718,8 @@ class Config:
             if kept.get(ADDRESS_SECRET.format(key)) == full or full not in loose:
                 merged[key] = netguard.without_password(full)
 
-        fd, tmp_path = tempfile.mkstemp(dir=self.config_dir, prefix=".config-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(merged, f, indent=2)
-            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600 - private all the same
-            os.replace(tmp_path, self.config_file)
-        except BaseException:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-            raise
+        # Whole or not at all, 0600, flushed to the disk with its folder (atomic.py).
+        atomic.write_json(self.config_file, merged, indent=2)
 
         # Adopt the merged result so this object reflects what is actually stored - an
         # address with the password the file does not have.

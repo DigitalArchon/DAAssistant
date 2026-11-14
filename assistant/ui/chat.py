@@ -17,8 +17,8 @@ from gi.repository import Gdk, GLib, Gtk, Pango
 
 from . import (bubbles, find, keys, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
-from .. import (attachments, models as catalogue, privacy as privacy_module, prompts,
-                providers, websearch)
+from .. import (atomic, attachments, models as catalogue, privacy as privacy_module,
+                prompts, providers, websearch)
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -296,7 +296,12 @@ def write_whole(path, data):
                 if os.fstat(out.fileno()).st_gid != info.st_gid:
                     os.fchown(out.fileno(), -1, info.st_gid)
                 os.fchmod(out.fileno(), stat.S_IMODE(info.st_mode))
+            # On the disk before it replaces anything: renamed first, a power cut soon
+            # after could leave an empty file where the old one was (atomic.py).
+            out.flush()
+            os.fsync(out.fileno())
         os.replace(part, target)
+        atomic.sync_folder(os.path.dirname(target) or ".")
     except BaseException:
         try:
             os.unlink(part)

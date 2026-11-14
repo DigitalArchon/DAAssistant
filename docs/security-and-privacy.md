@@ -74,7 +74,8 @@ plain http, and only on this machine, on your local network or as a Tor onion se
 - **An address is judged as written**, not by looking up where its name points. One with
   a space, a backslash or a control character in it is refused outright, and so is a
   plain http host with a `%` escape in it, since the parsers involved disagree on where
-  such a host ends.
+  such a host ends. A local address written with a trailing dot (`192.168.1.50.`) is not
+  that address but a name the resolver looks up, so it is not local either.
 - **Redirects are not followed by anything that carries a key or your words**: the
   models (your messages, a capture, a question, the query written for a search), their
   model lists, the web search, nano-gpt's TEE checks and Private Mode's relay. A redirect

@@ -115,6 +115,22 @@ class WhichAddressesMayBeUsed(unittest.TestCase):
         self.assertIsNone(netguard.problem("http://[fe80::1%25eth0]:11434/v1"))
         self.assertIsNone(netguard.problem("https://127.0.0.1%2eexample.com/v1"))
 
+    def test_an_address_with_a_trailing_dot_is_a_name_dns_resolves(self):
+        """No parser of addresses takes "192.168.1.50.": the resolver looks it up as a
+        name, so it is wherever DNS says, not that address on this network - and it
+        was judged that address, its key and conversation allowed over plain http. A
+        name with a dot is the same name. From DA Vibe Manager's netpolicy."""
+        for host in ("192.168.1.50.", "127.0.0.1.", "10.0.0.1..", "::1."):
+            self.assertFalse(netguard.is_local(host), host)
+        for url in ("http://192.168.1.50.:11434/v1", "http://127.0.0.1./v1"):
+            self.assertIn("is not https", netguard.problem(url), url)
+            self.assertTrue(netguard.insecure_link(url), url)
+        self.assertIsNotNone(netguard.redirect_problem("http://192.168.1.5/v1",
+                                                       "http://192.168.1.50./v1"))
+        for host in ("192.168.1.50", "localhost.", "printer.local.", "box.localhost."):
+            self.assertTrue(netguard.is_local(host), host)
+        self.assertIsNone(netguard.problem("https://192.168.1.50./v1"), "https: any host")
+
     def test_requests_connects_to_the_host_that_was_judged(self):
         from urllib3.util import parse_url
         for url in ("http://localhost:11434/v1", "http://[::1]:8080/v1",

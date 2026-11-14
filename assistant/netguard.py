@@ -82,8 +82,15 @@ def _unescaped(host):
 
 
 def is_local(host):
-    """Whether `host`, as written, is on this machine or its own network."""
-    host = _unescaped((host or "").strip().lower().rstrip("."))
+    """Whether `host`, as written, is on this machine or its own network.
+
+    An address written with a trailing dot - "192.168.1.50." - is not that address: no
+    parser of addresses takes it, so the resolver looks it up as a name, and DNS says
+    where it goes. It used to be judged as the address without its dot, and plain http
+    to it allowed. A name with one is the same name: "localhost." is localhost. From DA
+    Vibe Manager's netpolicy (Nov 2026)."""
+    text = (host or "").strip().lower()
+    host = _unescaped(text.rstrip("."))
     if not host:
         return False
     if host in LOCAL_NAMES or host.endswith(LOCAL_SUFFIXES):
@@ -91,6 +98,8 @@ def is_local(host):
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        return False
+    if text.endswith("."):
         return False
     mapped = getattr(address, "ipv4_mapped", None)
     if mapped is not None:

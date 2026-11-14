@@ -5,9 +5,9 @@ import os
 from . import gtkcompat
 from gi.repository import Gdk, GLib, Gtk
 
-from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc,
-                netguard, proxy, models as catalogue, privacy as privacy_module, prompts,
-                providers, webkitguard)
+from . import (APP_ID, APP_NAME, clipboard, coredumps, errors, icon as app_icon, imaging,
+                ipc, netguard, proxy, models as catalogue, privacy as privacy_module,
+                prompts, providers, webkitguard)
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
@@ -1326,6 +1326,10 @@ class Assistant:
         dialog.destroy()
 
     def quit(self):
+        # First: not dumpable on the way out, and nothing asked of the portal from here
+        # on makes it so - the connections close before any answer comes. See
+        # coredumps.py.
+        coredumps.quitting()
         # Quitting with a chat window still loading is not a WebKit crash; say so, or
         # the next start would wrongly fall back to plain text. See webkitguard.
         webkitguard.note_clean_exit()

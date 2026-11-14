@@ -513,8 +513,7 @@ class PortalHotkeys:
             try:
                 bus.call_finish(result)
             except GLib.Error as e:
-                # Closed with it unanswered - stop() closes the connection after its
-                # Close - is no news.
+                # Closed with it unanswered - stop() closes the connection - is no news.
                 if not e.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CLOSED):
                     print(f"[hotkeys] the portal's {method}: {e.message}")
 
@@ -525,6 +524,17 @@ class PortalHotkeys:
         except Exception:
             answered()
             raise
+
+    def _tell(self, path, interface, method, parameters):
+        """A message to the portal with no answer to wait for: sent with none asked for
+        (no callback: GDBus marks it NO_REPLY_EXPECTED), and never with the process made
+        dumpable for it. Nothing would ever say it was answered: Session.Close, sent so as
+        the app quit, left the process dumpable until it exited (coredumps.py). The portal
+        knows this connection by then, from its earlier answers; were it to refuse the
+        Close, the session would end all the same as the connection closes."""
+        from gi.repository import Gio
+        self.bus.call("org.freedesktop.portal.Desktop", path, interface, method,
+                      parameters, None, Gio.DBusCallFlags.NONE, -1, None, None)
 
     def _bind(self):
         from . import session
@@ -616,9 +626,10 @@ class PortalHotkeys:
             self._subs.clear()
             if self.session_handle:
                 # Otherwise the compositor keeps the shortcuts bound to a session
-                # nobody is listening to.
-                self._ask(self.session_handle, "org.freedesktop.portal.Session", "Close",
-                          None)
+                # nobody is listening to. A Close has no answer to read: told, not
+                # asked, so it never leaves the process dumpable (_tell).
+                self._tell(self.session_handle, "org.freedesktop.portal.Session", "Close",
+                           None)
                 self.session_handle = None
             # Ours alone: the portal ends whatever is left on it when it goes.
             self.bus.flush_sync(None)

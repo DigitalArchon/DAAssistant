@@ -146,6 +146,43 @@ class NoCoreDumps(unittest.TestCase):
         # the app; the desktop's choice for what it starts.
         self.assertEqual(done.stdout.strip(), "[1, 0, 1, 1, 0, 1, 0] 0 1", done.stderr)
 
+    def test_quitting_closes_it_at_once_and_nothing_asked_after_opens_it(self):
+        """The shortcuts' Close, sent through the window as the app quit, was never
+        answered - the connection closed first - and the process stayed dumpable until
+        it exited (1 to 66 ms on the lab's desktops, Nov 14 2026)."""
+        probe = ("import sys\n"
+                 "sys.path.insert(0, sys.argv[1])\n"
+                 "from assistant import coredumps\n"
+                 "coredumps.no_core_dumps()\n"
+                 "unanswered = coredumps.asking_the_portal()\n"
+                 "seen = [coredumps.dumpable()]\n"
+                 "coredumps.quitting()\n"
+                 "seen.append(coredumps.dumpable())\n"
+                 "late = coredumps.asking_the_portal()\n"
+                 "seen.append(coredumps.dumpable())\n"
+                 "with coredumps.for_the_portal():\n"
+                 "    seen.append(coredumps.dumpable())\n"
+                 "late(); unanswered()\n"
+                 "seen.append(coredumps.dumpable())\n"
+                 "print(seen)\n")
+        done = run(probe, ROOT)
+        # Dumpable for a request not answered (a screenshot's picker left open); not, the
+        # moment the app quits; nor for anything asked after.
+        self.assertEqual(done.stdout.strip(), "[1, 0, 0, 0, 0]", done.stderr)
+
+    def test_it_is_not_dumpable_as_it_exits_whatever_way_it_leaves(self):
+        probe = ("import atexit, sys\n"
+                 "sys.path.insert(0, sys.argv[1])\n"
+                 "from assistant import coredumps\n"
+                 "coredumps.no_core_dumps()\n"
+                 "coredumps.asking_the_portal()\n"
+                 "seen = [coredumps.dumpable()]\n"
+                 "atexit._run_exitfuncs()\n"
+                 "seen.append(coredumps.dumpable())\n"
+                 "print(seen)\n")
+        done = run(probe, ROOT)
+        self.assertEqual(done.stdout.strip(), "[1, 0]", done.stderr)
+
     def test_the_desktop_portal_answers_it_while_it_asks_and_refuses_it_otherwise(self):
         """Measured with xdg-desktop-portal 1.20.0: "Portal operation not allowed:
         Unable to open /proc/PID/root" for every request of an undumpable process. On
@@ -191,6 +228,7 @@ class TheRequestsItMakes(unittest.TestCase):
         self.calls = []
         patches = (mock.patch.object(coredumps, "_undumpable", True),
                    mock.patch.object(coredumps, "_asking", 0),
+                   mock.patch.object(coredumps, "_quitting", False),
                    mock.patch.object(coredumps, "_prctl",
                                      lambda option, value=0: self.calls.append(value)))
         for patch in patches:
@@ -254,10 +292,45 @@ class TheRequestsItMakes(unittest.TestCase):
         portal.configure()
         self.assertEqual(bus.sent[-1], ("ConfigureShortcuts", True))
         bus.answer()
+        self.assertEqual(self.calls, [1, 0, 1, 0, 1, 0])
         bus.flush_sync = bus.close = lambda *_a: None
         portal.stop()
-        self.assertEqual(bus.sent[-1], ("Close", True))
-        bus.answer()
+        # The Close has no answer to read: sent with none asked for (no callback), and
+        # never through the window, which nothing would ever close again.
+        self.assertEqual(bus.sent[-1], ("Close", False))
+        self.assertEqual(bus.pending, [None])
+        self.assertEqual(self.calls, [1, 0, 1, 0, 1, 0])
+
+    def test_quitting_the_app_closes_the_window_first_and_its_shortcuts_leave_it_so(self):
+        """A screenshot's picker still open as the app quits, and its shortcuts' session
+        to close: undumpable before anything else Assistant.quit does, and so to the end."""
+        from assistant import app as app_module
+        bus = self.Bus(self)
+        screenshot = PortalBackend()
+        screenshot._bus = bus
+        with mock.patch.object(PortalBackend, "supports_interactive", return_value=False):
+            screenshot._screenshot(False, lambda image: None, lambda message: None)
+        self.assertTrue(self.opened(), "the picker, not answered")
+        portal = hotkeys.PortalHotkeys(lambda name: None, {"ocr_only": "<Control>1"})
+        portal.bus = bus
+        portal.session_handle = "/org/freedesktop/portal/desktop/session/1_42/t"
+        bus.flush_sync = bus.close = lambda *_a: None
+        manager = hotkeys.HotkeyManager.__new__(hotkeys.HotkeyManager)
+        manager.impl, manager._recheck_source = portal, None
+        assistant = app_module.Assistant.__new__(app_module.Assistant)
+        assistant.hotkeys, assistant.service = manager, mock.Mock()
+        assistant.encyclopedia = mock.Mock()
+        seen = []
+        assistant.service.release.side_effect = lambda: seen.append(self.opened())
+        with mock.patch.object(app_module.webkitguard, "note_clean_exit",
+                               side_effect=lambda: seen.append(self.opened())), \
+                mock.patch.object(app_module.Gtk, "main_quit"), \
+                mock.patch.object(app_module, "Notify", None):
+            assistant.quit()
+        self.assertEqual(seen, [False, False])
+        self.assertEqual(bus.sent[-1], ("Close", False))
+        self.assertEqual(self.calls, [1, 0])
+        bus.answer()                        # the picker's answer, were it ever to come
         self.assertFalse(self.opened())
 
     def test_registering_its_name_with_the_portal_is_asked_dumpable(self):

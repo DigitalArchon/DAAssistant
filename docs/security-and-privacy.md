@@ -322,7 +322,9 @@ size a core may have to the one at which the kernel writes none at all, and clos
 memory to other programs. That last it opens only for the moment it asks the desktop's
 portal for a screenshot or for its global shortcuts on Wayland, from the request to the
 portal's answer, since the portal answers no process whose memory is closed: a crash then
-still leaves no dump. (For the same reason its file dialogs are GTK's own, even where the
+still leaves no dump. Never for what has no answer to wait for, such as letting its
+shortcuts go, and never once you quit: it closes its memory again first, even with the
+portal's screenshot picker still open. (For the same reason its file dialogs are GTK's own, even where the
 desktop asks for the portal's; the programs it starts get the desktop's choice back.) **Copy** in a chat window puts the conversation on the clipboard
 as Markdown, and **Save** writes it where you choose, the badges' labels with it.
 

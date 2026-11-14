@@ -33,8 +33,17 @@ GTK's file dialogs are its own, never the portal's (GTK_USE_PORTAL=0, for this p
 alone: hostenv.set_own); every program it starts gets the value back (hostenv.host_env).
 While it is dumpable for the portal, a crash still leaves nothing: the core limit of 1,
 and the filter.
+
+Only a request that will be answered opens that window. On the way out (quitting, the
+first thing Assistant.quit does, and at exit whatever way the app leaves) the process is
+made undumpable again at once, a request still unanswered or not, and nothing asked from
+then on opens it: the app closes its connections as it quits, so no answer comes. The
+shortcuts' Session.Close, which has no answer to read, never opens it either
+(hotkeys.PortalHotkeys._tell). Sent through the window as the app quit, it left the
+process dumpable until it exited, 1 to 66 ms on the lab's desktops (Nov 14 2026).
 """
 
+import atexit
 import os
 import sys
 import threading
@@ -48,6 +57,7 @@ CORE_LIMIT = 1
 _lock = threading.Lock()
 _undumpable = False         # no_core_dumps made the process so
 _asking = 0                 # portal requests not answered yet
+_quitting = False           # quitting(): nothing makes the process dumpable any more
 
 
 def _prctl(option, value=0):
@@ -80,6 +90,9 @@ def no_core_dumps():
         pass
     with _lock:
         if _prctl(PR_SET_DUMPABLE, 0) == 0:
+            if not _undumpable:
+                # Whatever way the app leaves, not dumpable as it does (quitting).
+                atexit.register(quitting)
             _undumpable = True
     try:
         import resource
@@ -96,13 +109,20 @@ def no_core_dumps():
         hostenv.set_own("GTK_USE_PORTAL", "0")
 
 
+def _nothing():
+    pass
+
+
 def asking_the_portal():
     """A portal request is about to go: the process is dumpable until the function this
     returns is called, once the portal has answered (more than once does nothing). With
     several under way, until the last is answered. Where no_core_dumps made nothing
-    undumpable, nothing changes."""
+    undumpable, nothing changes; nor once the app is quitting (quitting), when no answer
+    will come."""
     global _asking
     with _lock:
+        if _quitting:
+            return _nothing
         _asking += 1
         if _undumpable and _asking == 1:
             _prctl(PR_SET_DUMPABLE, 1)
@@ -119,6 +139,20 @@ def asking_the_portal():
                 _prctl(PR_SET_DUMPABLE, 0)
 
     return done
+
+
+def quitting():
+    """The app is on its way out: undumpable again at once, if a request still unanswered
+    - a screenshot's picker left open - had made it dumpable, and no request from now on
+    makes it so (asking_the_portal): its connections are about to close, and no answer
+    will come. The first thing Assistant.quit does, and at exit (atexit, registered by
+    no_core_dumps), whatever way the app leaves. Where no_core_dumps made nothing
+    undumpable, nothing changes."""
+    global _quitting
+    with _lock:
+        _quitting = True
+        if _undumpable:
+            _prctl(PR_SET_DUMPABLE, 0)
 
 
 @contextmanager

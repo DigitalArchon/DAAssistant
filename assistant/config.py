@@ -67,8 +67,9 @@ DEFAULTS = {
     "private_vision_model": "private/deepseek-v4-1-flash",
     # Refuse an enclave that proved less than it could - no GPU evidence, an Intel TCB
     # that is not UpToDate, Intel's or NVIDIA's services out of reach, an older release
-    # - rather than sending with an amber banner; and after a reply whose signature did
-    # not match, send nothing more until the enclave has been attested again.
+    # - rather than sending with an amber banner; and after a reply left unsigned or not
+    # compared by a model that signs them, send nothing more until the enclave has been
+    # attested again (as every conversation does after a reply whose check failed).
     "privacy_strict": False,
     # After a TEE/ reply whose receipt holds, name the provider that ran the model, from
     # RedPill's public record of its gateway's session (privacy.TeeClient.served_by). Off

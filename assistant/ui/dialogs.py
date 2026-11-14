@@ -1096,10 +1096,10 @@ class SettingsDialog(Gtk.Dialog):
             "Without this, an enclave that proved itself but not fully - no GPU evidence, "
             "an Intel TCB that is not up to date, Intel's or NVIDIA's services out of "
             "reach, an older release - is used, and the banner turns amber to say what "
-            "fell short. Strict refuses it, and nothing is sent. After a reply whose "
-            "signature did not match, or that came back unsigned from a model that "
-            "signs its replies, it also attests that model again before sending it "
-            "anything more.")
+            "fell short. Strict refuses it, and nothing is sent. After a reply that "
+            "came back unsigned or not compared from a model that signs its replies, "
+            "it also attests that model again before sending it anything more, as "
+            "every conversation does after a reply whose check failed.")
         self.privacy_strict.set_active(bool(getattr(self.config, "privacy_strict", False)))
         page.pack_start(self.privacy_strict, False, False, 0)
 

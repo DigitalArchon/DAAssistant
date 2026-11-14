@@ -51,10 +51,11 @@ A conversation's privacy is decided once, when it starts (`PrivacySession.start`
 never relaxed: its models are copied then, so switching Privacy Mode off, or choosing
 other models in Settings, leaves every open private conversation exactly as it was.
 
-So is whether its attestation is strict (config.privacy_strict). An attestation that
-proved less than it could - everything that shows the chat window's banner amber - is
-then refused rather than used, and a TEE reply that proved less than a verified one has
-its model attested again before anything more is sent to it.
+A TEE reply whose check failed has its model attested again before anything more is
+sent to it. So is whether its attestation is strict (config.privacy_strict). An
+attestation that proved less than it could - everything that shows the chat window's
+banner amber - is then refused rather than used, and a TEE reply that proved less than a
+verified one has its model attested again too.
 """
 
 import base64
@@ -80,6 +81,14 @@ TIMEOUT_SECONDS = 30
 # 6-25 s for 12-43 instances that day), so an attestation is waited for longer than the
 # other requests.
 ATTESTATION_TIMEOUT_SECONDS = 90
+# One attestation, all of it, is given this long: a request of it waits for what is left,
+# and none is begun once it has passed (TeeClient._left). The reports may live under three
+# paths, each asked in turn, for the gateway's report and then the model's own: with 90
+# seconds each to answer, an address that never did kept a model "attesting..." for nine
+# minutes. Three minutes is a gateway's report, a model's own that timed out upstream (a
+# 504, about a minute) asked for once more, and Intel's and NVIDIA's checks, with room to
+# spare. From DA Toolkit's llm/tee.py (Nov 2026).
+ATTEMPT_SECONDS = 180
 PRIVATE_MODE_HOSTS = frozenset({"nano-gpt.com"})
 # How old a TEE/ model's attestation may grow, on the boot clock, before the next send
 # to it attests it again: an enclave restarted, moved or replaced since is found within
@@ -458,8 +467,8 @@ class Receipt:
     kind: str
     state: str
     detail: str = ""
-    # Strict doubted it: its model is attested again before anything more is sent to it
-    # (PrivacySession.check_reply).
+    # Doubted - its check failed, or Strict found it less than verified: its model is
+    # attested again before anything more is sent to it (PrivacySession.check_reply).
     doubted: bool = False
     # Who ran its model, where Settings asked (TeeUpstream, TeeClient.served_by), else None.
     upstream: object = None
@@ -828,6 +837,12 @@ class TeeClient:
 
     def __init__(self, api_url, api_key, model, session=None, intel=None, nvidia=None,
                  wall=time.time):
+        # https, or this machine's own network: the key goes there; and a key no header
+        # can carry is sent nowhere. Refused as the client is made, as DA Toolkit's is.
+        refused = netguard.problem(api_url) or netguard.key_problem(
+            api_key, urlparse(str(api_url or "")).hostname or "the provider")
+        if refused:
+            raise PrivacyError(refused)
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
@@ -856,6 +871,23 @@ class TeeClient:
         # The time of day, which receipts are dated in (`served_at`, Unix seconds):
         # replaceable for tests.
         self._wall = wall
+        # When the attestation under way must be over (time.monotonic; ATTEMPT_SECONDS),
+        # else None.
+        self._deadline = None
+
+    def _left(self, wanted=TIMEOUT_SECONDS):
+        """How long a request of the attestation under way may wait: `wanted`, or what is
+        left of ATTEMPT_SECONDS when that is less. Refuses once it has passed: asked
+        before each request, and before Intel's and NVIDIA's checks. Outside an
+        attestation (a reply's check), `wanted`. From DA Toolkit."""
+        if self._deadline is None:
+            return wanted
+        left = self._deadline - time.monotonic()
+        if left <= 0:
+            raise PrivacyError(f"{self.model}'s attestation was not done within "
+                               f"{ATTEMPT_SECONDS / 60:g} minutes, and was given up; this "
+                               f"may pass if tried again")
+        return min(wanted, left)
 
     def _get(self, path, params, route=None, timeout=TIMEOUT_SECONDS):
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -865,11 +897,13 @@ class TeeClient:
             headers["X-TEE-Verification-Route"] = route
         last, last_status = "", None
         for base in [self._base] if self._base else _bases(self.api_url):
+            # Of an attestation: each address waits only for what is left of its time.
+            wait = self._left(timeout)
             try:
                 # No redirect is followed with the key: it would re-send the request
                 # wherever it pointed (netguard.redirected).
                 response = self.session.get(f"{base}{path}", params=params,
-                                            headers=headers, timeout=timeout,
+                                            headers=headers, timeout=wait,
                                             allow_redirects=False)
             except requests.exceptions.RequestException as e:
                 last, last_status = str(e), None
@@ -961,7 +995,32 @@ class TeeClient:
         Stricter than StoryLoom, which reads these verdicts without checking their
         signatures: a nonce or a verdict that merely comes back in JSON proves nothing,
         since anything can echo a string.
+
+        The whole of it is given ATTEMPT_SECONDS (_left). And evidence that is not in the
+        shape it should be - a list where an object belongs, a key that is not hex, JSON
+        nested past reading - refuses like any other that does not hold, as a
+        PrivacyError saying it could not be read, the error it raised its cause: as DA
+        Toolkit's TeeClient.attest (Nov 2026), where the conversation's session turned
+        it into a refusal but nothing else that attests did.
         """
+        self._deadline = time.monotonic() + ATTEMPT_SECONDS
+        try:
+            return self._attest()
+        except PrivacyError:
+            raise
+        except requests.exceptions.RequestException as e:
+            # netguard's refusals among them: a proxy set in Settings that cannot be used.
+            raise PrivacyError(f"{self.model}'s attestation could not be fetched: "
+                               f"{unsealed_words(e, 300)}") from e
+        except Exception as e:  # noqa: BLE001 - whatever reading the evidence raised
+            raise PrivacyError(f"{self.model}'s attestation could not be read: what its "
+                               f"provider sent is not in the shape it should be "
+                               f"({type(e).__name__})") from e
+        finally:
+            self._deadline = None
+
+    def _attest(self):
+        """attest()'s checks, in their order."""
         # What only the gateway alone stands for, set again if it does this time.
         self.receipt_required = False
         gateway, unheard = self._attest_gateway()
@@ -1094,10 +1153,13 @@ class TeeClient:
 
     def _refuse_expired(self, keyset):
         """Keys RedPill attests only until a time now past are refused: what was
-        attested is keys no longer in force. A keyset that names no such time is not
-        used for the receipts, and falls short (_take_keyset)."""
+        attested is keys no longer in force. That time is a whole number of seconds; a
+        keyset that names none - or names it as anything else, a bool (which Python
+        counts as an integer), a fraction, text - is not used for the receipts, and falls
+        short as "receipt keys expired" (_take_keyset): the DA apps' rule (SealedLore
+        3.1.0b6, Nov 2026)."""
         expires = keyset.get("not_after") if isinstance(keyset, dict) else None
-        if isinstance(expires, (int, float)) and not isinstance(expires, bool) \
+        if isinstance(expires, int) and not isinstance(expires, bool) \
                 and expires < time.time():
             raise PrivacyError(f"{self.model}'s attested keys expired on "
                                f"{time.strftime('%Y-%m-%d', time.gmtime(expires))}")
@@ -1253,7 +1315,8 @@ class TeeClient:
         if keyset is None:
             return
         not_after = keyset.get("not_after")
-        if not isinstance(not_after, int) or not_after <= time.time():
+        if not isinstance(not_after, int) or isinstance(not_after, bool) \
+                or not_after <= time.time():
             check.note("its receipt keys have expired, so receipts are not checked")
             check.fall_short("receipt keys expired")
             return
@@ -1391,6 +1454,7 @@ class TeeClient:
     def _check_quote(self, raw, check):
         """Intel's verification of one quote, into `check`. Refuses a bad quote, and
         one that cannot be checked at all."""
+        self._left()
         try:
             intel = self._intel(raw, self.session)
         except ImportError:
@@ -1461,7 +1525,7 @@ class TeeClient:
         """NRAS's answer to the GPU evidence, or None if the service could not be
         reached. An answer of HTTP 4xx is NVIDIA refusing the evidence."""
         try:
-            response = self.session.post(NRAS_URL, json=payload, timeout=TIMEOUT_SECONDS)
+            response = self.session.post(NRAS_URL, json=payload, timeout=self._left())
         except requests.exceptions.RequestException:
             return None
         if response.status_code >= 500:
@@ -1930,9 +1994,9 @@ class PrivacySession:
         sealed.py whenever its proof is five minutes old, before anything is sealed.
         Raises PrivacyError, having sent nothing, when the enclave cannot be trusted.
 
-        With strict attestation, it raises too for an attestation that proved less than
-        it could (Attestation.fell_short), naming what it lacked, and a TEE model one
-        of whose replies check_reply doubted is attested again before the next send.
+        A TEE model one of whose replies check_reply doubted is attested again before
+        the next send. With strict attestation, it raises too for an attestation that
+        proved less than it could (Attestation.fell_short), naming what it lacked.
 
         Attesting is network work - several requests, each allowed TIMEOUT_SECONDS, and
         ATTESTATION_TIMEOUT_SECONDS for the two reports - and it is done with no lock
@@ -1977,7 +2041,8 @@ class PrivacySession:
 
     def _due(self, model):
         """Whether a TEE/ model must be attested again before anything more is sent to
-        it: its newest attestation is too old, or strict attestation doubted a reply."""
+        it: its newest attestation is too old, or a reply of it was doubted
+        (check_reply)."""
         if model in self._doubted:
             return True
         age = self._clock() - self._attested_at.get(model, float("-inf"))
@@ -2088,11 +2153,14 @@ class PrivacySession:
         TEE reply's model, by RedPill's record of its session (TeeClient.check), on the
         receipt; it changes nothing else.
 
-        With strict attestation, a TEE reply that proved less than a verified one - a
-        check that failed, or, one the attested keys were to sign (_signs), a record
-        that could not be read or whose text could not be compared - has its model
-        attested again before anything more is sent to it. Not refused for good: once
-        the enclave attests well again, the conversation carries on."""
+        A TEE reply whose check failed - signed by another key, for other bytes, or with
+        a receipt that does not hold or was served at another time - has its model
+        attested again before anything more is sent to it (_due), whatever the mode:
+        until Nov 2026 only strict attestation did so, where every other DA app does in
+        every mode. With strict attestation, so does one that proved less than a
+        verified one where the attested keys were to sign it (_signs): a record that
+        could not be read, or whose text could not be compared. Not refused for good:
+        once the enclave attests well again, the conversation carries on."""
         if kind_of(model) == E2EE:
             receipt = Receipt(model, E2EE, SEALED,
                               "decrypted here; only the attested enclave could have "
@@ -2117,8 +2185,8 @@ class PrivacySession:
         with self._lock:
             self._receipts.append(receipt)
             signs = _signs(self.attestations.get(model), receipt_id)
-            if self.strict and (receipt.state == FAILED
-                                or (receipt.state in (UNCHECKED, SIGNED) and signs)):
+            if receipt.state == FAILED or (self.strict and signs
+                                           and receipt.state in (UNCHECKED, SIGNED)):
                 self._doubted.add(model)
                 receipt.doubted = True
         self._emit("receipt", model, receipt)
@@ -2215,11 +2283,11 @@ def receipt_badge(receipt):
     """(label, tone, tooltip) for an answer, from its receipt. The tooltip says what the
     check showed, what it leaves to the gateway's word, and that a TEE/ reply's text
     passed nano-gpt in the clear, as SealedLore's marks do (TEE_MARK_TIPS, 9af15c1); and,
-    where Strict doubted the reply (Receipt.doubted), that its model is attested again."""
+    where the reply was doubted (Receipt.doubted), that its model is attested again."""
     if receipt is None:
         return None
-    again = (" Strict is on, so its model is attested again before anything more is "
-             "sent to it." if getattr(receipt, "doubted", False) else "")
+    again = (" Its model is attested again before anything more is sent to it."
+             if getattr(receipt, "doubted", False) else "")
     if receipt.state == SEALED:
         return ("🔐 End-to-end encrypted", "ok",
                 f"End-to-end encrypted: {receipt.detail}. nano-gpt relayed ciphertext.")

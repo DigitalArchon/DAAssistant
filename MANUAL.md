@@ -421,7 +421,9 @@ first step's and its answering model's, then any chosen along the way.
   which said nothing of the text shown; up to 4.4.0 a receipt was not held to the
   request's time.) The enclave is attested again before the next message
   once its attestation is 15 minutes old - time the computer spent asleep counts - and
-  the banner follows it. Your text still passes nano-gpt's gateway in the clear on its
+  after an answer whose check failed, Strict or not (up to 4.4.0, only with Strict), and
+  the banner follows it. An attestation is given three minutes in all, and evidence the
+  app cannot read is refused. Your text still passes nano-gpt's gateway in the clear on its
   way in - attestation proves where the model runs, not that nano-gpt cannot read the
   request.
 
@@ -564,11 +566,11 @@ Nov 2026, all but Chutes' own attested as RedPill's gateway, and those Chutes se
 answered by it now and then, Strict takes `private/` models, and only the `TEE/` models
 Chutes alone serves (`TEE/kimi-k3`, `TEE/gemma4-31b`). *GPUs not tied to the quote*
 (4.4.0) changed none of that: every model it applies to fell short for the gateway
-already, and a Chutes instance's quote is tied to its GPUs. After an answer whose check
-failed, or one not verified - no record of it could be read, or its text could not be
-compared - that the keys its model's attestation bound were to sign, that model is
-attested again before it is sent anything more, and the answer's badge says so; if it
-attests well, the conversation carries on. For a model whose provider keeps no record,
+already, and a Chutes instance's quote is tied to its GPUs. After an answer not
+verified - no record of it could be read, or its text could not be compared - that the
+keys its model's attestation bound were to sign, Strict has that model attested again
+before it is sent anything more, as every conversation does after an answer whose check
+failed, and the answer's badge says so; if it attests well, the conversation carries on. For a model whose provider keeps no record,
 that is before every message, a few seconds each. Chutes' answers, which are signed by
 nothing, are not attested again for that. An end-to-end encrypted
 enclave attested again in the middle of a request - after nano-gpt's relay says its key

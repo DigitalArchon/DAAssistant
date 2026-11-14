@@ -208,8 +208,12 @@ nano-gpt passed it on); the model's own machine, where RedPill's gateway answers
 that the GPUs are the attested machine's.
 
 **Again every 15 minutes**: an enclave is attested again before the next message once
-its attestation is 15 minutes old, time asleep included. While a model is being
-attested, a message to it waits; while it is refused, nothing is sent to it.
+its attestation is 15 minutes old, time asleep included. **And after a reply whose check
+failed** (below), whatever the settings: its model is attested again before it is sent
+anything more, and the reply's badge says so. An attestation is given three minutes in
+all; one not done by then is refused. While a model is being attested, a message to it
+waits; while it is refused, nothing is sent to it. Evidence in a shape the app cannot
+read is refused, never taken for a pass.
 
 **Each reply is checked**, where its provider signs one, against the record nano-gpt
 keeps of it, signed by the attested key, and the app hashes every byte of the reply as
@@ -242,9 +246,10 @@ end-to-end*.
 **Strict** (Settings > Privacy, off by default) refuses any enclave that proved less than
 it could - anything that would turn the banner amber - and sends nothing to it. As
 nano-gpt's models are in Nov 2026, that leaves `private/` models and the `TEE/` models
-Chutes alone serves. After a reply whose check failed, or one the attested keys were to
-sign that fell short of verified (no record read, or its text not compared), Strict
-attests its model again before sending it anything more, and the reply's badge says so.
+Chutes alone serves. Strict also attests a model again before sending it anything more
+after a reply the attested keys were to sign that fell short of verified (no record read,
+or its text not compared), as every mode does after one whose check failed; the reply's
+badge says so.
 
 ### Naming the provider behind a TEE reply
 

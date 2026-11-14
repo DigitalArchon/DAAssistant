@@ -194,6 +194,24 @@ class TheTwoLocksAgree(unittest.TestCase):
         self.assertEqual({name: private[name] for name in shared},
                          {name: app[name] for name in shared})
 
+    def test_cryptography_has_a_floor_the_locks_meet(self):
+        """A relock keeps what the lock pins, and could go back to any cryptography
+        with no floor named: the one the attestation checks and the receipts' Ed25519
+        run on, and its OpenSSL."""
+        import re
+        with open(os.path.join(ROOT, "packaging/appimage/requirements.in"),
+                  encoding="utf-8") as f:
+            floor = re.search(r"^cryptography>=([0-9.]+)\s*$", f.read(), re.M)
+        self.assertIsNotNone(floor, "cryptography is named with a floor")
+
+        def version(text):
+            return tuple(int(part) for part in text.split("."))
+
+        self.assertGreaterEqual(version(floor.group(1)), (50, 0, 2))
+        for lock in ("packaging/appimage/requirements.lock", "packaging/private-mode.lock"):
+            self.assertGreaterEqual(version(self.pins(lock)["cryptography"]),
+                                    version(floor.group(1)), lock)
+
     def test_the_lock_and_the_build_keep_them_so(self):
         with open(os.path.join(ROOT, "packaging/lock-private-mode.sh"), encoding="utf-8") as f:
             self.assertIn("--constraint appimage/requirements.lock", f.read())

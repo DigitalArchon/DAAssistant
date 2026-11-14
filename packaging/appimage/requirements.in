@@ -9,7 +9,10 @@ markdown
 pygments
 pillow
 python-xlib
-cryptography
+# TEE attestation's checks (dcap.py, nras.py, privacy.py) and the receipts' Ed25519.
+# 50.0.2 is what both locks ship (the private-mode lock pins the same: see
+# TheTwoLocksAgree); the floor keeps a relock from going back to an older OpenSSL.
+cryptography>=50.0.2
 # the API key's keyring (assistant/keychain.py): the Secret Service, over D-Bus, in Python
 keyring
 # SOCKS proxies for requests (assistant/proxy.py) - Tor's, socks5h://, among them

@@ -173,13 +173,17 @@ def chat_url(kind, url):
 class Provider:
     """A provider as these settings have it: where it is, and with what key."""
 
-    def __init__(self, kind, url, api_key, proxy=None):
+    def __init__(self, kind, url, api_key, proxy=None, withheld=None):
         self.kind = kind
         self.id, self.name, self.gzip, self.listing = (kind.id, kind.name, kind.gzip,
                                                        kind.listing)
         self.address = (url or "").strip()          # as typed
         self.chat_url = chat_url(kind, url)
-        self.api_key = (api_key or "").strip()
+        # Why the key kept for it is not sent to this address (Config.key_withheld): it
+        # was saved for another. Then there is no key here, and nothing is sent at all,
+        # rather than sent without it.
+        self.withheld = withheld
+        self.api_key = "" if withheld else (api_key or "").strip()
         # The proxy these settings name, which an onion address is judged by: one typed
         # in Settings beside it, not yet in force, counts.
         self.proxy = (proxy or "").strip()
@@ -206,6 +210,8 @@ class Provider:
         return found
 
     def key_problem(self):
+        if self.withheld:
+            return self.withheld
         if self.kind.needs_key and not self.api_key:
             return f"No API key is set for {self.name}. Add it in Settings > Providers."
         return netguard.key_problem(self.api_key, self.name)
@@ -234,12 +240,16 @@ class Provider:
 
 def get(config, provider):
     """The Provider for a provider id, from these settings. One it does not know is
-    NanoGPT: a config.json edited by hand does not get to send anything anywhere new."""
+    NanoGPT: a config.json edited by hand does not get to send anything anywhere new.
+    Nor does an address: the key goes only where it was saved for (key_withheld)."""
     kind = KINDS.get(provider) or KINDS[NANOGPT]
+    withheld = getattr(config, "key_withheld", None)
     return Provider(kind,
                     getattr(config, kind.url_key, "") if kind.url_key else "",
                     getattr(config, kind.key_key, "") if kind.key_key else "",
-                    getattr(config, "proxy", ""))
+                    getattr(config, "proxy", ""),
+                    withheld=(withheld(kind.key_key) if kind.key_key and callable(withheld)
+                              else None))
 
 
 def role_provider(config, role):

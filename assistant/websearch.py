@@ -87,6 +87,9 @@ def unavailable(config):
     if not getattr(config, "api_key", ""):
         return ("Web search runs on NanoGPT, and needs its API key "
                 "(Settings > Providers)")
+    withheld = getattr(config, "key_withheld", None)
+    if callable(withheld):
+        return withheld("api_key", endpoint(getattr(config, "api_url", "")))
     return None
 
 
@@ -319,6 +322,12 @@ def run(query, config, session=None, timeout=None, provider=None):
         # The search is NanoGPT's (/api/web), whichever provider answers the question.
         raise SearchError("web search runs on NanoGPT and needs its API key "
                           "(Settings > Providers)")
+    # And the key goes only where it was saved for (Config.key_withheld): not to an
+    # address edited in since, which would be sent the query too.
+    withheld = getattr(config, "key_withheld", None)
+    refused = withheld("api_key", endpoint(config.api_url)) if callable(withheld) else None
+    if refused:
+        raise SearchError(refused)
     # Following no redirect (netguard.session): it would carry the query and the key
     # on to wherever it pointed. One is an error saying where.
     post = (session or netguard.session()).post

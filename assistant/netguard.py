@@ -243,6 +243,25 @@ def without_password(url):
     return parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[1]).geturl()
 
 
+def origin(url):
+    """`url`'s origin - scheme, host and port - as one text, "https://host:443": what an
+    API key is kept for (config.Config.key_withheld). The host's case and a port left at
+    its scheme's default are only spelling; a user name and password are not part of it.
+    "" for anything that cannot be read as a web address."""
+    try:
+        parsed = urlparse(str(url or "").strip())
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    if not host or scheme not in ("http", "https"):
+        return ""
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{scheme}://{host}:{port or (443 if scheme == 'https' else 80)}"
+
+
 def key_problem(key, name="the provider"):
     """Why `key` cannot be sent as an API key, or None. A key is plain ASCII with no
     spaces in it; one pasted with a line break, or a zero-width space from a web page,

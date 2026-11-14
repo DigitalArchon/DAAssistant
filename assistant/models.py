@@ -475,7 +475,9 @@ def fetch(config, force=False, timeout=60, provider=None):
     """Return (models, from_cache) for a provider - NanoGPT unless one is named. Raises
     RuntimeError with a readable message."""
     source = providers.get(config, provider or providers.NANOGPT)
-    refused = source.url_problem()
+    # A key kept for another address is not sent here (key_withheld), and the list is
+    # not asked for without it: that answers only "unauthorised".
+    refused = source.url_problem() or source.withheld
     if refused:
         raise RuntimeError(refused)
     url = source.models_url

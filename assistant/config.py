@@ -166,10 +166,21 @@ DEFAULTS = {
     # The user's own actions, Settings > Actions: [{"slot": 1-6, "name", "prompt",
     # "source": "clipboard" | "selection" | "region"}]. See hotkeys.CUSTOM_ACTIONS.
     "custom_actions": [],
+    # Where each API key was saved for: {"custom_api_key": "https://llm.example:443"},
+    # the origin (scheme, host and port) of its provider's address when it was saved -
+    # not the key, which is in the keyring. A key goes there and nowhere else
+    # (Config.key_withheld): an address changed since, in Settings or here by hand, is
+    # sent no key until Settings is saved and told to use it there, or a key is entered
+    # for it. A key kept before this was recorded takes its address's origin at the
+    # first start that reads it, with no question asked.
+    "key_origins": {},
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.
 SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
+# The provider each key is for: where its address is (providers.Kind.url_key, or its
+# fixed address), and what it is called.
+KEYED = {kind.key_key: kind for kind in providers.KINDS.values() if kind.key_key}
 
 # Settings that are addresses, which may have a user name and password written into
 # them: a proxy that asks for them, an endpoint or a model server behind a password.
@@ -328,6 +339,12 @@ class Config:
         # Track deliberate changes so save() knows what it is allowed to overwrite.
         if name in DEFAULTS and not object.__getattribute__(self, "_loading"):
             object.__getattribute__(self, "_dirty").add(name)
+            if name in SECRETS and value != getattr(self, name, None):
+                # A key entered now is for these settings' address, which save()
+                # records for it: until then it goes with the address as it stands.
+                origins = getattr(self, "key_origins", None)
+                if isinstance(origins, dict) and name in origins:
+                    self.key_origins = {k: v for k, v in origins.items() if k != name}
         object.__setattr__(self, name, value)
 
     def _read_file(self, warnings=None):
@@ -433,11 +450,67 @@ class Config:
                 moved = True
         if on_disk and "text_provider" not in on_disk:
             moved = self._name_provider(on_disk.get("api_url")) or moved
+        moved = self._adopt_key_origins() or moved
         if moved or (loose and all(kept[key] for key in loose)):
             try:
                 self.save()                 # the same file, without the key in it
             except (OSError, KeychainError):
                 pass                        # read-only: it goes at the next save
+
+    def _adopt_key_origins(self):
+        """A key with no origin recorded beside it - kept before origins were, or moved
+        to another provider's setting just now (_name_provider) - takes its address's
+        own, as the address saved beside it is the one it was saved for: no question is
+        asked. True if one did, for load() to save."""
+        origins = dict(self.key_origins or {})
+        for key in SECRETS:
+            if getattr(self, key, "") and key not in origins:
+                origins[key] = netguard.origin(self.key_address(key))
+        if origins == (self.key_origins or {}):
+            return False
+        self.key_origins = origins
+        return True
+
+    def key_address(self, key):
+        """The address `key` (one of SECRETS) is sent with: its provider's chat
+        endpoint, as these settings have it."""
+        kind = KEYED[key]
+        return providers.chat_url(kind, getattr(self, kind.url_key, "") if kind.url_key
+                                  else "")
+
+    def key_saved_for(self, key):
+        """The origin `key` was saved for: as recorded, or - a key typed in this session
+        and not saved yet - its address's own as it stands."""
+        recorded = (self.key_origins or {}).get(key) if isinstance(self.key_origins,
+                                                                   dict) else None
+        return str(recorded) if recorded else netguard.origin(self.key_address(key))
+
+    def key_withheld(self, key, url=None):
+        """Why `key`'s secret is not sent with a request to `url` - its own address, when
+        not given - or None when it may be. A key goes only to the origin it was saved
+        for (key_origins): changing the address in Settings, or editing it into
+        config.json, does not take the key there with it. Settings asks, when it is
+        saved, whether to (Assistant._ask_keys_follow); until it is told so, or a key is
+        entered for the new address, nothing is sent with it there, and this says why.
+        The same rule as DA Private Coder's creds.py (Nov 2026)."""
+        if key not in KEYED or not (getattr(self, key, "") or ""):
+            return None
+        saved_for = self.key_saved_for(key)
+        going_to = netguard.origin(self.key_address(key) if url is None else url)
+        if going_to == saved_for:
+            return None
+        name = KEYED[key].name
+        where = (f"the address in {os.path.basename(self.config_file)}"
+                 if KEYED[key].id == providers.NANOGPT else f"{name}'s address")
+        return (f"The {name} API key was saved for {saved_for or 'another address'}, "
+                f"and {where} is now {going_to or netguard.shown(self.key_address(key))}: "
+                f"the key is not sent there. If it is meant for that address, open "
+                f"Settings and save, and say Yes when asked to use it there; or enter "
+                f"that address's own key in Settings > Providers.")
+
+    def key_for(self, key, url=None):
+        """`key`'s secret, if it may go with a request to `url` (key_withheld), else ""."""
+        return "" if self.key_withheld(key, url) else (getattr(self, key, "") or "")
 
     def _load_addresses(self, values):
         """Each of ADDRESSES as it was typed: the file's, with the password the keychain
@@ -517,6 +590,19 @@ class Config:
         # only the keys we deliberately changed. Anything edited elsewhere in the
         # meantime is preserved instead of being reverted.
         dirty = object.__getattribute__(self, "_dirty")
+        # A key changed here is saved for the address it goes with now: its origin is
+        # recorded beside the address, and the key goes nowhere else (key_withheld). One
+        # taken out takes its origin with it. A key not changed keeps the origin it had,
+        # whatever has happened to the address since.
+        origins = dict(self.key_origins or {}) if isinstance(self.key_origins, dict) else {}
+        for key in SECRETS:
+            if key in dirty:
+                if getattr(self, key, ""):
+                    origins[key] = netguard.origin(self.key_address(key))
+                else:
+                    origins.pop(key, None)
+        if origins != self.key_origins:
+            self.key_origins = origins          # dirty, so written below
         merged = dict(DEFAULTS)
         on_disk, error = self._read_file()
         if error:
@@ -641,6 +727,14 @@ class Config:
         copy.load_error = self.load_error
         values = self.as_dict()
         values.update({k: v for k, v in overrides.items() if k in DEFAULTS})
+        # A key given here that is not the one kept is one typed for these settings -
+        # Settings' own, being tried out - and goes with their address, as one entered
+        # does (__setattr__). One kept goes only where it was saved for.
+        origins = values.get("key_origins")
+        if isinstance(origins, dict):
+            values["key_origins"] = {
+                key: origin for key, origin in origins.items()
+                if not (key in overrides and overrides[key] != getattr(self, key, None))}
         for key, value in values.items():
             setattr(copy, key, value)
         object.__setattr__(copy, "_loading", False)

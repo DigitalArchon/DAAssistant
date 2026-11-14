@@ -1815,6 +1815,12 @@ class PrivacySession:
         if found:
             raise PrivacyError("Privacy Mode is on, but " + " ".join(
                 f[0].lower() + f[1:] for f in found) + " Nothing was sent.")
+        # NanoGPT's key goes to the address it was saved for, and no other
+        # (config.Config.key_withheld): every TEE check and the relay are there.
+        withheld = getattr(config, "key_withheld", None)
+        refused = withheld("api_key") if callable(withheld) else None
+        if refused:
+            raise PrivacyError(f"{refused} Nothing was sent.")
         return cls(config.api_url, config.api_key,
                    config.private_text_model.strip(), config.private_vision_model.strip(),
                    request_timeout=config.request_timeout, uses=uses,

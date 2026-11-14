@@ -22,8 +22,9 @@ Anything that breaks one of DA Assistant's promises, which
 - a request that carries a key, the conversation, a question or a search query following a
   redirect, or a public fetch following one where it could not have been sent in the first
   place (from https to plain http, or from the internet into this machine or its network);
-- an API key going to any service but its own provider, or a key or a password written into
-  an address reaching `config.json`, the cache or a message the app shows;
+- an API key going to any service but its own provider, or to an address other than the one
+  it was saved for without your say-so, or a key or a password written into an address
+  reaching `config.json`, the cache or a message the app shows;
 - with Privacy Mode on, anything reaching a model outside the conversation's attested ones,
   a web search being made, or a private conversation falling back to the ordinary models
   before its window is closed;

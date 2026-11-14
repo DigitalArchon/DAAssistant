@@ -5,9 +5,9 @@ import os
 from . import gtkcompat
 from gi.repository import Gdk, GLib, Gtk
 
-from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc, proxy,
-                models as catalogue, privacy as privacy_module, prompts, providers,
-                webkitguard)
+from . import (APP_ID, APP_NAME, clipboard, errors, icon as app_icon, imaging, ipc,
+                netguard, proxy, models as catalogue, privacy as privacy_module, prompts,
+                providers, webkitguard)
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
@@ -17,7 +17,8 @@ from .llm import LLMClient, LLMError
 from .reference.encyclopedia import Encyclopedia
 from .reference.dictionaries import Library
 from .ui.chat import ChatWindow
-from .ui.dialogs import CaptureReviewDialog, SettingsDialog, TextReviewDialog
+from .ui.dialogs import (CaptureReviewDialog, SettingsDialog, TextReviewDialog,
+                         use_saved_key_there)
 from .ui.tray import NO_TRAY, Tray
 
 if gtkcompat.has_notify():
@@ -1144,6 +1145,32 @@ class Assistant:
 
     # ---- menu items -------------------------------------------------------
 
+    def _ask_keys_follow(self, values, parent):
+        """Settings' `values` about to be saved: for each API key kept for an address
+        they put on another server - the address changed in Settings, or edited into
+        config.json since - with the key itself left as it was, ask whether it is to go
+        there (use_saved_key_there, No the default). The key origins to save, with the
+        Yes answers' new ones, or None when nothing was asked or every answer was No:
+        then each key goes on going only where it was saved for (Config.key_withheld).
+        A key changed here is for the address it is saved with, and is not asked about.
+        Asked at every Save while the address stays moved: that is how the message that
+        refuses a request says to send it there."""
+        from .config import KEYED, SECRETS
+        staged = self.config.detached(**values)
+        origins = dict(self.config.key_origins or {}) \
+            if isinstance(self.config.key_origins, dict) else {}
+        said_yes = False
+        for key in SECRETS:
+            kept = getattr(self.config, key, "") or ""
+            if not kept or values.get(key, kept) != kept or not staged.key_withheld(key):
+                continue
+            going_to = netguard.origin(staged.key_address(key))
+            if use_saved_key_there(parent, KEYED[key].name, staged.key_saved_for(key),
+                                   going_to):
+                origins[key] = going_to
+                said_yes = True
+        return origins if said_yes else None
+
     def show_settings(self):
         # run() spins its own main loop, so a hotkey or --action=settings can arrive
         # while the dialog is up. Bring that one forward instead of stacking another.
@@ -1163,6 +1190,9 @@ class Assistant:
                 if refused:
                     self.notify(f"Settings not saved. {refused}", urgency="normal")
                     return
+                # Asked before anything changes: a kept key whose address this moves
+                # to another server goes there only if the answer is Yes.
+                follows = self._ask_keys_follow(values, dialog)
                 before = (self.config.hotkey_mode, dict(self.config.hotkeys or {}),
                           self.config.encyclopedia_enabled, action_labels(self.config))
                 was_private = bool(self.config.privacy_mode)
@@ -1173,6 +1203,8 @@ class Assistant:
                 for key, value in values.items():
                     if getattr(self.config, key, None) != value:
                         setattr(self.config, key, value)
+                if follows is not None:
+                    self.config.key_origins = follows
                 try:
                     self.config.save()
                 except OSError as e:

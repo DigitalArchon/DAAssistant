@@ -120,6 +120,15 @@ plain http, and only on this machine, on your local network or as a Tor onion se
 - **Each key goes only to its own provider.** NanoGPT's goes to NanoGPT alone - for the
   chat, its model list, the web search, the TEE checks and Private Mode's relay - and
   never to Intel, NVIDIA, Tinfoil, Sigstore or RedPill. Ollama is sent no key.
+- **And only to the address it was saved for**: the scheme, host and port beside which it
+  was saved, which `config.json` records (not the key). An address changed since - in
+  Settings, or edited into `config.json` by hand - is not sent the key, nor anything that
+  needs it, until you say so: **Save** in Settings asks *Use the saved key with* the new
+  host, No the default, and until then each request to it is refused, saying why. A key
+  saved by 4.4.0 or earlier is taken to be for the address saved beside it, once, with no
+  question. No key is deleted for this. (Up to 4.4.0 a key went to whatever its
+  provider's address had been changed to.) Nor does Private Mode's relay ever get a user
+  name and password written into NanoGPT's address.
 
 ## AI models
 

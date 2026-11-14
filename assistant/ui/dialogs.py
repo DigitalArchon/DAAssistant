@@ -8,6 +8,7 @@ and the PNG payload size - so a bad capture is obvious before it costs a request
 """
 
 import os
+from urllib.parse import urlparse
 
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
@@ -240,6 +241,33 @@ class ReviewRoute:
             "Chosen in Settings > General. In the conversation that follows, the model "
             "button in its header can send any message to another.")
         self.plan.show()
+
+
+def use_saved_key_there(parent, name, saved_for, going_to):
+    """Ask whether the API key kept for `name` - saved for the origin `saved_for` - is to
+    go to the address it has been changed to, `going_to`: True only for Yes. No is the
+    default, and what Escape and closing the dialog answer; then the key is not sent
+    there (config.Config.key_withheld), and the message that refuses a request says how
+    to send it. Asked when Settings is saved (Assistant._ask_keys_follow)."""
+    host = (urlparse(going_to).hostname or going_to) if going_to else "the new address"
+    dialog = Gtk.MessageDialog(transient_for=parent if isinstance(parent, Gtk.Window)
+                               else None, modal=True, destroy_with_parent=True,
+                               message_type=Gtk.MessageType.QUESTION,
+                               text=f"Use the saved key with {host}?")
+    dialog.format_secondary_text(
+        f"The {name} API key was saved for {saved_for or 'another address'}, and "
+        f"{name}'s address is now {going_to or 'another'}. With Yes the key is sent there, "
+        f"and whoever runs that server can use it. With No it is not sent there - nor "
+        f"anything that needs it - until you say so here or enter that address's own "
+        f"key.")
+    no = dialog.add_button("_No", Gtk.ResponseType.NO)
+    dialog.add_button("_Yes", Gtk.ResponseType.YES)
+    dialog.set_default_response(Gtk.ResponseType.NO)
+    dialog.set_focus(no)
+    try:
+        return dialog.run() == Gtk.ResponseType.YES
+    finally:
+        dialog.destroy()
 
 
 def refused_note(reason):

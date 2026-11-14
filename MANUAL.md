@@ -255,6 +255,16 @@ path follows it. For another endpoint, its base (`https://host/v1`) and its full
 `/chat/completions` address are both understood. Addresses follow the rule under
 [Requests](#requests): https, or this machine and its local network.
 
+**A key goes only to the address it was saved for** - its scheme, host and port. Change
+an endpoint's address and leave its key as it is, and **Save** asks *Use the saved key
+with* the new host - **No** is the default. Until you say Yes, or enter that address's own
+key, the key is not sent there, and nothing that needs it is: every request to it says
+so, and how to send it. The same goes for an address edited into `config.json` by hand,
+NanoGPT's included: the next **Save** in Settings asks. A key saved by 4.4.0 or earlier
+is taken to be for the address saved beside it the first time the app starts, with no
+question; no key is deleted for any of this, and putting the address back sends it
+again.
+
 Only the providers your models use have to be set up. With all three on Ollama no key is
 wanted at all - but then there is no web search, which runs on NanoGPT with its key
 whichever provider answers, and no Privacy Mode.

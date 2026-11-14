@@ -562,7 +562,12 @@ class ASettingsFileFromBeforeProvidersHadNames(unittest.TestCase):
         config, keychain = self.load({"api_url": providers.NANOGPT_URL, "max_tokens": 2048})
         self.assertEqual(config.text_provider, "nanogpt")
         self.assertEqual(config.api_key, "sk-old")
-        self.assertNotIn("text_provider", self.stored())        # nothing was rewritten
+        # Nothing was moved: the file is written only to record where the key it had
+        # beside it was saved for (Config.key_origins), and stays NanoGPT's.
+        stored = self.stored()
+        self.assertEqual(stored.get("text_provider", "nanogpt"), "nanogpt")
+        self.assertEqual(stored["key_origins"], {"api_key": "https://nano-gpt.com:443"})
+        self.assertEqual(stored["max_tokens"], 2048)
 
     def test_an_endpoint_of_ones_own_becomes_the_other_endpoint_with_its_key(self):
         config, keychain = self.load({"api_url": "https://api.example.com/v1/chat/completions",

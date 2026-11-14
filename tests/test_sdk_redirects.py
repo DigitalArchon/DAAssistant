@@ -105,6 +105,8 @@ FILES = {
     "github.py": """
         import requests
 
+        _GITHUB_CACHE_DIR = "/home/someone/.cache/tinfoil"
+
         def fetch_latest_release(repo):
             response = requests.get(f"https://github-proxy.example/repos/{repo}",
                                     timeout=5)
@@ -126,6 +128,10 @@ FILES = {
             return post(url, json={}, timeout=5).text
         """,
     # A module the package does not import until it is wanted.
+    # Where the SDK caches (sdk_guard.guard_files points them nowhere).
+    "attestation/__init__.py": "",
+    "attestation/verify_sev.py": "_VCEK_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
+    "attestation/collateral_tdx.py": "_TDX_CACHE_DIR = '/home/someone/.cache/tinfoil'\n",
     "later/__init__.py": "",
     "later/collateral.py": """
         import requests
@@ -275,6 +281,20 @@ class RedirectsOffHttpsAreRefused(FakeSdk):
             request.headers.get("Accept-Encoding")) or real(request)
         self.module("byname").requests.get(self.URL, headers={"Accept-Encoding": "br"})
         self.assertEqual(asked, ["gzip, deflate"])
+
+    def test_the_sdks_caches_are_pointed_where_nothing_can_be_made(self):
+        """sdk_guard.guard_files (SealedLore's ac2f7f3): the SDK's three cache folders,
+        which it reads at each use, at one under the null device, where nothing can be
+        made, so it writes nothing of its own; one not where expected refuses."""
+        given = sealed.guard_sdk_requests()
+        self.assertLessEqual({"tinfoil.github", "tinfoil.attestation.verify_sev"}, set(given))
+        for name, attribute in sdk_guard._SDK_CACHES:
+            self.assertEqual(getattr(sys.modules[name], attribute),
+                             os.path.join(os.devnull, "tinfoil"))
+        self.assertEqual(sdk_guard.guard_files(), [])
+        del sys.modules["tinfoil.attestation.verify_sev"]._VCEK_CACHE_DIR
+        with self.assertRaisesRegex(sealed.Unguarded, "verify_sev has no _VCEK_CACHE_DIR"):
+            sdk_guard.guard_files()
 
     def test_the_rest_of_requests_is_requests_own_and_twice_is_once(self):
         sealed.guard_sdk_requests()

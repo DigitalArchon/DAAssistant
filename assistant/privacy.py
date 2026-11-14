@@ -1442,7 +1442,7 @@ class TeeClient:
                 raise PrivacyError(f"NVIDIA rejected {self.model}'s GPU evidence")
             try:
                 for token in claims:
-                    nras.check_claims(token, nonce, time.time())
+                    nras._claims_hold(token, nonce, time.time())
             except nras.NrasError as refused:
                 raise PrivacyError(f"{self.model}'s GPU attestation failed: "
                                    f"{unsealed_words(refused, 300)}")

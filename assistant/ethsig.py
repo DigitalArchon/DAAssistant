@@ -1,8 +1,6 @@
 """Ethereum-style message signatures, in pure Python: Keccak-256 and secp256k1
-public-key recovery, enough to check a TEE model's signed reply.
-
-Ported unchanged from StoryLoom (providers/ethsig.py), where it was written for the
-same nano-gpt TEE models.
+public-key recovery, enough to check a TEE model's signed reply. DA Toolkit's copy
+(llm/ethsig.py), SealedLore's, kept alike: first ported from StoryLoom.
 
 nano-gpt's TEE models sign each response with a key that lives only inside
 the attested enclave; the signature is EIP-191 ("personal_sign") over a text,
@@ -14,6 +12,8 @@ here instead, checked against fixed vectors in tests/test_privacy.py.
 Not constant-time and not for signing anything real: `sign` exists so the
 tests can round-trip.
 """
+
+from __future__ import annotations
 
 # --- Keccak-256 (the pre-standard padding Ethereum uses, not SHA3-256) ---------
 

@@ -370,10 +370,12 @@ class FakeNanoGpt:
     def post(self, url, json=None, headers=None, data=None, stream=False, timeout=None):
         self.posts.append({"url": url, "data": data, "json": json, "headers": headers})
         if url.startswith(privacy.NRAS_URL):
-            # As NVIDIA's tokens are: for the nonce it was sent, and current.
+            # As NVIDIA's tokens are: issued by its service, for the nonce it was sent,
+            # and current.
             now = int(time.time())
             return FakeResponse(self.nras_status,
                                 [["JWT", jwt({"x-nvidia-overall-att-result": self.gpu,
+                                              "iss": nras.ISSUER,
                                               "eat_nonce": (json or {}).get("nonce"),
                                               "nbf": now - 60, "exp": now + 3600})],
                                  {}])
@@ -973,7 +975,7 @@ class RealEvidence(unittest.TestCase):
             claims = dict(window, iss=nras.ISSUER, eat_nonce=nonce)
             with self.subTest(window=window), \
                     self.assertRaisesRegex(nras.NrasError, "not given as times"):
-                nras.check_claims(claims, nonce, self.now)
+                nras._claims_hold(claims, nonce, self.now)
         with mock.patch.object(nras, "_public_key", side_effect=KeyError("x")), \
                 self.assertRaisesRegex(nras.NrasError, r"could not be read \(KeyError\)"):
             self.nvidia()

@@ -17,6 +17,9 @@ Details that matter:
     which ends the chain.
   - temp files are cleaned up on every path, including the error paths.
   - they live in a directory of our own rather than loose in /tmp. See _tempfile.
+  - what the tool notes of the file is taken out with it: its entry in the recent
+    files, which Spectacle adds, and Spectacle's record of where it last saved
+    (traces.py).
 """
 
 import os
@@ -31,6 +34,7 @@ from gi.repository import GLib
 from PIL import Image
 
 from .. import hostenv, session
+from . import traces
 from .base import CaptureError, ScreenshotBackend
 
 SLURP_GEOMETRY = re.compile(r"(-?\d+),(-?\d+)\s+(\d+)x(\d+)")
@@ -113,12 +117,14 @@ def _tempfile():
 
 
 def _discard(path):
-    """Remove what _tempfile handed out, whether or not anything was written to it."""
+    """Remove what _tempfile handed out, whether or not anything was written to it - and
+    its entry in the recent files, where the tool put one (traces.forget_recent)."""
     for remove, target in ((os.unlink, path), (os.rmdir, os.path.dirname(path))):
         try:
             remove(target)
         except OSError:
             pass
+    traces.forget_recent(path)
 
 
 def _run(cmd, timeout=120):
@@ -286,7 +292,8 @@ class CliBackend(ScreenshotBackend):
         if self.tool == "spectacle":
             path = _tempfile()
             try:
-                result = _run(_spectacle_args(path, region=True), timeout=300)
+                with traces.spectacle_settings_kept(path):
+                    result = _run(_spectacle_args(path, region=True), timeout=300)
                 if not os.path.exists(path) or os.path.getsize(path) == 0:
                     # Nothing written. Esc during the rectangle looks exactly like this,
                     # and some Spectacle versions also exit non-zero for it, so only call
@@ -326,7 +333,8 @@ class CliBackend(ScreenshotBackend):
             if self.tool == "grim":
                 result = _run(["grim", path])
             elif self.tool == "spectacle":
-                result = _run(_spectacle_args(path, region=False))
+                with traces.spectacle_settings_kept(path):
+                    result = _run(_spectacle_args(path, region=False))
             elif self.tool == "gnome-screenshot":
                 result = _run(["gnome-screenshot", "-f", path])
             elif self.tool == "cinnamon":

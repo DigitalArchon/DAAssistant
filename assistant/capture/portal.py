@@ -17,6 +17,7 @@ from gi.repository import Gio, GLib
 from PIL import Image
 
 from .. import coredumps, session
+from . import traces
 from .base import CaptureError, ScreenshotBackend
 
 PORTAL_BUS = "org.freedesktop.portal.Desktop"
@@ -180,9 +181,9 @@ class PortalBackend(ScreenshotBackend):
         if parsed.scheme and parsed.scheme != "file":
             raise CaptureError(f"Unsupported screenshot URI scheme: {parsed.scheme}")
         path = urllib.parse.unquote(parsed.path)
-        if not os.path.exists(path):
-            raise CaptureError(f"Screenshot file vanished: {path}")
         try:
+            if not os.path.exists(path):
+                raise CaptureError(f"Screenshot file vanished: {path}")
             with Image.open(path) as img:
                 img.load()
                 return img.copy()
@@ -193,6 +194,9 @@ class PortalBackend(ScreenshotBackend):
                 os.unlink(path)
             except OSError:
                 pass
+            # And the note GNOME's portal makes of it, in the recent files list, which
+            # outlived the file (traces.py).
+            traces.forget_recent(path)
 
     def select_region(self, on_done, on_error):
         """Interactive: the compositor's own picker returns an already-cropped image."""

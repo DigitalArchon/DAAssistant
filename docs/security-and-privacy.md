@@ -335,6 +335,12 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
   original goes nowhere. Every capture and attached picture is rebuilt from its pixels
   alone, so no EXIF, location, ICC profile or text chunks go with it. Only the readers of
   the picture formats the app accepts ever look at an attached file.
+- **What a capture leaves behind.** The file the desktop's screenshot portal or tool
+  writes is read into memory and deleted at once, and the note the desktop makes of it
+  goes too: its entry in your recent files (`~/.local/share/recently-used.xbel`, where
+  GNOME's screenshot portal and KDE's Spectacle add it), and Spectacle's record of where
+  it last saved (`lastImageSaveLocation` in `~/.config/spectaclerc`), put back as it was.
+  Only that entry and that setting change; the rest of both files stays as it was.
 - **The pages the app shows.** The chat view and the encyclopedia's articles load nothing
   from the internet and run no script that came in an answer or an article: nothing in
   them can call home or take the view to another page. A link opens in your browser only
@@ -393,6 +399,9 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
   collector kept; `Storage=none` in `/etc/systemd/coredump.conf` stops it keeping any.
 - **A screenshot can hold more than you meant to send.** Look at it, and black out what
   should not go, before you press Send.
+- **What a desktop keeps of a screenshot elsewhere** is out of the app's reach: anything
+  besides the recent files entry and Spectacle's setting above - a notification of it, a
+  clipboard history, KDE's activity history - stays as the desktop keeps it.
 - **Answers are written by language models**, and web search results come from the open
   web: either can be wrong, or written to mislead.
 

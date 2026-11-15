@@ -9,6 +9,8 @@ folders fresh temporary ones, no session bus of the user's): the attach dialog a
 <input type="file">, a list seeded with an entry older than 30 days and the chosen file's
 own earlier entry, which must be byte for byte as seeded after GTK's write and after the
 loop has ended - and, with the guard off, isn't (GTK's writes are what the guard undoes).
+And a chooser opened through the guard fits the screen's work area: on a 640x480 screen
+GTK's own size for one is 1096x822, placed off the screen's top left.
 """
 
 import importlib.util
@@ -565,7 +567,8 @@ class Choosers(unittest.TestCase):
         request.get_mime_types_filter.return_value = None
         request.get_selected_files.return_value = None
         with mock.patch.object(recentguard, "keeper", return_value=keeper), \
-                mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)):
+                mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)), \
+                mock.patch.object(recentguard, "_fitting", return_value=lambda: None):
             self.assertTrue(recentguard.answer_file_input(view, request))
             self.assertEqual(calls, ["opened", "show"])
             made[0].handlers[0](made[0], -3)
@@ -628,6 +631,140 @@ class Choosers(unittest.TestCase):
             self.assertRegex(f.read(), r"Gtk\.main\(\)\n\s+finally:\n(\s+#.*\n)*\s+"
                                        r"recentguard\.put_back\(\)")
 
+
+
+class FittingTheScreen(unittest.TestCase):
+    """What a chooser may take of the monitor's work area, and where it goes in it."""
+
+    def test_the_room_is_the_work_area_less_a_margin_on_each_side(self):
+        self.assertEqual(recentguard.fit_room(1280, 800), (1152, 720))
+        self.assertEqual(recentguard.fit_room(640, 480), (576, 432))
+        self.assertEqual(recentguard.fit_room(1920, 1080), (1728, 972))
+        self.assertEqual(recentguard.fit_room(200, 100), (168, 68))     # 16 px at least
+        self.assertEqual(recentguard.fit_room(20, 20), (1, 1))
+
+    def test_a_window_off_the_area_is_moved_in_as_little_as_it_takes(self):
+        area = (0, 26, 1280, 774)               # a bar of 26 px at the top
+        self.assertEqual(recentguard.placed(100, 100, 600, 400, area), (100, 100))
+        self.assertEqual(recentguard.placed(-228, -171, 600, 400, area), (0, 26))
+        self.assertEqual(recentguard.placed(1000, 600, 600, 400, area), (680, 400))
+        # larger than the area: its top left on the area, where its header bar is
+        self.assertEqual(recentguard.placed(-50, -50, 2000, 1000, area), (0, 26))
+        self.assertEqual(recentguard.placed(10, 30, 600, 400, (1280, 0, 1920, 1080)),
+                         (1280, 30))         # a second monitor's area
+
+    def test_run_fits_choosers_while_it_runs_and_stops_after(self):
+        calls = []
+        chooser = mock.Mock(spec=["run", "connect"])
+        chooser.run.side_effect = lambda: calls.append("run") or -6
+        with mock.patch.object(recentguard, "keeper", return_value=mock.Mock()), \
+                mock.patch.object(recentguard, "_fitting",
+                                  side_effect=lambda: calls.append("fit") or
+                                  (lambda: calls.append("unfit"))):
+            recentguard.run(chooser)
+            self.assertEqual(calls, ["fit", "run", "unfit"])
+            calls.clear()
+            chooser.run.side_effect = RuntimeError("gone")
+            with self.assertRaises(RuntimeError):
+                recentguard.run(chooser)
+            self.assertEqual(calls, ["fit", "unfit"])
+        calls.clear()
+        chooser.run.side_effect = lambda: calls.append("run") or -6
+        with mock.patch.object(recentguard, "keeper", return_value=None), \
+                mock.patch.object(recentguard, "_fitting",
+                                  side_effect=lambda: calls.append("fit") or
+                                  (lambda: calls.append("unfit"))):
+            recentguard.run(chooser)        # the list not kept: still fitted
+        self.assertEqual(calls, ["fit", "run", "unfit"])
+
+    def test_a_hook_that_cannot_be_had_never_stops_the_chooser(self):
+        with mock.patch.object(recentguard, "_fit_choosers", side_effect=RuntimeError("no")), \
+                mock.patch.object(recentguard, "_say") as said:
+            unfit = recentguard._fitting()
+        unfit()
+        said.assert_called_once()
+
+    def test_fit_holds_the_window_to_the_room_and_keeps_it_on_the_area(self):
+        """fit(): geometry hints of the room, a default size no larger, and a map-event
+        handler that keeps it on the area; anything failing is said, never raised."""
+        from gi.repository import Gdk
+        window = mock.Mock()
+        window.get_default_size.return_value = (1096, 822)
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+            recentguard.fit(window)
+        hints, flags = window.set_geometry_hints.call_args[0][1:]
+        self.assertEqual((hints.max_width, hints.max_height), (576, 432))
+        self.assertEqual(flags, Gdk.WindowHints.MAX_SIZE)
+        window.set_default_size.assert_called_once_with(576, 432)
+        window.connect.assert_called_once_with("map-event", recentguard._keep_on)
+        window = mock.Mock()
+        window.get_default_size.return_value = (-1, -1)     # GTK's own: left to the hints
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+            recentguard.fit(window)
+        window.set_default_size.assert_not_called()
+        with mock.patch.object(recentguard, "_area", side_effect=RuntimeError("no screen")), \
+                mock.patch.object(recentguard, "_say") as said:
+            recentguard.fit(mock.Mock())
+        said.assert_called_once()
+
+    def test_a_pages_file_input_and_pywebviews_dialog_are_fitted_until_they_answer(self):
+        calls = []
+        fitting = mock.patch.object(recentguard, "_fitting", side_effect=lambda: calls.append(
+            "fit") or (lambda: calls.append("unfit")))
+        made = []
+
+        class Native:
+            def __init__(self):
+                self.handlers = []
+
+            def connect(self, name, handler):
+                self.handlers.append(handler)
+
+            def show(self):
+                calls.append("show")
+
+            def __getattr__(self, name):
+                return lambda *a: None
+
+        class FileChooserNative:
+            @staticmethod
+            def new(*_args):
+                made.append(Native())
+                return made[-1]
+
+        gtk = mock.Mock(FileChooserNative=FileChooserNative)
+        gtk.Window, gtk.OffscreenWindow = type("W", (), {}), type("O", (), {})
+        gtk.ResponseType.ACCEPT = -3
+        request = mock.Mock()
+        request.get_select_multiple.return_value = False
+        request.get_mime_types_filter.return_value = None
+        request.get_selected_files.return_value = None
+        with fitting, mock.patch.object(recentguard, "keeper", return_value=None), \
+                mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)):
+            recentguard.answer_file_input(mock.Mock(), request)
+            self.assertEqual(calls, ["fit", "show"])
+            made[0].handlers[0](made[0], -6)
+        self.assertEqual(calls, ["fit", "show", "unfit"])
+
+        calls.clear()
+
+        class BrowserView:
+            def create_file_dialog(self, *args, **kwargs):
+                calls.append("dialog")
+
+        backend = mock.Mock(BrowserView=BrowserView)
+        platforms = mock.Mock(gtk=backend)
+        modules = {"webview": mock.Mock(platforms=platforms), "webview.platforms": platforms,
+                   "webview.platforms.gtk": backend}
+        for kept in (mock.Mock(), None):
+            BrowserView.create_file_dialog = lambda self, *a, **k: calls.append("dialog")
+            with mock.patch.dict(sys.modules, modules), fitting, \
+                    mock.patch.object(recentguard, "keeper", return_value=kept), \
+                    mock.patch.object(recentguard, "_hook_responses", return_value=lambda: None):
+                recentguard._wrap_pywebview_dialogs()
+                BrowserView().create_file_dialog()
+            self.assertEqual(calls, ["fit", "dialog", "unfit"])
+            calls.clear()
 
 SCRIPT = textwrap.dedent("""
     import json, os, sys
@@ -817,6 +954,129 @@ class ARealChooser(unittest.TestCase):
             self.assertIn("agenda.txt", written)
         self.assertEqual(seen["mode"], 0o600)
 
+
+
+FIT_SCRIPT = textwrap.dedent("""
+    import json, os, sys
+    sys.path.insert(0, {repo!r})
+    from assistant import gtkcompat, recentguard
+    from gi.repository import Gdk, GLib, Gtk
+    from assistant.ui import chat
+
+    how, folder, guarded = sys.argv[1], sys.argv[2], sys.argv[3] == "guarded"
+    if not guarded:
+        recentguard._fitting = lambda: (lambda: None)
+    seen = {{}}
+
+    def measure():
+        # once the chooser is on the screen: where, and how large, then Cancel
+        for window in Gtk.Window.list_toplevels():
+            if isinstance(window, Gtk.FileChooserDialog) and window.get_mapped():
+                frame = window.get_window().get_frame_extents()
+                area = Gdk.Display.get_default().get_monitor(0).get_workarea()
+                seen["frame"] = [frame.x, frame.y, frame.width, frame.height]
+                seen["area"] = [area.x, area.y, area.width, area.height]
+                window.response(Gtk.ResponseType.CANCEL)
+                return False
+        return True
+
+    class Window(Gtk.Window):
+        def attach_files(self, paths):
+            seen["chosen"] = paths
+
+    class Request:
+        def get_select_multiple(self):
+            return False
+        def get_mime_types_filter(self):
+            return None
+        def get_selected_files(self):
+            return None
+        def select_files(self, paths):
+            Gtk.main_quit()
+        def cancel(self):
+            Gtk.main_quit()
+
+    window = Window()
+    window.set_default_size(300, 200)
+    window.move(500, 380)              # near the screen's bottom right
+    window.show()
+
+    def choose():
+        GLib.timeout_add(400, measure)
+        if how == "attach":
+            chat.ChatWindow._choose_attachments(window)
+            Gtk.main_quit()
+        elif how == "save":
+            chat.ChatWindow._last_save_folder = folder
+            chat.ChatWindow._ask_save_path(window, "Save", "notes.txt", "Text", "*.txt",
+                                           "text/plain")
+            Gtk.main_quit()
+        else:
+            view = type("View", (), {{"get_toplevel": lambda self: window}})()
+            recentguard.answer_file_input(view, Request())
+        return False
+
+    GLib.idle_add(choose)
+    Gtk.main()
+    print("RESULT", json.dumps(seen), flush=True)
+""")
+
+
+@unittest.skipUnless(shutil.which("xvfb-run") and _gi(), "needs Xvfb and PyGObject")
+class AChooserFitsTheScreen(unittest.TestCase):
+    """On a 640x480 screen, a parent window near its bottom right: GTK's own chooser is
+    1096x822, its top left off the screen; through the guard it lies inside the work area."""
+
+    def show(self, how, guarded):
+        top = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, top, True)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
+               "GTK_USE_PORTAL": "0", "NO_AT_BRIDGE": "1", "GSETTINGS_BACKEND": "memory",
+               "GIO_USE_VFS": "local"}
+        for name, sub in (("HOME", "home"), ("XDG_DATA_HOME", "data"),
+                          ("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache"),
+                          ("XDG_RUNTIME_DIR", "run")):
+            env[name] = os.path.join(top, sub)
+            os.mkdir(env[name], 0o700)
+        script = os.path.join(top, "fit.py")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(FIT_SCRIPT.format(repo=REPO))
+        command = ["xvfb-run", "-a", "-s", "-screen 0 640x480x24"]
+        if shutil.which("dbus-run-session"):
+            command += ["dbus-run-session", "--"]
+        command += [sys.executable, "-I", script, how, env["HOME"],
+                    "guarded" if guarded else "unguarded"]
+        done = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180,
+                              check=False)
+        self.assertEqual(done.returncode, 0, done.stderr[-3000:])
+        results = [line[len("RESULT "):] for line in done.stdout.splitlines()
+                   if line.startswith("RESULT ")]
+        self.assertEqual(len(results), 1, done.stdout[-3000:] + done.stderr[-3000:])
+        seen = json.loads(results[0])
+        self.assertIn("frame", seen, done.stderr[-3000:])
+        return seen["frame"], seen["area"]
+
+    def assertInside(self, frame, area):
+        x, y, width, height = frame
+        left, top, across, down = area
+        self.assertGreaterEqual(x, left, frame)
+        self.assertGreaterEqual(y, top, frame)
+        self.assertLessEqual(x + width, left + across, frame)
+        self.assertLessEqual(y + height, top + down, frame)
+
+    def test_the_attach_dialog_lies_inside_the_work_area(self):
+        self.assertInside(*self.show("attach", guarded=True))
+
+    def test_the_save_dialog_lies_inside_the_work_area(self):
+        self.assertInside(*self.show("save", guarded=True))
+
+    def test_a_pages_file_input_lies_inside_the_work_area(self):
+        self.assertInside(*self.show("input", guarded=True))
+
+    def test_gtks_own_chooser_on_this_screen_does_not(self):
+        """What the guard changes: unfitted, the chooser is larger than the screen."""
+        frame, area = self.show("attach", guarded=False)
+        self.assertGreater(frame[2] * frame[3], area[2] * area[3])
 
 if __name__ == "__main__":
     unittest.main()

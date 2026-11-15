@@ -1406,6 +1406,38 @@ class Manager(TempDir):
         self.assertFalse(os.path.exists(path + ".da-assistant.bak"))
         self.assertEqual(host.calls, [])
 
+    def test_a_first_start_with_no_shortcuts_writes_no_settings(self):
+        """Nothing chosen, nothing written into the desktop: config.json is not written
+        either. It was, on every desktop that takes the shortcuts, with every setting at
+        its default - settings nobody had chosen (seen on Omarchy's Hyprland)."""
+        os.makedirs(os.path.join(self.dir, "hypr"))
+        with open(os.path.join(self.dir, "hypr", "hyprland.lua"), "w") as f:
+            f.write('hl.bind("SUPER + Q", hl.dsp.exec_cmd("kitty"))\n')
+        cinnamon = FakeCinnamon.with_the_users()
+        for desktop, host in (("hyprland", FakeHost()), ("sway", FakeHost()),
+                              ("cinnamon", cinnamon), ("gnome", FakeHost())):
+            with self.subTest(desktop=desktop):
+                config = self.config()
+                with Patched(session_of(desktop=desktop)), \
+                        mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.dir}):
+                    manager = self.manager(config, host)
+                    manager.start()
+                self.assertEqual((manager.mode, manager.error), ("desktop", None))
+                self.assertFalse(os.path.exists(config.config_file), desktop)
+
+    def test_shortcuts_taken_back_out_are_still_recorded(self):
+        """Once the app has written shortcuts, clearing them all is recorded: the record
+        says the desktop holds none of the app's any more."""
+        config = self.config()
+        config.hotkeys = {"ocr_only": "<Control><Shift>5"}
+        host = FakeHost("['custom0']")
+        with Patched(session_of(desktop="cinnamon")):
+            self.manager(config, host).start()
+            config.hotkeys = {}
+            self.manager(config, host).start()
+        self.assertEqual(self.config().hotkeys_installed["bindings"], {})
+        self.assertEqual(host.listed, "['custom0']")
+
     def test_a_config_with_latin1_in_it_is_written_and_the_app_starts(self):
         # Read as strict UTF-8 it raised UnicodeDecodeError out of start(), which runs
         # in the app's constructor: the app stopped at every start.

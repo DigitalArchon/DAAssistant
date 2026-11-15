@@ -820,7 +820,15 @@ class HotkeyManager:
         record = {"mechanism": target, "bindings": bind,
                   "launcher": keybindings.launcher(), "into": found.describe(),
                   "labels": {action: named[action] for action in bind}}
-        if (getattr(self.config, "hotkeys_installed", None) or {}) == record:
+        installed = getattr(self.config, "hotkeys_installed", None) or {}
+        if installed == record:
+            return
+        if not bind and not installed:
+            # No shortcut to write and none of the app's in the desktop: nothing to do,
+            # and nothing to record. Recording it saved config.json - and with it every
+            # setting at its default, settings nobody had chosen - at the first start of
+            # every session whose desktop takes the shortcuts (Hyprland, Sway, Cinnamon,
+            # GNOME before 48), before anything was set up.
             return
         try:
             found.apply(bind, named, action_names(), self._settled)

@@ -22,9 +22,10 @@ the process on every quit. A context of our own is freed while Python still runs
 """
 
 import html
+import os
 import re
 
-from .. import gtkcompat
+from .. import gtkcompat, paths
 from gi.repository import Gio, GLib
 
 from ..reference import ruffle
@@ -48,10 +49,27 @@ def install(encyclopedia):
         _encyclopedia = encyclopedia
 
 
+def webkit_folders():
+    """Where WebKit keeps what it keeps for the app's views - the HSTS list, the salts of
+    its media keys and of the pages' storage, its caches: the program's name under the
+    user's data folder and cache folder, as its default website data manager has it
+    ($XDG_DATA_HOME/da-assistant, $XDG_CACHE_HOME/da-assistant)."""
+    name = GLib.get_prgname() or gtkcompat.PROGRAM
+    return [os.path.join(GLib.get_user_data_dir(), name),
+            os.path.join(GLib.get_user_cache_dir(), name)]
+
+
 def context():
-    """The WebKit context every view of the app's is made with, enc:// on it."""
+    """The WebKit context every view of the app's is made with, enc:// on it.
+
+    The folders WebKit writes in for it are made the owner's alone first (paths.own_folder),
+    as every folder of the app's own is: WebKit makes them with the umask's permissions
+    (0775 or 0755), which left the data folder, and what WebKit keeps in it, open to
+    every user of the computer."""
     global _context
     if _context is None and WebKit2 is not None:
+        for folder in webkit_folders():
+            paths.own_folder(folder)
         _context = WebKit2.WebContext.new()
         _context.register_uri_scheme(SCHEME, _on_request)
         security = _context.get_security_manager()

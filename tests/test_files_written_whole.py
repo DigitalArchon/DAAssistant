@@ -22,6 +22,7 @@ import support  # noqa: E402,F401  (the suite's own cache, before the app is imp
 
 from assistant import gtkcompat  # noqa: E402,F401  (pins GI versions)
 from assistant import atomic, errors, keybindings, models, paths, webkitguard  # noqa: E402
+from assistant.ui import encscheme  # noqa: E402
 from assistant.config import Config  # noqa: E402
 from assistant.keychain import MemoryKeychain  # noqa: E402
 
@@ -145,6 +146,35 @@ class TheAppsFiles(Case):
         os.chmod(folder, 0o775)
         paths.own_folder(folder)
         self.assertEqual(mode_of(folder), 0o700)
+
+    def test_webkits_folders_are_made_the_owners_before_its_context_is(self):
+        """WebKit keeps the HSTS list and the salts of its media keys and storage in
+        $XDG_DATA_HOME/da-assistant, and made that folder with the umask's permissions
+        (0775 on Ubuntu 26.04): it is made the owner's alone before the context
+        that writes there is, and so is one an older version left open."""
+        from gi.repository import GLib
+        # where WebKit's default website data manager keeps them, by the program's name
+        data, cache = (os.path.join(base, GLib.get_prgname())
+                       for base in (GLib.get_user_data_dir(), GLib.get_user_cache_dir()))
+        for folder, home in ((data, "XDG_DATA_HOME"), (cache, "XDG_CACHE_HOME")):
+            # the suite's own folders (support.py), never those of whoever runs it
+            self.assertTrue(folder.startswith(os.environ[home] + os.sep), folder)
+            self.assertEqual(os.path.basename(folder), "da-assistant")
+        for folder in (data, cache):
+            os.makedirs(folder, exist_ok=True)
+            os.chmod(folder, 0o775)
+        seen = []
+
+        def new():
+            seen.append((mode_of(data), mode_of(cache)))
+            return mock.MagicMock()
+
+        webkit = mock.MagicMock()
+        webkit.WebContext.new.side_effect = new
+        with mock.patch.object(encscheme, "WebKit2", webkit), \
+                mock.patch.object(encscheme, "_context", None):
+            encscheme.context()
+        self.assertEqual(seen, [(0o700, 0o700)])
 
 
 class AnAnswerSaved(Case):

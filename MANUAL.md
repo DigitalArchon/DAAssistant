@@ -1318,8 +1318,11 @@ unnamed, and the badge's tooltip says why.
 | Settings | `~/.config/da-assistant/config.json`, readable only by you (`0600`) |
 | API keys, and passwords written into an address | your desktop's keyring - GNOME Keyring, or KWallet on Plasma - under `da-assistant`, one entry per provider, and one per address with a password in it |
 | Model lists, dictionary index, error log | `~/.cache/da-assistant` (or `$XDG_CACHE_HOME/da-assistant`) |
-| The encyclopedia's database, the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` |
+| The encyclopedia's database, what WebKit keeps for the chat view and the articles (its HSTS list, the salts of its storage), the Private Mode client and Ruffle when run from source | `~/.local/share/da-assistant` (or `$XDG_DATA_HOME/da-assistant`) |
 | A hidden launcher entry, for the GlobalShortcuts portal (KDE, GNOME 48+) only | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
+
+The three `da-assistant` folders are readable only by you, made so if an older version
+or WebKit left them open.
 
 An API key is never written to `config.json`. The keyring encrypts it and unlocks it
 with your login. A key that an older version left in `config.json` is moved into the

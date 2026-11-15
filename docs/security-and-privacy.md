@@ -301,16 +301,16 @@ Tinfoil's router - beside its badge: *TEE · verified · run by Fortanix*.
 | API keys, and passwords written into addresses | your desktop's keyring, under `da-assistant` |
 | Model lists, the dictionary index, the error log (readable only by you), a note the chat view keeps of WebKit failing | `~/.cache/da-assistant` |
 | Every image sent, only with **Save every image sent** ticked (Settings > Advanced, off by default) | `~/.cache/da-assistant/captures` |
-| The encyclopedia's database; Tinfoil's client and Ruffle, when the app is run from source | `~/.local/share/da-assistant` |
+| The encyclopedia's database; what WebKit keeps for the chat view and the articles (its HSTS list, and the salts of its storage); Tinfoil's client and Ruffle, when the app is run from source | `~/.local/share/da-assistant` |
 | Sigstore's trust root, once a `private/` model has been attested | Tinfoil's client keeps it in `sigstore-python`'s own folders, `~/.local/share/sigstore-python` and `~/.cache/sigstore-python` |
 | A hidden launcher entry, for desktops whose shortcuts go through the GlobalShortcuts portal | `~/.local/share/applications/org.digitalarchon.DAAssistant.desktop` |
 | Shortcuts, where the app writes them into your desktop's own keybindings | that desktop's own settings |
 
 The app's folders - `~/.config/da-assistant`, `~/.cache/da-assistant`,
-`~/.local/share/da-assistant` - are readable only by you, made so if an older version or
-anything else left them open. Each file is written whole or not at all: to a file of its
-own name beside it, flushed to the disk, then put in its place, so that a crash or a power
-cut leaves the old file or the new, never half of one.
+`~/.local/share/da-assistant` - are readable only by you, made so if an older version,
+WebKit or anything else left them open. Each file the app writes is written whole or not at
+all: to a file of its own name beside it, flushed to the disk, then put in its place, so
+that a crash or a power cut leaves the old file or the new, never half of one.
 
 Kept in memory only, and gone when the app quits: conversations and their captures and
 attachments, what each enclave proved, the RedPill session records read (64 at most),

@@ -653,6 +653,110 @@ class FittingTheScreen(unittest.TestCase):
         self.assertEqual(recentguard.placed(10, 30, 600, 400, (1280, 0, 1920, 1080)),
                          (1280, 30))         # a second monitor's area
 
+    def test_on_hyprland_the_room_is_what_stays_on_the_area_centred_on_the_parent(self):
+        """Hyprland centres a dialog on its parent and keeps neither on the screen: a parent
+        tiled to the right half of 1280x800 leaves 614 px across (seen: the chooser 874 px
+        wide, Choose off the screen), one in the middle the whole room."""
+        room, area = (1152, 720), (0, 0, 1280, 800)
+        self.assertEqual(recentguard.around_centre(room, (646, 38, 622, 750), area), (614, 720))
+        self.assertEqual(recentguard.around_centre(room, (12, 38, 1256, 750), area), (1152, 720))
+        self.assertEqual(recentguard.around_centre(room, (1100, 600, 180, 200), area),
+                         (480, 360))         # never under the floor
+        self.assertEqual(recentguard.within_parent(room, (874, 700)), (874, 700))
+        self.assertEqual(recentguard.within_parent(room, (300, 200)), (480, 360))
+        self.assertEqual(recentguard.within_parent(room, (2000, 900)), (1152, 720))
+
+    def test_only_a_hyprland_session_on_wayland_centres_on_the_parent(self):
+        def window(name):
+            made = mock.Mock()
+            made.get_display.return_value.__gtype__ = mock.Mock()
+            made.get_display.return_value.__gtype__.name = name
+            return made
+
+        for kind, env, centres in (("GdkWaylandDisplay", {"XDG_CURRENT_DESKTOP": "Hyprland"}, True),
+                                   ("GdkWaylandDisplay", {"HYPRLAND_INSTANCE_SIGNATURE": "a_1"},
+                                    True),
+                                   ("GdkWaylandDisplay", {"XDG_CURRENT_DESKTOP": "GNOME"}, False),
+                                   ("GdkWaylandDisplay", {"XDG_CURRENT_DESKTOP": "KDE"}, False),
+                                   ("GdkX11Display", {"XDG_CURRENT_DESKTOP": "Hyprland"}, False)):
+            with self.subTest(kind=kind, env=env), mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(recentguard._centres_on_parent(window(kind)), centres)
+
+    def test_hyprlands_answer_names_the_parents_place_and_nothing_else(self):
+        import socket
+        import threading
+        runtime = tempfile.mkdtemp(dir="/tmp")         # a socket's path must be short
+        self.addCleanup(shutil.rmtree, runtime, True)
+        os.makedirs(os.path.join(runtime, "hypr", "abc_1"))
+        path = os.path.join(runtime, "hypr", "abc_1", ".socket.sock")
+        answers = []
+
+        def serve(listening):
+            while answers:
+                connection, _ = listening.accept()
+                with connection:
+                    asked = connection.recv(100)
+                    self.assertEqual(asked, b"j/clients")
+                    connection.sendall(answers.pop(0))
+
+        def place(answer, title="Settings"):
+            answers.append(answer)
+            listening = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            if os.path.exists(path):
+                os.unlink(path)
+            listening.bind(path)
+            listening.listen(1)
+            server = threading.Thread(target=serve, args=(listening,))
+            server.start()
+            parent = mock.Mock()
+            parent.get_title.return_value = title
+            env = {"XDG_RUNTIME_DIR": runtime, "HYPRLAND_INSTANCE_SIGNATURE": "abc_1"}
+            try:
+                with mock.patch.dict(os.environ, env):
+                    return recentguard._hyprland_place(parent)
+            finally:
+                server.join(5)
+                listening.close()
+
+        ours = {"pid": os.getpid(), "title": "Settings", "at": [646, 38], "size": [622, 750]}
+        others = [{"pid": 1, "title": "Settings", "at": [0, 0], "size": [10, 10]},
+                  {"pid": os.getpid(), "title": "Ask anything", "at": [12, 38],
+                   "size": [622, 750]}]
+        self.assertEqual(place(json.dumps(others + [ours]).encode()), (646, 38, 622, 750))
+        self.assertIsNone(place(json.dumps(others).encode()))
+        self.assertIsNone(place(json.dumps([dict(ours, hidden=True)]).encode()))
+        self.assertIsNone(place(json.dumps([dict(ours, at=["1", 2])]).encode()))
+        self.assertIsNone(place(json.dumps([dict(ours, at=[True, 2])]).encode()))
+        self.assertIsNone(place(b"[" * 40 + b"]" * 40))          # nested past any answer's
+        self.assertIsNone(place(b"not json"))
+        self.assertIsNone(place(json.dumps({"error": "no"}).encode()))
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime,
+                                          "HYPRLAND_INSTANCE_SIGNATURE": "gone_2"}):
+            self.assertIsNone(recentguard._hyprland_place(mock.Mock()))     # no socket
+        for instance in ("../x", "", ".."):
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime,
+                                              "HYPRLAND_INSTANCE_SIGNATURE": instance}):
+                self.assertIsNone(recentguard._hyprland_place(mock.Mock()))
+        self.assertEqual(recentguard._deepest('{"a": "[[[", "b": [[1], {"c": "\\""}]}'), 3)
+
+    def test_fit_on_hyprland_holds_the_chooser_to_the_room_around_its_parent(self):
+        window = mock.Mock()
+        window.get_default_size.return_value = (-1, -1)
+        window.get_transient_for.return_value.get_size.return_value = (874, 750)
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 1280, 800)), \
+                mock.patch.object(recentguard, "_centres_on_parent", return_value=True), \
+                mock.patch.object(recentguard, "_hyprland_place",
+                                  return_value=(646, 38, 622, 750)):
+            recentguard.fit(window)
+        hints = window.set_geometry_hints.call_args[0][1]
+        self.assertEqual((hints.max_width, hints.max_height), (614, 720))
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 1280, 800)), \
+                mock.patch.object(recentguard, "_centres_on_parent", return_value=True), \
+                mock.patch.object(recentguard, "_hyprland_place", return_value=None):
+            recentguard.fit(window)            # the place not known: the parent's size
+        hints = window.set_geometry_hints.call_args[0][1]
+        self.assertEqual((hints.max_width, hints.max_height), (874, 720))
+
     def test_run_fits_choosers_while_it_runs_and_stops_after(self):
         calls = []
         chooser = mock.Mock(spec=["run", "connect"])
@@ -690,7 +794,8 @@ class FittingTheScreen(unittest.TestCase):
         from gi.repository import Gdk
         window = mock.Mock()
         window.get_default_size.return_value = (1096, 822)
-        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)), \
+                mock.patch.object(recentguard, "_centres_on_parent", return_value=False):
             recentguard.fit(window)
         hints, flags = window.set_geometry_hints.call_args[0][1:]
         self.assertEqual((hints.max_width, hints.max_height), (576, 432))
@@ -699,7 +804,8 @@ class FittingTheScreen(unittest.TestCase):
         window.connect.assert_called_once_with("map-event", recentguard._keep_on)
         window = mock.Mock()
         window.get_default_size.return_value = (-1, -1)     # GTK's own: left to the hints
-        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)):
+        with mock.patch.object(recentguard, "_area", return_value=(0, 0, 640, 480)), \
+                mock.patch.object(recentguard, "_centres_on_parent", return_value=False):
             recentguard.fit(window)
         window.set_default_size.assert_not_called()
         with mock.patch.object(recentguard, "_area", side_effect=RuntimeError("no screen")), \

@@ -170,6 +170,31 @@ class Settings(Case):
         run_until(lambda: dialog.get_size()[0] == 600, timeout=3)
         self.assertEqual(dialog.get_size()[0], 600)      # no longer held at its old least
 
+    def test_settings_fit_an_800_px_screen_and_open_no_taller_than_its_work_area(self):
+        """Under GNOME's theme on a 1280x800 screen Settings' least height was its tallest
+        page's, 846 px, taller than the screen: Save and Cancel sat half off its bottom edge.
+        Every page scrolls down as well as across now, so its least height is a small part
+        of such a screen (this test's theme draws it some 100 px shorter than Adwaita
+        does), and it opens no taller than the work area, as tall as its pages would have
+        it where there is room."""
+        dialog = self.dialog()
+        least, natural = dialog.get_preferred_height()
+        self.assertLessEqual(least, 500)
+        pages = [dialog.notebook.get_nth_page(i) for i in range(dialog.notebook.get_n_pages())]
+        self.assertTrue(all(page.get_policy()[1] != Gtk.PolicyType.NEVER for page in pages))
+        tallest = max(page.get_preferred_height()[1] for page in pages)
+        self.assertGreater(natural, tallest)             # still asks for its tallest page
+        with mock.patch.object(SettingsDialog, "_room", return_value=(1216, 692)):
+            small = self.dialog()
+        self.assertLessEqual(small.get_default_size()[1], 692)
+        self.assertLessEqual(small.get_default_size()[0], 1216)
+        with mock.patch.object(SettingsDialog, "_room", return_value=(1824, 1000)):
+            roomy = self.dialog()
+        self.assertGreaterEqual(roomy.get_default_size()[1], natural)
+        small.resize(600, 500)
+        run_until(lambda: small.get_size()[1] == 500, timeout=3)
+        self.assertEqual(small.get_size()[1], 500)       # not held at its tallest page
+
 
 class Colours(unittest.TestCase):
     def test_each_status_colour_reads_on_its_theme(self):

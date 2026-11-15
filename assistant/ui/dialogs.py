@@ -744,10 +744,13 @@ class SettingsDialog(Gtk.Dialog):
         content.set_margin_bottom(12)
 
         # Settings fits a window half a 1280 px screen wide - a tiling compositor's half
-        # tile (Hyprland) - with nothing cut off: its tabs scroll rather than set its
-        # width, and each page scrolls across rather than make the dialog as wide as its
-        # widest row. Up to 4.4.0 its least width was the Reference page's, some 875 px,
-        # and the window's right edge was cut off in a half tile.
+        # tile (Hyprland) - and a screen 800 px high, with nothing cut off: its tabs
+        # scroll rather than set its width, and each page scrolls across and down rather
+        # than make the dialog as large as its widest row and its tallest page. Up to
+        # 4.4.0 its least width was the Reference page's, some 875 px, and the window's
+        # right edge was cut off in a half tile; its least height, the tallest page's
+        # (846 px under GNOME's theme), put Save and Cancel half off the bottom of an
+        # 800 px screen.
         notebook = self.notebook = Gtk.Notebook()
         notebook.set_scrollable(True)
         content.pack_start(notebook, True, True, 0)
@@ -786,9 +789,15 @@ class SettingsDialog(Gtk.Dialog):
         # Save asks first, where it must: before a key goes unencrypted, and about a
         # saved key whose address was moved (_on_response).
         self.connect("response", self._on_response)
-        # Opened as wide as its pages would have it, as before: only its least width went.
+        # Opened as large as its pages would have it, as before, but never larger than
+        # the work area of the screen it opens on: only its least size went.
         content.show_all()
-        self.set_default_size(max(680, self.get_preferred_width()[1]), -1)
+        width = max(680, self.get_preferred_width()[1])
+        height = self.get_preferred_height()[1]
+        room = self._room(parent)
+        if room is not None:
+            width, height = min(width, room[0]), min(height, room[1])
+        self.set_default_size(width, height)
         self.show_all()
         self._sync_url_warning()
         self._sync_search_sensitivity()
@@ -1114,13 +1123,36 @@ class SettingsDialog(Gtk.Dialog):
     @staticmethod
     def _roomy(page):
         """A page that scrolls across where the dialog is narrower than its widest row (a
-        half tile), and is as wide as that row otherwise: its least width is not the
-        dialog's."""
+        half tile) and down where it is shorter than the page (an 800 px screen), and is
+        as large as the page otherwise: its least size is not the dialog's."""
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled.set_propagate_natural_width(True)
+        scrolled.set_propagate_natural_height(True)
         scrolled.add(page)
         return scrolled
+
+    @staticmethod
+    def _room(parent):
+        """The most Settings opens at: the work area of the monitor it opens on (its
+        parent's, else the primary or first) less a margin on each side - 5%, at least
+        16 px - or None where no monitor is known."""
+        display = Gdk.Display.get_default()
+        if display is None:
+            return None
+        monitor = None
+        surface = parent.get_window() if parent is not None else None
+        if surface is not None:
+            monitor = display.get_monitor_at_window(surface)
+        if monitor is None:
+            monitor = display.get_primary_monitor() or (
+                display.get_monitor(0) if display.get_n_monitors() else None)
+        if monitor is None:
+            return None
+        area = monitor.get_workarea()
+        across = max(16, int(area.width * 0.05))
+        down = max(16, int(area.height * 0.05))
+        return max(1, area.width - 2 * across), max(1, area.height - 2 * down)
 
     def _sync_url_warning(self, _entry=None):
         if not hasattr(self, "url_warning"):        # still being built

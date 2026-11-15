@@ -15,6 +15,10 @@ debug captures under $XDG_CACHE_HOME/da-assistant, decided when it is first impo
 and write model lists; all of that has to land somewhere that goes away with the run, not
 in the cache of whoever runs the tests - where a simulated failure reads as a real one,
 and a run killed mid-window leaves a strike that switches their app to plain text.
+
+$XDG_DATA_HOME is a folder of the run's own too, set before GTK is: a file chooser's code
+path makes GTK's recent files manager (recentguard), which reads the recent files list
+there and writes it as the loop ends, and no test may touch the list of whoever runs it.
 """
 
 import atexit
@@ -33,6 +37,8 @@ if "DA_ASSISTANT_TEST_CACHE" not in os.environ:
     atexit.register(shutil.rmtree, CACHE, ignore_errors=True)
 else:
     CACHE = os.environ["DA_ASSISTANT_TEST_CACHE"]
+os.environ["XDG_DATA_HOME"] = os.path.join(CACHE, "data")
+os.makedirs(os.environ["XDG_DATA_HOME"], mode=0o700, exist_ok=True)
 
 # No test reaches the network for a model list. A request that finds no cached list
 # fetches one first (models.ensure_listed), from wherever the test's settings point -

@@ -18,7 +18,7 @@ from gi.repository import Gdk, GLib, Gtk, Pango
 from . import (bubbles, find, keys, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
 from .. import (atomic, attachments, models as catalogue, privacy as privacy_module,
-                prompts, providers, websearch)
+                prompts, providers, recentguard, websearch)
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -1765,7 +1765,8 @@ class ChatWindow(Gtk.Window):
         everything.add_pattern("*")
         for chosen in (both, pictures, texts, everything):
             dialog.add_filter(chosen)
-        accepted = dialog.run() == Gtk.ResponseType.ACCEPT
+        # the files chosen kept out of the desktop's recent files list (recentguard)
+        accepted = recentguard.run(dialog) == Gtk.ResponseType.ACCEPT
         paths = dialog.get_filenames() if accepted else []
         dialog.destroy()
         self.attach_files(paths)
@@ -2887,7 +2888,7 @@ class ChatWindow(Gtk.Window):
         files.add_pattern(pattern)
         files.add_mime_type(mime)
         dialog.add_filter(files)
-        accepted = dialog.run() == Gtk.ResponseType.ACCEPT
+        accepted = recentguard.run(dialog) == Gtk.ResponseType.ACCEPT
         path = dialog.get_filename() if accepted else None
         dialog.destroy()
         if path:

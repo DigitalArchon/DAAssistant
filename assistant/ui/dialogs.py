@@ -14,7 +14,7 @@ from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
 from .. import (errors, imaging, llm as llm_module, netguard, privacy as privacy_module,
-                providers, proxy as proxy_module, sealed, websearch)
+                providers, proxy as proxy_module, recentguard, sealed, websearch)
 from ..vendored import location as vendored_location
 from . import keys
 from .model_browser import ModelBrowser
@@ -1720,7 +1720,8 @@ class SettingsDialog(Gtk.Dialog):
         current = os.path.expanduser(self.encyclopedia_dir.get_text().strip())
         if os.path.isdir(current):
             dialog.set_current_folder(current)
-        if dialog.run() == Gtk.ResponseType.ACCEPT:
+        # the folder chosen kept out of the desktop's recent files list (recentguard)
+        if recentguard.run(dialog) == Gtk.ResponseType.ACCEPT:
             self.encyclopedia_dir.set_text(dialog.get_filename() or "")
         dialog.destroy()
 
@@ -1788,7 +1789,7 @@ class SettingsDialog(Gtk.Dialog):
         current = os.path.expanduser(self.dictionaries_dir.get_text().strip())
         if os.path.isdir(current):
             dialog.set_current_folder(current)
-        if dialog.run() == Gtk.ResponseType.ACCEPT:
+        if recentguard.run(dialog) == Gtk.ResponseType.ACCEPT:
             self.dictionaries_dir.set_text(dialog.get_filename() or "")
             self._list_dictionaries()
         dialog.destroy()

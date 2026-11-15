@@ -7,7 +7,7 @@ from gi.repository import Gdk, GLib, Gtk
 
 from . import (APP_ID, APP_NAME, clipboard, coredumps, errors, icon as app_icon, imaging,
                 ipc, netguard, proxy, models as catalogue, privacy as privacy_module,
-                prompts, providers, webkitguard)
+                prompts, providers, recentguard, webkitguard)
 from .capture import CANCELLED, CaptureManager
 from .config import Config
 from .keychain import KeychainError
@@ -1364,4 +1364,9 @@ class Assistant:
               f"{len(self.hotkeys.wanted)} bound")
         if self.hotkeys.problems or self.hotkeys.error:
             print(f"  not bound     : {self.hotkeys.error or self.hotkeys.problems}")
-        Gtk.main()
+        try:
+            Gtk.main()
+        finally:
+            # GTK writes the recent files list from its model as the loop ends: put back
+            # what a file chooser of the app's changed in it (recentguard)
+            recentguard.put_back()

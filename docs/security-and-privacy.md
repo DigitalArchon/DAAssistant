@@ -341,6 +341,14 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
   GNOME's screenshot portal and KDE's Spectacle add it), and Spectacle's record of where
   it last saved (`lastImageSaveLocation` in `~/.config/spectaclerc`), put back as it was.
   Only that entry and that setting change; the rest of both files stays as it was.
+- **What a file chooser leaves behind.** GTK's file chooser - Attach, Save, the
+  encyclopedia's and the dictionaries' folders - adds every file chosen to your recent
+  files list (`~/.local/share/recently-used.xbel`), and rewrites the whole list as it does,
+  dropping every entry older than 30 days, then again as the app quits. The app puts the
+  list back as it was, byte for byte, after each of those writes. A change another program
+  makes to the list in the quarter of a second after you choose a file, or as the app
+  quits, is lost, as GTK's own write would lose it. (Switching recent files off for the app
+  instead would make GTK empty your whole list.)
 - **The pages the app shows.** The chat view and the encyclopedia's articles load nothing
   from the internet and run no script that came in an answer or an article: nothing in
   them can call home or take the view to another page. A link opens in your browser only

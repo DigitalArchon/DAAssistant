@@ -28,7 +28,7 @@ from urllib.parse import unquote
 from .. import gtkcompat  # noqa: F401
 from gi.repository import Gio, GLib, Gtk, Pango
 
-from .. import hostenv, netguard
+from .. import hostenv, netguard, recentguard
 
 EXTERNAL = ("http://", "https://", "mailto:")
 
@@ -139,6 +139,9 @@ class Guard:
         self._kept = _kept_actions(webkit)
         view.connect("decide-policy", self._on_decide_policy)
         view.connect("context-menu", self._on_context_menu)
+        # a page's <input type="file"> (none of ours has one): the file chooser WebKit's
+        # own would run, the files chosen kept out of the recent files list
+        view.connect("run-file-chooser", recentguard.answer_file_input)
 
     def expect(self, uri):
         """The view is about to load `uri` itself (load_html's base, or about:blank)."""

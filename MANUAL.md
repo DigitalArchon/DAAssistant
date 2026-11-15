@@ -1348,6 +1348,12 @@ which the kernel writes none - and closes its memory to other programs but for t
 moment it asks the desktop's portal for a screenshot or its shortcuts, which answers no
 process that has. Its file dialogs are GTK's own for the same reason. See
 [What is kept on this computer](docs/security-and-privacy.md#what-is-kept-on-this-computer).
+Nor does a file you attach or save, or a folder you choose, leave a trace in your recent
+files list (`~/.local/share/recently-used.xbel`): GTK's file chooser adds each one to it,
+and the app puts the list back as it was, byte for byte. A capture's file, read into
+memory and deleted at once, is taken out of that list too, and out of Spectacle's record
+of where it last saved, on KDE. See
+[Other protections](docs/security-and-privacy.md#other-protections).
 
 A value edited into `config.json` by hand is read as its setting's kind where that is
 plain (`"3600"` for a number, `"true"` for a tick); one that cannot be is left out, its

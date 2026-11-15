@@ -133,8 +133,10 @@ needs Tinfoil's client: the AppImage carries it, and from source
 
 An address must be `https://`. Plain `http://` is accepted only for a server on this
 machine or your local network; anything else is refused, so a key never crosses the
-internet unencrypted. Privacy Mode and web search are NanoGPT's and need its key; the
-manual has [what each provider does](MANUAL.md#providers).
+internet unencrypted; before one first goes over plain http to another machine on your
+network, Settings asks. A key goes only to the address it was saved for: change the
+address, and Settings asks before the key follows it. Privacy Mode and web search are
+NanoGPT's and need its key; the manual has [what each provider does](MANUAL.md#providers).
 
 Your settings are kept in `~/.config/da-assistant/config.json`. API keys are not: they
 go into your desktop's keyring (GNOME Keyring, or KWallet on Plasma), which encrypts

@@ -2,7 +2,7 @@
 
 How DA Assistant handles your security and privacy: what leaves your computer, where it
 goes and when, what is kept on it, and what the app cannot protect you from. It describes
-the app as of 4.4.0. The [manual](../MANUAL.md) says how to use each part; this document
+the app as of 4.5.0. The [manual](../MANUAL.md) says how to use each part; this document
 explains what each part does with your data, and points to the manual for the details.
 
 ## In short
@@ -25,8 +25,8 @@ What leaves this computer:
 
 What does not:
 
-- **An API key goes only to its own provider**, and a password written into an address
-  only to that address.
+- **An API key goes only to its own provider**, at the address it was saved for, and a
+  password written into an address only to that address.
 - **Nothing of yours is sent on the app's own initiative.** There is no telemetry, no
   crash reporting and no update check. In the background the app only refreshes the
   providers' model lists.

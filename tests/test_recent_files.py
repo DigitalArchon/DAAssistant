@@ -298,6 +298,136 @@ class WhatIsWritten(Case):
         self.assertEqual(os.listdir(self.data), ["recently-used.xbel"])
 
 
+STAMP_NOW = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(NOW))
+
+
+class WritesBeforeTheAnswer(Case):
+    """A name typed into a Save dialog (or a place into its location bar) reaches the app a
+    quarter of a second after GTK took the file in: GtkButton holds the default button pressed
+    for 250 ms. A write of GTK's already on its way - its "changed" timer started by another
+    program's change to the list, or by the list put back after the app's previous choice -
+    lands first, with the file in it."""
+
+    def theirs(self):
+        theirs = self.seed.replace(b"</xbel>", entry("file:///srv/theirs.odt") + b"</xbel>")
+        self.write(theirs, 0o640)               # another program's write, GTK re-reads it
+        self.manager.changed()
+        return theirs
+
+    def gtk_writes_first(self, *uris):
+        for uri in uris:
+            self.manager.model[uri] = NOW
+        gtk_writes(self.recent, xbel(entry("file:///srv/theirs.odt"),
+                                     *(entry(uri, STAMP_NOW, APP) for uri in uris)))
+        self.manager.changed()
+
+    def test_a_write_landing_before_the_answer_is_put_back_byte_for_byte(self):
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        theirs = self.theirs()
+        self.gtk_writes_first("file:///home/u/new.pdf")
+        keeper.chose(["file:///home/u/new.pdf"])
+        keeper.closed()
+        self.assertEqual(self.read(), theirs)
+        self.assertEqual(stat.S_IMODE(os.lstat(self.recent).st_mode), 0o640)
+        self.assertFalse(keeper.pending)
+        self.assertEqual(self.timers.waiting, [])
+
+    def test_the_files_in_the_write_that_came_first_are_taken_in_whatever_the_manager_says(
+            self):
+        """The write held them: nothing more is awaited, even where the manager's model is
+        not yet heard from (DA Media Browser's Keeper is told of writes by a file watcher)."""
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        gtk_writes(self.recent, xbel(entry("file:///home/u/new.pdf", STAMP_NOW, APP)))
+        keeper.chose(["file:///home/u/new.pdf"])
+        keeper.closed()
+        self.assertEqual(self.read(), self.seed)
+        self.assertFalse(keeper.pending)
+        self.assertEqual(self.timers.waiting, [])
+
+    def test_without_the_chooser_open_the_write_that_came_first_stays(self):
+        """What opened() is for: told only of the answer, the list holding the file already
+        is taken for the clean copy."""
+        self.write(self.seed)
+        keeper = self.keeper()
+        self.theirs()
+        self.gtk_writes_first("file:///home/u/new.pdf")
+        keeper.chose(["file:///home/u/new.pdf"])
+        self.assertIn(b"new.pdf", self.read())
+
+    def test_another_programs_write_while_it_is_open_stands_when_gtk_writes_after(self):
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        theirs = self.theirs()
+        self.choose(keeper, "file:///home/u/report.pdf")
+        keeper.closed()
+        self.assertEqual(self.read(), theirs)
+        self.assertFalse(keeper.pending)
+
+    def test_a_file_the_list_already_held_from_before_counts_only_as_added_since(self):
+        """notes.txt is in the list from September: the list as the answer comes is clean."""
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        theirs = self.theirs()
+        keeper.chose(["file:///srv/notes.txt"])
+        keeper.closed()
+        self.assertEqual(keeper.clean, recentguard.look(self.recent))
+        self.assertEqual(self.read(), theirs)
+
+    def test_a_list_that_was_not_there_is_taken_away_again(self):
+        keeper = self.keeper()
+        keeper.opened()
+        self.gtk_writes_first("file:///home/u/new.pdf")
+        keeper.chose(["file:///home/u/new.pdf"])
+        keeper.closed()
+        self.assertFalse(os.path.lexists(self.recent))
+
+    def test_the_list_it_opened_on_and_the_newest_are_kept(self):
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        for n in range(recentguard.SEEN * 2):
+            self.write(self.seed + str(n).encode())
+            self.manager.changed()
+        self.assertEqual(len(keeper._seen), recentguard.SEEN)
+        self.assertEqual(keeper._seen[0][1], self.seed)
+        self.assertEqual(keeper._seen[-1][1], self.seed + str(recentguard.SEEN * 2 - 1).encode())
+        keeper.closed()
+        self.assertEqual(keeper._seen, [])
+        self.assertFalse(keeper.watching)
+
+    def test_two_choosers_open_keep_the_lists_until_both_have_answered(self):
+        self.write(self.seed)
+        keeper = self.keeper()
+        keeper.opened()
+        keeper.opened()
+        keeper.closed()
+        self.assertTrue(keeper.watching)
+        theirs = self.theirs()
+        self.gtk_writes_first("file:///home/u/new.pdf")
+        keeper.chose(["file:///home/u/new.pdf"])
+        keeper.closed()
+        self.assertEqual(self.read(), theirs)
+
+    def test_what_a_list_holds_is_read_from_gtks_layout(self):
+        data = xbel(entry("file:///srv/a%20b.txt", STAMP_NOW, APP),
+                    entry("file:///srv/old.txt"), entry("https://example.com/x", STAMP_NOW))
+        found = recentguard.added(data)
+        self.assertEqual(found["/srv/a b.txt"], NOW)
+        self.assertLess(found["/srv/old.txt"], NOW)
+        self.assertEqual(found["https://example.com/x"], NOW)
+        listing = (recentguard.FILE, data, 0o600)
+        self.assertTrue(recentguard.holds(listing, ["file:///srv/a b.txt"], NOW))
+        self.assertFalse(recentguard.holds(listing, ["file:///srv/old.txt"], NOW))
+        self.assertFalse(recentguard.holds((recentguard.ABSENT,), ["file:///srv/a"], NOW))
+        self.assertEqual(recentguard.added(b"not a list"), {})
+
+
 class TheProcesssKeeper(unittest.TestCase):
     def setUp(self):
         self.addCleanup(setattr, recentguard, "_keeper", recentguard._keeper)
@@ -376,6 +506,92 @@ class Choosers(unittest.TestCase):
                     keeper.chose.assert_not_called()
                 keeper.reset_mock()
 
+    def test_run_tells_the_keeper_the_chooser_opened_before_it_runs_and_closed_after(self):
+        keeper = mock.Mock()
+        with mock.patch.object(recentguard, "keeper", return_value=keeper):
+            recentguard.run(Chooser(-3, keeper))
+        self.assertEqual([name for name, *_ in keeper.method_calls],
+                         ["opened", "chose", "closed"])
+
+    def test_a_chooser_that_fails_is_still_closed(self):
+        keeper = mock.Mock()
+        chooser = mock.Mock(spec=["run", "connect"])
+        chooser.run.side_effect = RuntimeError("gone")
+        with mock.patch.object(recentguard, "keeper", return_value=keeper), \
+                self.assertRaises(RuntimeError):
+            recentguard.run(chooser)
+        self.assertEqual([name for name, *_ in keeper.method_calls], ["opened", "closed"])
+
+    def test_a_pages_file_input_is_open_from_show_until_it_answers(self):
+        keeper, calls, made = mock.Mock(), [], []
+
+        class Native:
+            def __init__(self):
+                self.handlers = []
+
+            def connect(self, name, handler):
+                self.handlers.append(handler)
+
+            def show(self):
+                calls.append("show")
+
+            def get_uris(self):
+                return ["file:///a.txt"]
+
+            def get_filenames(self):
+                return ["/a.txt"]
+
+            def destroy(self):
+                calls.append("destroy")
+
+            def __getattr__(self, name):
+                return lambda *a: None
+
+        class FileChooserNative:
+            @staticmethod
+            def new(*_args):
+                made.append(Native())
+                return made[-1]
+
+        gtk = mock.Mock(FileChooserNative=FileChooserNative)
+        gtk.Window, gtk.OffscreenWindow = type("W", (), {}), type("O", (), {})
+        gtk.ResponseType.ACCEPT = -3
+        view = mock.Mock()
+        keeper.opened.side_effect = lambda: calls.append("opened")
+        keeper.closed.side_effect = lambda: calls.append("closed")
+        keeper.chose.side_effect = lambda uris: calls.append("chose")
+        request = mock.Mock()
+        request.get_select_multiple.return_value = False
+        request.get_mime_types_filter.return_value = None
+        request.get_selected_files.return_value = None
+        with mock.patch.object(recentguard, "keeper", return_value=keeper), \
+                mock.patch.object(recentguard, "_gtk", return_value=(None, gtk)):
+            self.assertTrue(recentguard.answer_file_input(view, request))
+            self.assertEqual(calls, ["opened", "show"])
+            made[0].handlers[0](made[0], -3)
+        self.assertEqual(calls, ["opened", "show", "chose", "closed", "destroy"])
+
+    def test_pywebviews_own_dialog_is_open_while_it_runs(self):
+        keeper, calls = mock.Mock(), []
+        keeper.opened.side_effect = lambda: calls.append("opened")
+        keeper.closed.side_effect = lambda: calls.append("closed")
+
+        class BrowserView:
+            def create_file_dialog(self, *args, **kwargs):
+                calls.append("dialog")
+                return ("/a.txt",)
+
+        backend = mock.Mock(BrowserView=BrowserView)
+        platforms = mock.Mock(gtk=backend)
+        modules = {"webview": mock.Mock(platforms=platforms), "webview.platforms": platforms,
+                   "webview.platforms.gtk": backend}
+        with mock.patch.dict(sys.modules, modules), \
+                mock.patch.object(recentguard, "keeper", return_value=keeper), \
+                mock.patch.object(recentguard, "_hook_responses", return_value=lambda: None):
+            recentguard._wrap_pywebview_dialogs()
+            self.assertEqual(BrowserView().create_file_dialog(), ("/a.txt",))
+        self.assertEqual(calls, ["opened", "dialog", "closed"])
+
     def test_a_stand_in_chooser_with_no_signals_is_told_once_it_has_answered(self):
         chooser = mock.Mock(spec=["run", "get_uris"])
         chooser.run.return_value = -3
@@ -447,7 +663,21 @@ SCRIPT = textwrap.dedent("""
                     ready = window.get_filenames() == [chosen]
                 else:
                     ready = window.get_filename() == chosen
-                if ready:
+                if ready and how == "race":
+                    # another program writes the list (the same bytes): GTK's monitor (up
+                    # to some 100 ms late: GLib's inotify reads at that pace when idle)
+                    # starts its 250 ms timer, and the Save, answered 200 ms later, reaches
+                    # the app only after that timer's write, the file in it
+                    pressed.append(window)
+                    with open(recent, "rb") as f:
+                        data = f.read()
+                    with open(recent + ".theirs", "wb") as f:
+                        f.write(data)
+                    os.chmod(recent + ".theirs", 0o644)
+                    os.replace(recent + ".theirs", recent)
+                    GLib.timeout_add(200, lambda answer=window: answer.response(
+                        Gtk.ResponseType.ACCEPT))
+                elif ready:
                     pressed.append(window)
                     window.response(Gtk.ResponseType.ACCEPT)
         return True
@@ -478,7 +708,7 @@ SCRIPT = textwrap.dedent("""
         if how == "attach":
             chat.ChatWindow._choose_attachments(window)
             GLib.timeout_add(800, written)
-        elif how == "save":
+        elif how in ("save", "race"):
             chat.ChatWindow._last_save_folder = os.path.dirname(chosen)
             seen["chosen"] = [chat.ChatWindow._ask_save_path(
                 window, "Save", os.path.basename(chosen), "Text", "*.txt", "text/plain")]
@@ -522,6 +752,8 @@ class ARealChooser(unittest.TestCase):
         chosen = os.path.join(env["HOME"], "notes.txt")
         with open(chosen, "w", encoding="utf-8") as f:
             f.write("notes\n")
+        if how == "race":
+            chosen = os.path.join(env["HOME"], "new-notes.txt")   # a name typed: not there
         seed = xbel(entry("file:///srv/report-from-august.txt", "2026-08-01T09:00:00.000000Z"),
                     entry("file:///srv/agenda.txt",
                           time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())),
@@ -560,6 +792,15 @@ class ARealChooser(unittest.TestCase):
         seed, seen = self.choose("save", guarded=True)
         self.assertEqual(seen["after_write"], seed)
         self.assertEqual(seen["after_loop"], seed)
+
+    def test_a_save_to_a_new_name_just_after_another_programs_write_leaves_the_list_as_it_was(
+            self):
+        """GTK's write, its timer started by the other program's change, lands before the
+        answer reaches the app: the list kept while the dialog was open is put back."""
+        seed, seen = self.choose("race", guarded=True)
+        self.assertEqual(seen["after_write"], seed)
+        self.assertEqual(seen["after_loop"], seed)
+        self.assertEqual(seen["mode"], 0o644)
 
     def test_a_pages_file_input_leaves_the_list_byte_for_byte_as_it_was(self):
         seed, seen = self.choose("input", guarded=True)

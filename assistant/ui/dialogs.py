@@ -743,22 +743,30 @@ class SettingsDialog(Gtk.Dialog):
         content.set_margin_top(12)
         content.set_margin_bottom(12)
 
+        # Settings fits a window half a 1280 px screen wide - a tiling compositor's half
+        # tile (Hyprland) - with nothing cut off: its tabs scroll rather than set its
+        # width, and each page scrolls across rather than make the dialog as wide as its
+        # widest row. Up to 4.4.0 its least width was the Reference page's, some 875 px,
+        # and the window's right edge was cut off in a half tile.
         notebook = self.notebook = Gtk.Notebook()
+        notebook.set_scrollable(True)
         content.pack_start(notebook, True, True, 0)
-        notebook.append_page(self._build_general(), Gtk.Label(label="General"))
-        notebook.append_page(self._build_providers(), Gtk.Label(label="Providers"))
+        notebook.append_page(self._roomy(self._build_general()), Gtk.Label(label="General"))
+        notebook.append_page(self._roomy(self._build_providers()),
+                             Gtk.Label(label="Providers"))
         # Scrolled too since the note under "Name the provider behind each TEE reply"
         # made it the tallest page, and the dialog taller with it.
         notebook.append_page(self._scrolled(self._build_privacy()),
                              Gtk.Label(label="Privacy"))
-        notebook.append_page(self._build_search(), Gtk.Label(label="Web search"))
-        notebook.append_page(self._build_reference(), Gtk.Label(label="Reference"))
+        notebook.append_page(self._roomy(self._build_search()), Gtk.Label(label="Web search"))
+        notebook.append_page(self._roomy(self._build_reference()),
+                             Gtk.Label(label="Reference"))
         from .shortcuts import ShortcutsPage
         notebook.append_page(self._scrolled(self._build_actions()),
                              Gtk.Label(label="Actions"))
         self.shortcuts_page = ShortcutsPage(config, hotkeys)
-        notebook.append_page(self.shortcuts_page, Gtk.Label(label="Shortcuts"))
-        notebook.append_page(self._build_advanced(), Gtk.Label(label="Advanced"))
+        notebook.append_page(self._roomy(self.shortcuts_page), Gtk.Label(label="Shortcuts"))
+        notebook.append_page(self._roomy(self._build_advanced()), Gtk.Label(label="Advanced"))
 
         # Not a warning to click through: an address that would send a key in the
         # clear is refused, here and again wherever a request is made (netguard.py).
@@ -778,6 +786,9 @@ class SettingsDialog(Gtk.Dialog):
         # Save asks first, where it must: before a key goes unencrypted, and about a
         # saved key whose address was moved (_on_response).
         self.connect("response", self._on_response)
+        # Opened as wide as its pages would have it, as before: only its least width went.
+        content.show_all()
+        self.set_default_size(max(680, self.get_preferred_width()[1]), -1)
         self.show_all()
         self._sync_url_warning()
         self._sync_search_sensitivity()
@@ -1093,9 +1104,21 @@ class SettingsDialog(Gtk.Dialog):
         the notebook asks for its tallest page on every page, and Save and Cancel went
         off the bottom of a 1080-pixel screen."""
         scrolled = Gtk.ScrolledWindow()
-        scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled.set_propagate_natural_width(True)
         scrolled.set_propagate_natural_height(True)
         scrolled.set_max_content_height(560)
+        scrolled.add(page)
+        return scrolled
+
+    @staticmethod
+    def _roomy(page):
+        """A page that scrolls across where the dialog is narrower than its widest row (a
+        half tile), and is as wide as that row otherwise: its least width is not the
+        dialog's."""
+        scrolled = Gtk.ScrolledWindow()
+        scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        scrolled.set_propagate_natural_width(True)
         scrolled.add(page)
         return scrolled
 

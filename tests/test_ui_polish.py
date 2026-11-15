@@ -152,6 +152,25 @@ class Settings(Case):
         self.assertIsInstance(pages[labels.index("Actions")], Gtk.ScrolledWindow)
 
 
+    def test_settings_fit_a_half_tile_and_open_as_wide_as_before(self):
+        """Hyprland tiles Settings to half a 1280 px screen (621 px): its least width was the
+        Reference page's, some 875 px on Omarchy, and its right edge was cut off. Its tabs
+        scroll now and each page scrolls across, so it goes down to a half tile, and it still
+        opens as wide as its pages would have it."""
+        dialog = self.dialog()
+        least, natural = dialog.get_preferred_width()
+        self.assertLessEqual(least, 560)
+        self.assertTrue(dialog.notebook.get_scrollable())
+        pages = [dialog.notebook.get_nth_page(i) for i in range(dialog.notebook.get_n_pages())]
+        self.assertTrue(all(isinstance(page, Gtk.ScrolledWindow) for page in pages))
+        widest = max(page.get_preferred_width()[1] for page in pages)
+        self.assertGreaterEqual(dialog.get_default_size()[0], max(680, natural))
+        self.assertGreater(natural, widest)
+        dialog.resize(600, 700)
+        run_until(lambda: dialog.get_size()[0] == 600, timeout=3)
+        self.assertEqual(dialog.get_size()[0], 600)      # no longer held at its old least
+
+
 class Colours(unittest.TestCase):
     def test_each_status_colour_reads_on_its_theme(self):
         def luminance(colour):

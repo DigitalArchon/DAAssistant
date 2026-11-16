@@ -436,6 +436,29 @@ def _service_problem(config, service, model, wait=True):
     return None
 
 
+def held_below(roles, judge=None):
+    """Why models that would share one conversation may not, or None: `roles` is
+    [(role, model)] - its text or premium model and the vision model reading a capture
+    for it, say - and each is given what the others are, so each must be at the level of
+    privacy of the most private (levels.py). Named by role and both levels. `judge`:
+    a model's privacy (level_of, unless given)."""
+    from . import levels
+    judge = judge or level_of
+    found = [(role, model, judge(model)) for role, model in roles if model]
+    if not found:
+        return None
+    top_role, top_model, top = max(found, key=lambda item: levels.rank(item[2]))
+    for role, model, privacy in found:
+        if levels.rank(privacy) < levels.rank(top):
+            return (f"The {role} model, {model}, has {levels.level_phrase(privacy)}, and "
+                    f"the {top_role} model, {top_model}, which it would work beside in "
+                    f"one conversation, has {levels.level_phrase(top)}: nothing of a "
+                    f"conversation goes to a model less private than it is kept to. "
+                    f"Choose a {role} model at that level or higher, or a {top_role} "
+                    f"model at its level.")
+    return None
+
+
 def service_settings(config, service):
     """(address, key, the origin its key was saved for) of `service`'s provider in these
     settings, as a private conversation fixes them when it starts; the key "" where it is
@@ -2140,6 +2163,16 @@ class PrivacySession:
         self.vision_model = vision_model
         self.premium_model = premium_model or text_model
         self._models = list(dict.fromkeys(self.model_for(role) for role in uses))
+        # The level of privacy the conversation is kept to (levels.py): the highest of
+        # the models it starts with, raised by any more private one it moves to. Every
+        # model that is given anything of it - the answering one, the vision model
+        # reading a capture for it, one chosen from the model menu - is at that level or
+        # higher, or nothing is sent (enlist).
+        from . import levels
+        kept = levels.NONE
+        for model in self._models:
+            kept = levels.more_private(kept, level_of(model))
+        self.kept = kept
         self.request_timeout = request_timeout
         self._tee_factory = tee_factory
         self._sealed_factory = sealed_factory
@@ -2183,6 +2216,12 @@ class PrivacySession:
                            for key in ("private_text_model", "private_premium_model",
                                        "private_vision_model")):
             raise PrivacyError(f"{refused} Nothing was sent.")
+        below = held_below(
+            [(role, getattr(config, key, "").strip()) for role, key in (
+                ("text", "private_text_model"), ("premium", "private_premium_model"),
+                ("vision", "private_vision_model")) if role in uses])
+        if below:
+            raise PrivacyError(f"{below} Nothing was sent.")
         return cls(config.api_url, config.api_key,
                    config.private_text_model.strip(), config.private_vision_model.strip(),
                    request_timeout=config.request_timeout, uses=uses,
@@ -2241,6 +2280,15 @@ class PrivacySession:
         with self._lock:
             if model in self._models:
                 return
+        from . import levels
+        found = level_of(model)
+        if kind_of(model) is not None and levels.rank(found) < levels.rank(self.kept):
+            role = self.role(model)
+            raise PrivacyError(
+                f"The {'chosen' if role == 'chosen' else 'private ' + role} model, "
+                f"{model}, has {levels.level_phrase(found)}, and this conversation is "
+                f"kept to {levels.level_phrase(self.kept)}: nothing of it goes to a model "
+                f"with less, so nothing was sent. Choose one at that level or higher.")
         kind = kind_of(model)
         if kind is None:
             raise PrivacyError(f"{model} is not a TEE model, and this conversation is "
@@ -2263,6 +2311,7 @@ class PrivacySession:
         with self._lock:
             if model not in self._models:
                 self._models.append(model)
+            self.kept = levels.more_private(self.kept, found)
 
     def allows(self, model):
         return model in self._models

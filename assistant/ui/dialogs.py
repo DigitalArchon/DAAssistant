@@ -1180,9 +1180,16 @@ class SettingsDialog(Gtk.Dialog):
             model = self.entries[key].get_text().strip()
             source = providers.get(staged, combo.get_active_id() or providers.NANOGPT)
             found = levels.privacy_at(model, source.chat_url, source.protocol)
+            note = found.label()[1]
+            if found.kind == "tee":
+                # Attested in Privacy Mode alone: here it is an ordinary model.
+                found = levels.NONE
+                note = ("Not private here: a TEE/ model is attested only in Privacy Mode "
+                        "(Settings > Privacy); outside it, it is sent as an ordinary model, "
+                        "and nano-gpt can read your text.")
             label.set_text({"highest": "🔐 Highest", "partial": "🔒 Partial"}.get(
                 found.level, "Not private") if model else "")
-            label.set_tooltip_text(found.label()[1] + "\n\n" + levels.PRIVACY_LEVELS)
+            label.set_tooltip_text(note + "\n\n" + levels.PRIVACY_LEVELS)
 
     def _sync_url_warning(self, _entry=None):
         if not hasattr(self, "url_warning"):        # still being built
@@ -1440,6 +1447,11 @@ class SettingsDialog(Gtk.Dialog):
         self.privacy_problems = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         self.privacy_problems.get_style_context().add_class("warning-text")
         page.pack_start(self.privacy_problems, False, False, 0)
+        # Private models at different levels, which an operation on a capture would put
+        # in one conversation: said, Save not held for it (_sync_privacy).
+        self.privacy_mixed = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
+        self.privacy_mixed.get_style_context().add_class("warning-text")
+        page.pack_start(self.privacy_mixed, False, False, 0)
 
         self.e2ee_status = e2ee = Gtk.Label(xalign=0, wrap=True, max_width_chars=78)
         e2ee.get_style_context().add_class("dim-label")
@@ -1520,6 +1532,16 @@ class SettingsDialog(Gtk.Dialog):
                 self.entries[key].get_text().strip())
             for key in self.privacy_kinds)
         enabled = self.privacy_enabled.get_active()
+        # Models at different levels of privacy, which would share a conversation about
+        # a capture (the vision model reads it for the answering one): such operations
+        # are refused (PrivacySession.start); said here, Save not held for it.
+        private = {key: self.entries[key].get_text().strip() for key in self.privacy_kinds}
+        mixed = privacy_module.held_below(
+            [("text", private.get("private_text_model", "")),
+             ("vision", private.get("private_vision_model", ""))]) or \
+            privacy_module.held_below(
+                [("premium", private.get("private_premium_model", "")),
+                 ("vision", private.get("private_vision_model", ""))])
         if found:
             text = " ".join(found)
             if enabled:
@@ -1528,6 +1550,9 @@ class SettingsDialog(Gtk.Dialog):
         else:
             self.privacy_problems.set_text("")
         self.privacy_problems.set_visible(bool(found))
+        self.privacy_mixed.set_text("Operations on a capture or a picture will be "
+                                    "refused: " + mixed if mixed else "")
+        self.privacy_mixed.set_visible(bool(mixed))
         held = None
         if self.url_problem():
             pass                        # said in full under the pages already

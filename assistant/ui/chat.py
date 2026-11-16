@@ -17,8 +17,8 @@ from gi.repository import Gdk, GLib, Gtk, Pango
 
 from . import (bubbles, find, keys, lookups, markdown_html,
                screenshot as screenshot_view, webpolicy)
-from .. import (atomic, attachments, models as catalogue, privacy as privacy_module,
-                prompts, providers, recentguard, websearch)
+from .. import (atomic, attachments, levels, models as catalogue,
+                privacy as privacy_module, prompts, providers, recentguard, websearch)
 from ..llm import LLMError
 from ..reference import dictionaries, markup as reference_markup
 
@@ -450,6 +450,10 @@ class ChatWindow(Gtk.Window):
         # only ever tightens: switched on while this window is open, the app hands it a
         # session (go_private), and from its next message it is a private conversation.
         self.privacy = privacy
+        # Outside Privacy Mode, the level of privacy the conversation is kept to
+        # (levels.py, _hold): set by its first request, raised by any more private model
+        # that answers it. None until then.
+        self._kept = None
         self._privacy_refused = None
         self._pending_privacy = None        # to adopt once the answer coming has come
         self._privacy_hold = None           # why nothing may be sent, Privacy Mode being
@@ -719,12 +723,49 @@ class ChatWindow(Gtk.Window):
     def current_model(self):
         return self._model_of(self._choice)
 
+    def _level(self, model):
+        """`model`'s privacy where it is asked (levels.py), outside Privacy Mode: read
+        from its provider's address. A TEE/ model counts for nothing here: outside
+        Privacy Mode it is not attested, and is sent as an ordinary model."""
+        source = providers.of(self.config, model)
+        found = levels.privacy_at(str(model), source.chat_url, source.protocol)
+        return levels.NONE if found.kind == "tee" else found
+
+    def _hold(self, model, starting=()):
+        """Outside Privacy Mode, refuse (PrivacyError, nothing sent) to give anything of
+        this conversation to `model` when it is less private than the conversation is
+        kept to: the most private model that has answered it, or, before any has, the
+        most private of the first request's (`starting`). So a conversation on Tinfoil
+        never goes in the clear to an ordinary model in another role - the vision model
+        reading a capture, a follow-up answered by another - and says which, and both
+        levels. In Privacy Mode the session holds the same rule (PrivacySession.enlist)."""
+        if self.privacy is not None:
+            return
+        kept = self._kept or levels.NONE
+        for other in starting:
+            kept = levels.more_private(kept, self._level(other))
+        found = self._level(model)
+        if levels.rank(found) < levels.rank(kept):
+            role = self._label_of(model).lower()
+            raise privacy_module.PrivacyError(
+                f"The {role} model, {model}, has {levels.level_phrase(found)}, and this "
+                f"conversation is kept to {levels.level_phrase(kept)}: nothing of it goes "
+                f"to a model with less, so nothing was sent. Choose one at that level or "
+                f"higher (Settings > General), or start a new conversation.")
+        self._kept = levels.more_private(kept, found)
+
     def _vision_reader(self):
         return self.privacy.vision_model if self.privacy else self.config.model("vision")
 
     def _choose(self, key):
         """Send the next message to the model under `key`. False if it was refused."""
         model = self._model_of(key)
+        if self.privacy is None and self._kept is not None:
+            try:
+                self._hold(model)
+            except privacy_module.PrivacyError as e:
+                self.status.set_text(str(e))
+                return False
         if self.privacy is not None:
             try:
                 # Only to a model at this conversation's level of privacy or higher
@@ -2130,6 +2171,15 @@ class ChatWindow(Gtk.Window):
                         raise LLMError(f"Nothing was sent. {refused}", model=model)
 
             try:
+                # Every model given anything of the conversation at its level of
+                # privacy or higher (_hold), before anything goes: the first request's
+                # models set the level.
+                starting = (model, self.current_model) if self._kept is None else ()
+                if privacy is None:
+                    self._hold(model, starting)
+                    if preflight is not None or need_reading or \
+                            (not sees and attachments.unread(history)):
+                        self._hold(reader, starting)
                 if preflight is not None:
                     answer_can_go()
                     stage = "read"

@@ -984,7 +984,8 @@ class LLMClient:
                 return None
             client.finish(result["finish_reason"], result["done"])
         except PrivacyError as e:
-            raise LLMError(f"{e}. {name}: nothing was sent in the clear", model=model)
+            raise LLMError(f"{str(e).rstrip('.')}. {name}: nothing was sent in the clear",
+                           model=model)
         return self._ending(result["text"].strip(), result["finish_reason"], model,
                             payload.get("max_tokens"), result["done"], result["error"])
 

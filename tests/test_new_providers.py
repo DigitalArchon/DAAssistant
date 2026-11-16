@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import support  # noqa: E402,F401  (the suite's own cache, before the app is imported)
 
 from assistant import gtkcompat  # noqa: E402,F401  (pins GI versions)
-from assistant import (levels, llm, models, privacy, providers, services,  # noqa: E402
+from assistant import (levels, models, privacy, providers, services,  # noqa: E402
                        tinfoil_direct)
 from assistant.config import Config  # noqa: E402
 from assistant.keychain import MemoryKeychain  # noqa: E402

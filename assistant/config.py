@@ -17,7 +17,7 @@ import math
 import os
 from urllib.parse import urlparse
 
-from . import atomic, netguard, paths, providers, safejson
+from . import atomic, netguard, paths, providers, safejson, services
 from .keychain import KeychainError, MemoryKeychain, SystemKeychain
 
 DEFAULTS = {
@@ -31,6 +31,15 @@ DEFAULTS = {
     "ollama_url": providers.OLLAMA_DEFAULT_URL,
     "custom_url": "",
     "custom_api_key": "",
+    # Anthropic's own API, Chutes (its OpenAI-compatible API, or claude.chutes.ai, its
+    # proxy of Anthropic's) and Tinfoil's own API: each address filled in, its key the
+    # user's to type. What each is, is read from the address (services.py).
+    "anthropic_url": services.ANTHROPIC_URL,
+    "anthropic_api_key": "",
+    "chutes_url": services.CHUTES_BASE_URL,
+    "chutes_api_key": "",
+    "tinfoil_url": services.TINFOIL_BASE_URL,
+    "tinfoil_api_key": "",
     # Which provider each of the three models below is asked of.
     "text_provider": providers.NANOGPT,
     "premium_text_provider": providers.NANOGPT,
@@ -191,7 +200,8 @@ DEFAULTS = {
 }
 
 # Settings kept in the keychain under their own names, and never written to config.json.
-SECRETS = ("api_key", "openrouter_api_key", "custom_api_key")
+SECRETS = ("api_key", "openrouter_api_key", "custom_api_key", "anthropic_api_key",
+           "chutes_api_key", "tinfoil_api_key")
 # The provider each key is for: where its address is (providers.Kind.url_key, or its
 # fixed address), and what it is called.
 KEYED = {kind.key_key: kind for kind in providers.KINDS.values() if kind.key_key}

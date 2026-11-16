@@ -188,7 +188,8 @@ class Settings(Case):
             small = self.dialog()
         self.assertLessEqual(small.get_default_size()[1], 692)
         self.assertLessEqual(small.get_default_size()[0], 1216)
-        with mock.patch.object(SettingsDialog, "_room", return_value=(1824, 1000)):
+        with mock.patch.object(SettingsDialog, "_room",
+                               return_value=(1824, max(1000, natural + 50))):
             roomy = self.dialog()
         self.assertGreaterEqual(roomy.get_default_size()[1], natural)
         small.resize(600, 500)

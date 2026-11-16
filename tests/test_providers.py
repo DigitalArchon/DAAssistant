@@ -786,10 +786,13 @@ class InTheWindows(Case):
         browser._on_loaded([models.normalise({"id": "from/nanogpt"})], False, "nanogpt")
         self.assertEqual(len(browser.store), 0)
 
-    def test_tee_models_are_browsed_at_nanogpt_and_nowhere_else(self):
+    def test_private_models_are_browsed_at_nanogpt_tinfoil_and_chutes_alone(self):
         browser = self.browser(private_only=True, provider="ollama")
         self.assertEqual(browser.provider, "nanogpt")
-        self.assertFalse(browser.provider_combo.get_sensitive())
+        offered = [row[1] for row in browser.provider_combo.get_model()]
+        self.assertEqual(offered, ["nanogpt", "chutes", "tinfoil"])
+        tinfoil = self.browser(private_only=True, current="Tinfoil::glm-5-3")
+        self.assertEqual((tinfoil.provider, tinfoil._current), ("tinfoil", "glm-5-3"))
 
     def window(self):
         from assistant.ui import chat

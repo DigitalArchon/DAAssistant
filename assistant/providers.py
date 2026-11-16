@@ -1,12 +1,25 @@
 """The providers a model can be asked of.
 
-Three by name, whose addresses and habits the app knows, and one typed in by hand:
+Six by name, whose addresses and habits the app knows, and one typed in by hand:
 
-    NanoGPT      the default. The only one with TEE/ and private/ models, so Privacy Mode
-                 is its alone, and the only one that runs the web search.
+    NanoGPT      the default. Its TEE/ and private/ models are Privacy Mode's, and it
+                 is the only one that runs the web search.
     OpenRouter   https://openrouter.ai, with a key of its own.
+    Anthropic    Anthropic's own Messages API (anthropic.py), with its own key.
+    Chutes       https://llm.chutes.ai/v1 (or its proxy of Anthropic's API,
+                 claude.chutes.ai): every model Chutes lists, its -TEE ones always sent
+                 end-to-end encrypted to an attested instance (chutes.py), the others in
+                 the clear. Preliminary.
+    Tinfoil      Tinfoil's own API, every model end-to-end encrypted to its attested
+                 router (tinfoil_direct.py). Preliminary.
     Ollama       a server on this machine or the local network; no key.
     Other        any OpenAI-compatible endpoint, by its address.
+
+What an endpoint is, and so how a request to it is made, is read from its address
+(services.py), not from the name it was set up under: Tinfoil's address typed in as
+Other, or an older config's, is Tinfoil's all the same - sealed, its key bound to its
+origin, its models marked as the highest privacy - and Chutes' or Anthropic's is theirs
+(Provider.protocol, Provider.service).
 
 Each of the three model settings - text, premium, vision - names its provider beside its
 model, so OCR can run on the machine next door while the answers come from elsewhere.
@@ -18,7 +31,7 @@ body may be gzipped, and what a model has to be told to stop.
 
 from urllib.parse import urlparse as _urlparse, urlunparse
 
-from . import netguard
+from . import netguard, services
 
 
 def urlparse(url):
@@ -30,6 +43,7 @@ def urlparse(url):
         return _urlparse("")
 
 NANOGPT, OPENROUTER, OLLAMA, CUSTOM = "nanogpt", "openrouter", "ollama", "custom"
+ANTHROPIC, CHUTES, TINFOIL = "anthropic", "chutes", "tinfoil"
 
 NANOGPT_URL = "https://nano-gpt.com/api/v1/chat/completions"
 NANOGPT_HOSTS = frozenset({"nano-gpt.com"})
@@ -75,7 +89,7 @@ class Kind:
 
     def __init__(self, id, name, url_key=None, key_key=None, fixed_url=None,
                  needs_key=False, gzip=False, listing="openai", note="", short=None,
-                 placeholder=""):
+                 placeholder="", protocol="auto", default_url=""):
         self.id = id
         self.name = name
         self.short = short or name      # for a drop-down beside a model
@@ -90,6 +104,10 @@ class Kind:
         self.gzip = gzip
         self.listing = listing          # how its model list is read: see models.fetch
         self.note = note
+        # The protocol it speaks unless its address says otherwise (services.py).
+        self.protocol = protocol
+        # The address filled in for it, which may be changed.
+        self.default_url = default_url
 
 
 KINDS = {kind.id: kind for kind in (
@@ -98,6 +116,21 @@ KINDS = {kind.id: kind for kind in (
          note="Also runs Privacy Mode and the web search."),
     Kind(OPENROUTER, "OpenRouter", key_key="openrouter_api_key",
          fixed_url=OPENROUTER_URL, needs_key=True, listing="openrouter"),
+    Kind(ANTHROPIC, "Anthropic", url_key="anthropic_url", key_key="anthropic_api_key",
+         needs_key=True, listing="anthropic", protocol="anthropic",
+         default_url=services.ANTHROPIC_URL, placeholder=services.ANTHROPIC_URL,
+         note="Anthropic's own Messages API. Not private: Anthropic reads your text."),
+    Kind(CHUTES, "Chutes", url_key="chutes_url", key_key="chutes_api_key",
+         needs_key=True, listing="chutes", default_url=services.CHUTES_BASE_URL,
+         placeholder=services.CHUTES_BASE_URL,
+         note="Preliminary. Its -TEE models are always end-to-end encrypted to an "
+              "attested instance (partial privacy); its other models are not private. "
+              "https://claude.chutes.ai speaks Anthropic's API instead."),
+    Kind(TINFOIL, "Tinfoil", url_key="tinfoil_url", key_key="tinfoil_api_key",
+         needs_key=True, listing="tinfoil", protocol="tinfoil",
+         default_url=services.TINFOIL_BASE_URL, placeholder=services.TINFOIL_BASE_URL,
+         note="Preliminary. Every model end-to-end encrypted to Tinfoil's attested "
+              "router (the highest privacy). Usable in Privacy Mode too."),
     Kind(OLLAMA, "Ollama", url_key="ollama_url", listing="ollama",
          placeholder="http://localhost:11434",
          note="A server on this machine or your network. No key."),
@@ -106,7 +139,7 @@ KINDS = {kind.id: kind for kind in (
          placeholder="https://api.example.com/v1",
          note="Any server that speaks /v1/chat/completions. The key is optional."),
 )}
-ORDER = (NANOGPT, OPENROUTER, OLLAMA, CUSTOM)
+ORDER = (NANOGPT, OPENROUTER, ANTHROPIC, CHUTES, TINFOIL, OLLAMA, CUSTOM)
 
 
 class Model(str):
@@ -156,6 +189,16 @@ def chat_url(kind, url):
         return kind.fixed_url
     if not text or kind.id == NANOGPT:
         return text
+    # Read from the address, whatever the provider was set up as: Anthropic's API and
+    # Chutes' proxy of it take /v1/messages, Tinfoil's /v1/chat/completions under its
+    # /v1.
+    protocol = services.chat_protocol(text, kind.protocol)
+    if protocol == "anthropic" and urlparse(text).netloc:
+        from . import anthropic
+        return anthropic.messages_url(text)
+    if protocol == "tinfoil" and urlparse(text).netloc:
+        from . import tinfoil_direct
+        return tinfoil_direct.base_of(text) + "/chat/completions"
     if kind.id == OLLAMA:
         root = _root(text)
         return root + "/v1/chat/completions" if urlparse(root).netloc else text
@@ -175,10 +218,18 @@ class Provider:
 
     def __init__(self, kind, url, api_key, proxy=None, withheld=None):
         self.kind = kind
-        self.id, self.name, self.gzip, self.listing = (kind.id, kind.name, kind.gzip,
-                                                       kind.listing)
+        self.id, self.name, self.gzip = kind.id, kind.name, kind.gzip
         self.address = (url or "").strip()          # as typed
         self.chat_url = chat_url(kind, url)
+        # What its address says it is (services.py), however it was set up: Tinfoil's,
+        # Chutes', Anthropic's, or "" for another; and the protocol it is spoken in.
+        self.service = services.service_of(self.chat_url)
+        self.protocol = services.chat_protocol(self.chat_url, kind.protocol) \
+            if kind.id != NANOGPT or self.service else "openai"
+        self.listing = {services.TINFOIL: "tinfoil", services.CHUTES: "chutes"}.get(
+            self.service) or ("anthropic" if self.protocol == "anthropic" else kind.listing)
+        if self.service and self.gzip:
+            self.gzip = False       # NanoGPT's habit, not theirs
         # Why the key kept for it is not sent to this address (Config.key_withheld): it
         # was saved for another. Then there is no key here, and nothing is sent at all,
         # rather than sent without it.
@@ -193,7 +244,27 @@ class Provider:
         """Where its model list is read from."""
         if self.id == OLLAMA:
             return _root(self.chat_url) + "/api/tags"
+        if self.listing == "chutes":
+            return "https://llm.chutes.ai/v1/models"     # Chutes' public list
+        if self.listing == "tinfoil":
+            from . import tinfoil_direct
+            return tinfoil_direct.base_of(self.chat_url) + "/models"
+        if self.listing == "anthropic":
+            from . import anthropic
+            return anthropic.origin(self.chat_url) + "/v1/models"
         return models_url(self.chat_url)
+
+    @property
+    def sealed(self):
+        """Whether every request to it must be sealed end to end (Tinfoil's): never
+        sent by the plain client."""
+        return self.protocol == "tinfoil"
+
+    def sealed_model(self, model):
+        """Whether `model`, asked of this provider, is only ever sent sealed: every
+        model of Tinfoil's, a Chutes -TEE model on Chutes' hosts, a private/ one."""
+        from . import levels
+        return levels.privacy_at(model, self.chat_url, self.protocol).sealed
 
     def url_problem(self):
         """Why its address may not be used, or None: not set, or not https (netguard),
@@ -201,6 +272,9 @@ class Provider:
         if not self.address and not self.kind.fixed_url:
             return f"No address is set for {self.name}. Add it in Settings > Providers."
         found = netguard.problem(self.chat_url)
+        if found is None and self.service == services.TINFOIL:
+            # Its key goes to Tinfoil's API alone, and the attestation names that host.
+            found = services.tinfoil_key_refusal(self.chat_url)
         if found is None and netguard.is_onion(urlparse(self.chat_url).hostname or ""):
             from . import proxy
             if not proxy.reaches_onion(self.chat_url, self.proxy):
@@ -220,7 +294,10 @@ class Provider:
         """Why nothing can be sent to it, or None."""
         return self.url_problem() or self.key_problem()
 
-    def headers(self):
+    def headers(self, cache_ttl=None):
+        if self.protocol == "anthropic":
+            from . import anthropic
+            return anthropic.headers(self.chat_url, self.api_key, cache_ttl)
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -252,7 +329,8 @@ def get(config, provider):
     # And a key, or a password in its address, that would go over plain http to another
     # machine before it is confirmed for it (Config.key_in_clear): nothing is sent.
     return Provider(kind,
-                    getattr(config, kind.url_key, "") if kind.url_key else "",
+                    (getattr(config, kind.url_key, "") or kind.default_url) if kind.url_key
+                    else "",
                     getattr(config, kind.key_key, "") if kind.key_key else "",
                     getattr(config, "proxy", ""),
                     withheld=next((reason for reason in reasons if reason), None))
@@ -298,11 +376,15 @@ def where(config, model):
 
 
 def in_use(config):
-    """The providers the three model settings name, each once, in ORDER. NanoGPT is
-    among them when Privacy Mode is on, whatever the settings say."""
+    """The providers the three model settings name, each once, in ORDER. With Privacy
+    Mode on, those its private models are of: NanoGPT's TEE/ and private/ ones, and
+    Tinfoil's or Chutes' by their references ("Tinfoil::glm-5-3")."""
     used = {role_provider(config, role) for role in ROLES}
     if getattr(config, "privacy_mode", False):
-        used.add(NANOGPT)
+        from . import privacy
+        for key in ("private_text_model", "private_premium_model", "private_vision_model"):
+            service = privacy.service_of(getattr(config, key, "") or "")
+            used.add(service if service in KINDS else NANOGPT)
     return [get(config, provider) for provider in ORDER if provider in used]
 
 
@@ -345,6 +427,12 @@ def legacy(api_url):
         return NANOGPT, None
     if host == "openrouter.ai":
         return OPENROUTER, None
+    # Anthropic's, Chutes' and Tinfoil's, read from the address (services.service_of):
+    # their own providers, the address kept as it was.
+    found = {services.ANTHROPIC: ANTHROPIC, services.CHUTES: CHUTES,
+             services.TINFOIL: TINFOIL}.get(services.service_of(api_url))
+    if found:
+        return found, api_url.strip()
     if port == OLLAMA_PORT:
         return OLLAMA, _root(api_url)
     return CUSTOM, api_url.strip()

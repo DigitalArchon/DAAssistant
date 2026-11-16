@@ -12,9 +12,12 @@ import threading
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import GLib, Gtk, Pango
 
-from .. import models as catalogue, privacy, providers, sealed
+from .. import levels, models as catalogue, privacy, providers, sealed
 
-COL_ID, COL_PRICE, COL_CONTEXT, COL_CAPS, COL_HAYSTACK, COL_DESC = range(6)
+COL_ID, COL_PRICE, COL_CONTEXT, COL_CAPS, COL_HAYSTACK, COL_DESC, COL_PRIVACY = range(7)
+# The providers whose models Privacy Mode can use: NanoGPT's TEE/ and private/ ones,
+# Tinfoil's, and Chutes' -TEE ones (named "Tinfoil::..." and "Chutes::..." there).
+PRIVATE_PROVIDERS = (providers.NANOGPT, providers.TINFOIL, providers.CHUTES)
 
 
 class ModelBrowser(Gtk.Dialog):
@@ -23,17 +26,23 @@ class ModelBrowser(Gtk.Dialog):
     def __init__(self, parent, config, title="Choose a model",
                  vision_only=False, current=None, private_only=False,
                  provider=providers.NANOGPT):
-        """private_only offers TEE/ and private/ models alone, and cannot be unticked:
-        it is how the Privacy Mode fields are browsed, and anything else there would be
-        refused when used. Those are NanoGPT's, so the provider cannot be changed
-        either."""
+        """private_only offers private models alone, and cannot be unticked: it is how
+        the Privacy Mode fields are browsed, and anything else there would be refused
+        when used. Those are NanoGPT's TEE/ and private/ models, Tinfoil's, and Chutes'
+        -TEE ones (PRIVATE_PROVIDERS); one of Tinfoil's or Chutes' is chosen as its
+        reference, "Tinfoil::glm-5-3"."""
         super().__init__(title=title, transient_for=parent, modal=True)
         self.config = config
-        self.provider = (providers.NANOGPT if private_only or provider not in providers.KINDS
+        self.private_only = private_only
+        if private_only:
+            named, _bare = privacy.reference(current)
+            provider = named or providers.NANOGPT
+        self.provider = (providers.NANOGPT if provider not in providers.KINDS
+                         or (private_only and provider not in PRIVATE_PROVIDERS)
                          else provider)
         self.selected_id = None
         self.models = []
-        self._current = current
+        self._current = privacy.reference(current)[1] if private_only else current
         self._sdk_asked = False         # sealed.check() has been asked, by this browser
         self._closed = False
         self.connect("destroy", lambda _w: setattr(self, "_closed", True))
@@ -55,9 +64,9 @@ class ModelBrowser(Gtk.Dialog):
         self.provider_combo = Gtk.ComboBoxText()
         self.provider_combo.set_wrap_width(1)
         for kind_id in providers.ORDER:
-            self.provider_combo.append(kind_id, providers.KINDS[kind_id].short)
+            if not private_only or kind_id in PRIVATE_PROVIDERS:
+                self.provider_combo.append(kind_id, providers.KINDS[kind_id].short)
         self.provider_combo.set_active_id(self.provider)
-        self.provider_combo.set_sensitive(not private_only)
         self.provider_combo.set_tooltip_text("The provider whose models are listed")
         self.provider_combo.connect("changed", self._on_provider_changed)
         controls.pack_start(self.provider_combo, False, False, 0)
@@ -81,12 +90,14 @@ class ModelBrowser(Gtk.Dialog):
         self.free_check.connect("toggled", lambda _w: self._refilter())
         controls.pack_start(self.free_check, False, False, 0)
 
-        self.private_check = Gtk.CheckButton.new_with_label("TEE only")
+        self.private_check = Gtk.CheckButton.new_with_label("Private only")
         self.private_check.set_active(private_only)
         self.private_check.set_sensitive(not private_only)
         self.private_check.set_tooltip_text(
-            "Models that run in an attested enclave: TEE/ (attested, replies signed) "
-            "and private/ (end-to-end encrypted as well)."
+            "Models that run in an attested enclave: NanoGPT's TEE/ (attested, replies "
+            "signed; partial privacy) and private/ (end-to-end encrypted as well; the "
+            "highest), and Chutes' -TEE models (end-to-end encrypted; partial). "
+            + levels.PRIVACY_LEVELS
             + ("\nPrivacy Mode can only use these." if private_only else ""))
         self.private_check.connect("toggled", lambda _w: self._refilter())
         controls.pack_start(self.private_check, False, False, 0)
@@ -97,7 +108,7 @@ class ModelBrowser(Gtk.Dialog):
         controls.pack_start(refresh, False, False, 0)
         box.pack_start(controls, False, False, 0)
 
-        self.store = Gtk.ListStore(str, str, str, str, str, str)
+        self.store = Gtk.ListStore(str, str, str, str, str, str, str)
         self.filtered = self.store.filter_new()
         self.filtered.set_visible_func(self._visible)
 
@@ -107,8 +118,9 @@ class ModelBrowser(Gtk.Dialog):
         self.tree.get_selection().connect("changed", self._on_selection_changed)
 
         for title_text, column, width, expand in (
-            ("Model", COL_ID, 380, True),
-            ("Price / Mtok", COL_PRICE, 180, False),
+            ("Model", COL_ID, 340, True),
+            ("Privacy", COL_PRIVACY, 150, False),
+            ("Price / Mtok", COL_PRICE, 160, False),
             ("Context", COL_CONTEXT, 100, False),
             ("Capabilities", COL_CAPS, 240, False),
         ):
@@ -155,8 +167,10 @@ class ModelBrowser(Gtk.Dialog):
     def _load(self, force=False):
         self.status.set_text("Fetching models…" if force else "Loading models…")
         self.search.set_sensitive(False)
-        # TEE models are NanoGPT's alone: nothing to tick anywhere else.
-        self.private_check.set_visible(self.provider == providers.NANOGPT)
+        # Private models are NanoGPT's, Chutes' and Tinfoil's: nothing to tick elsewhere
+        # (and all of Tinfoil's are).
+        self.private_check.set_visible(self.provider in (providers.NANOGPT,
+                                                         providers.CHUTES))
         source = self.provider
 
         def worker():
@@ -183,11 +197,6 @@ class ModelBrowser(Gtk.Dialog):
         self.store.clear()
         for model in models:
             caps = []
-            kind = privacy.kind_of(model["id"])
-            if kind == privacy.E2EE:
-                caps.append("🔐 E2EE")
-            elif kind == privacy.TEE:
-                caps.append("🔒 TEE")
             if model["vision"]:
                 caps.append("vision")
             if model["reasoning"]:
@@ -204,6 +213,7 @@ class ModelBrowser(Gtk.Dialog):
                 ", ".join(caps),
                 haystack,
                 model["description"],
+                self._privacy(model["id"]).label()[0],
             ])
 
         self.search.set_sensitive(True)
@@ -236,8 +246,15 @@ class ModelBrowser(Gtk.Dialog):
 
     # ---- filtering --------------------------------------------------------
 
+    def _privacy(self, model_id):
+        """`model_id`'s privacy on the provider listed, read from its address
+        (levels.privacy_at): the column, the note under the list, and the filter."""
+        source = providers.get(self.config, self.provider)
+        return levels.privacy_at(model_id, source.chat_url, source.protocol)
+
     def _visible(self, model, iterator, _data):
-        if self.private_check.get_active() and not privacy.kind_of(model[iterator][COL_ID]):
+        if self.private_check.get_active() and \
+                not self._privacy(model[iterator][COL_ID]).private:
             return False
         if self.vision_check.get_active() or self.free_check.get_active():
             model_id = model[iterator][COL_ID]
@@ -300,10 +317,10 @@ class ModelBrowser(Gtk.Dialog):
             self.detail.set_text("")
             return
         bits = [entry["description"] or "No description provided."]
-        label, note = privacy.describe(model_id)
-        if label and note not in bits[0]:
+        _label, note = self._privacy(model_id).label()
+        if note and note not in bits[0]:
             bits.insert(0, note)
-        if privacy.is_private_mode(model_id):
+        if self._privacy(model_id).service in (levels.NANOGPT_PRIVATE, levels.TINFOIL):
             answer = sealed.known()
             if answer is None and not self._sdk_asked:
                 # Slow to find out, the first time: asked on a thread, and this is
@@ -325,6 +342,11 @@ class ModelBrowser(Gtk.Dialog):
         response = super().run()
         if response == Gtk.ResponseType.OK:
             self.selected_id = self.selected_id or self._current_id()
+            if self.private_only and self.selected_id and \
+                    self.provider in (providers.TINFOIL, providers.CHUTES):
+                # Privacy Mode's models are named with the service that seals them.
+                self.selected_id = f"{providers.KINDS[self.provider].name}::" \
+                                   f"{self.selected_id}"
         else:
             self.selected_id = None
         return response

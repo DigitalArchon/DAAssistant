@@ -13,8 +13,9 @@ from urllib.parse import urlparse
 from .. import gtkcompat  # noqa: F401  (pins GI versions)
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
-from .. import (errors, imaging, llm as llm_module, netguard, privacy as privacy_module,
-                providers, proxy as proxy_module, recentguard, sealed, websearch)
+from .. import (errors, imaging, levels, llm as llm_module, netguard,
+                privacy as privacy_module, providers, proxy as proxy_module, recentguard,
+                sealed, websearch)
 from ..vendored import location as vendored_location
 from . import keys
 from .model_browser import ModelBrowser
@@ -67,12 +68,12 @@ def privacy_note(privacy, planned=None):
     models = []
     for model in chosen:
         role = privacy.role(model)
-        how = ("end-to-end encrypted" if privacy_module.is_private_mode(model)
-               else "TEE, replies signed")
+        how = privacy_module.describe(model)[0] or "TEE"
         models.append(f"<b>{GLib.markup_escape_text(model)}</b> ({role}; {how})")
+    sealed_all = all(privacy_module.kind_of(m) == privacy_module.E2EE for m in chosen)
     label = Gtk.Label(xalign=0, wrap=True, max_width_chars=90)
     label.set_markup(
-        f"<b>{'🔐' if all(map(privacy_module.is_private_mode, chosen)) else '🔒'} "
+        f"<b>{'🔐' if sealed_all else '🔒'} "
         f"Privacy Mode</b> — this goes only to "
         + " and ".join(models)
         + ", each attested before anything is sent to it. Web search is off, and the "
@@ -997,6 +998,7 @@ class SettingsDialog(Gtk.Dialog):
 
         self.entries = {}
         self.provider_combos = {}
+        self.model_levels = {}
         row = 0
         for key, label_text, tooltip in self.TEXT_FIELDS:
             entry = Gtk.Entry(hexpand=True)
@@ -1026,12 +1028,20 @@ class SettingsDialog(Gtk.Dialog):
             browse = Gtk.Button.new_with_label("Browse…")
             browse.set_tooltip_text("Search the provider's model list")
             browse.connect("clicked", self._on_browse, key, vision_only)
+            # How private the model is where it is asked (levels.py), read from the
+            # provider's address as it stands here.
+            level = Gtk.Label(xalign=0)
+            level.get_style_context().add_class("privacy-badge")
             grid.attach(self._label(label_text), 0, row, 1, 1)
             grid.attach(combo, 1, row, 1, 1)
             grid.attach(entry, 2, row, 1, 1)
             grid.attach(browse, 3, row, 1, 1)
+            grid.attach(level, 4, row, 1, 1)
             self.entries[key] = entry
             self.provider_combos[key] = (combo, provider_key)
+            self.model_levels[key] = level
+            entry.connect("changed", lambda _w: self._sync_levels())
+            combo.connect("changed", lambda _w: self._sync_levels())
             row += 1
 
         test_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -1154,9 +1164,30 @@ class SettingsDialog(Gtk.Dialog):
         down = max(16, int(area.height * 0.05))
         return max(1, area.width - 2 * across), max(1, area.height - 2 * down)
 
+    def _sync_levels(self):
+        """Each model's privacy beside it on the General page, read from where it is
+        asked as this dialog has it: "Highest", "Partial" or "Not private", and its
+        note."""
+        if not hasattr(self, "model_levels") or len(self.model_levels) \
+                < len(self.MODEL_FIELDS):
+            return
+        try:
+            staged = self._staged()
+        except Exception:               # half built
+            return
+        for key, label in self.model_levels.items():
+            combo, _provider_key = self.provider_combos[key]
+            model = self.entries[key].get_text().strip()
+            source = providers.get(staged, combo.get_active_id() or providers.NANOGPT)
+            found = levels.privacy_at(model, source.chat_url, source.protocol)
+            label.set_text({"highest": "🔐 Highest", "partial": "🔒 Partial"}.get(
+                found.level, "Not private") if model else "")
+            label.set_tooltip_text(found.label()[1] + "\n\n" + levels.PRIVACY_LEVELS)
+
     def _sync_url_warning(self, _entry=None):
         if not hasattr(self, "url_warning"):        # still being built
             return
+        self._sync_levels()
         problem = self.url_problem()
         self.url_warning.set_text(problem or "")
         self.url_warning.set_visible(bool(problem))
@@ -1339,13 +1370,20 @@ class SettingsDialog(Gtk.Dialog):
             "goes to the models below instead of the ones on the General page, and only "
             "after its enclave has proved itself. The premium model answers instead of "
             "the text model when the premium option is on, and a conversation's model "
-            "menu can switch to any TEE model. Web search is off.\n\n"
-            "<b>TEE/</b> models are attested before anything is sent to them - most as "
-            "RedPill's gateway, which passes each request on to the machine that runs "
-            "the model - and their replies are checked where their provider signs them; "
-            "your text still passes nano-gpt's gateway in the clear. <b>private/</b> "
-            "models are also <b>end-to-end encrypted</b>: sealed on this machine to a "
-            "key only the attested enclave holds.\n\n"
+            "menu can switch to another private model at the same level of privacy or "
+            "higher, never a lower one. Web search is off.\n\n"
+            "<b>Highest privacy</b>: NanoGPT's <b>private/</b> models and every model of "
+            "<b>Tinfoil</b>'s (chosen as Tinfoil::model, preliminary) are <b>end-to-end "
+            "encrypted</b>: sealed on this machine to a key only the attested enclave "
+            "holds.\n"
+            "<b>Partial privacy</b>: NanoGPT's <b>TEE/</b> models are attested before "
+            "anything is sent to them - most as RedPill's gateway, which passes each "
+            "request on to the machine that runs the model - and their replies are "
+            "checked where their provider signs them; your text still passes nano-gpt's "
+            "gateway in the clear. <b>Chutes</b>' -TEE models (Chutes::model, "
+            "preliminary) are end-to-end encrypted to an attested instance, but the "
+            "program holding the key there is Chutes' closed binary, admitted by its "
+            "signature, not measured.\n\n"
             "A conversation keeps the privacy it started with: switching this off, or "
             "choosing other models, changes only the conversations that start "
             "afterwards. Switching it on makes the open ones private from their next "
@@ -1361,7 +1399,8 @@ class SettingsDialog(Gtk.Dialog):
             entry.set_text(str(getattr(self.config, key, "")))
             entry.connect("changed", lambda _w: self._sync_privacy())
             browse = Gtk.Button.new_with_label("Browse…")
-            browse.set_tooltip_text("Choose among the provider's TEE models")
+            browse.set_tooltip_text("Choose among NanoGPT's, Tinfoil's or Chutes' "
+                                    "private models")
             browse.connect("clicked", self._on_browse, key, vision_only, True)
             kind = Gtk.Label(xalign=0)
             kind.get_style_context().add_class("privacy-badge")
@@ -1455,25 +1494,30 @@ class SettingsDialog(Gtk.Dialog):
         for key, label in self.privacy_kinds.items():
             model = self.entries[key].get_text().strip()
             kind = privacy_module.kind_of(model)
+            level = privacy_module.level_of(model)
             context = label.get_style_context()
             for tone in ("ok", "bad"):
                 context.remove_class(f"privacy-{tone}")
             if kind == privacy_module.E2EE:
-                label.set_text("🔐 E2EE")
+                label.set_text("🔐 E2EE · " + ("highest" if level.level == "highest"
+                                               else "partial"))
                 context.add_class("privacy-ok")
             elif kind == privacy_module.TEE:
-                label.set_text("🔒 TEE")
+                label.set_text("🔒 TEE · partial")
                 context.add_class("privacy-ok")
             else:
-                label.set_text("not TEE" if model else "")
+                label.set_text("not private" if model else "")
                 context.add_class("privacy-bad")
             label.set_tooltip_text(privacy_module.describe(model)[1] or
-                                   "Privacy Mode can use TEE/ and private/ models only")
+                                   "Privacy Mode can use NanoGPT's TEE/ and private/ "
+                                   "models, Tinfoil's, and Chutes' -TEE ones only")
         # Not waiting to hear whether Tinfoil's client can be used: _on_e2ee_known comes
         # back here when that is known. Until then Save waits too, if it matters.
         found = privacy_module.problems(self._staged(), wait=False)
         unsure = sealed.known() is None and any(
-            privacy_module.is_private_mode(self.entries[key].get_text().strip())
+            privacy_module.service_of(self.entries[key].get_text().strip())
+            in ("tinfoil",) or privacy_module.is_private_mode(
+                self.entries[key].get_text().strip())
             for key in self.privacy_kinds)
         enabled = self.privacy_enabled.get_active()
         if found:

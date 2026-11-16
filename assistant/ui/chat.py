@@ -727,7 +727,9 @@ class ChatWindow(Gtk.Window):
         model = self._model_of(key)
         if self.privacy is not None:
             try:
-                self.privacy.enlist(model)
+                # Only to a model at this conversation's level of privacy or higher
+                # (levels.move_refusal), said in words where it is not.
+                self.privacy.enlist(model, moving_from=self.current_model)
             except privacy_module.PrivacyError as e:
                 self.status.set_text(str(e))
                 return False

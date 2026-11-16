@@ -18,8 +18,8 @@ import time
 
 import requests
 
-from . import (models as catalogue, netguard, privacy as privacy_module, prompts,
-               providers, safejson, websearch)
+from . import (levels, models as catalogue, netguard, privacy as privacy_module, prompts,
+               providers, safejson, services, websearch)
 from .streams import LineTooLong, read_lines
 from .privacy import ModelRetired, PrivacyError
 
@@ -484,6 +484,24 @@ def strip_internal_keys(messages):
     return [{k: v for k, v in m.items() if k in allowed} for m in messages]
 
 
+def chutes_payload(payload):
+    """The body for Chutes' OpenAI-compatible API: its models run on vLLM, which takes no
+    reasoning effort, but whose chat template switches thinking on or off. The app's
+    lowest levels switch it off (chutes.THINKING_OFF, as Chutes' sealed requests do);
+    any other leaves the model's own."""
+    from . import chutes
+    body = dict(payload)
+    reasoning = body.pop("reasoning", None)
+    effort = str(reasoning.get("effort") or "").lower() if isinstance(reasoning, dict) \
+        else ""
+    body.pop("promptCaching", None)
+    if effort in chutes.THINKING_OFF_EFFORTS:
+        own = body.get("chat_template_kwargs")
+        body["chat_template_kwargs"] = {**chutes.THINKING_OFF,
+                                        **(own if isinstance(own, dict) else {})}
+    return body
+
+
 class LLMClient:
     def __init__(self, config):
         self.config = config
@@ -493,6 +511,9 @@ class LLMClient:
         # web search and the query written for it, Ask Encyclopedia's plan and check:
         # every request this client makes carries the conversation or a key.
         self.session = netguard.session()
+        # Tinfoil's and Chutes' sealed clients outside Privacy Mode, one per address, key
+        # and the origin it was saved for: each attests before it seals (_sealed_direct).
+        self._direct = {}
 
     def _provider(self, model):
         """The provider `model` is asked of: the one it carries, or the one its model
@@ -517,8 +538,7 @@ class LLMClient:
                 return str(body["message"])
         return json.dumps(body)[:400]
 
-    @staticmethod
-    def _encode(payload, provider):
+    def _encode(self, payload, provider):
         """Serialise the body, gzipped once it is big enough to be worth it - for a
         provider known to read one. Ollama does not: it answers HTTP 400, "invalid
         character '\x1f' looking for beginning of value", and every capture is over
@@ -531,6 +551,19 @@ class LLMClient:
 
         https://docs.nano-gpt.com/api-reference/miscellaneous/request-compression
         """
+        if provider.protocol == "anthropic":
+            # Anthropic's own Messages API, or Chutes' proxy of it: its own shape, its
+            # own header for the key, its prompt cache marked as the setting says.
+            from . import anthropic
+            ttl = getattr(self.config, "prompt_caching", "off")
+            ttl = ttl if ttl in CACHE_TTLS else None
+            try:
+                body = anthropic.messages_body(payload, ttl)
+            except anthropic.AnthropicError as e:
+                raise LLMError(str(e), model=payload.get("model"))
+            return json.dumps(body).encode("utf-8"), provider.headers(ttl)
+        if provider.service == services.CHUTES:
+            payload = chutes_payload(payload)
         raw = json.dumps(payload).encode("utf-8")
         headers = provider.headers()
         if not provider.gzip or len(raw) < GZIP_THRESHOLD_BYTES:
@@ -572,7 +605,8 @@ class LLMClient:
         # https, or the local network: checked here, at the one place every request
         # leaves from, so that no setting or caller can send the key in the clear. And
         # a provider with no address or no key is said so, not left to a 401.
-        refused = provider.problem()
+        refused = provider.problem() or levels.plain_refusal(
+            provider.chat_url, "this conversation", provider.protocol, model or "")
         if refused:
             raise LLMError(f"Nothing was sent. {refused}", model=payload.get("model"))
         last_error = None
@@ -829,7 +863,14 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, None, system,
                                       privacy, status, max_tokens)
+        if self._sealed_service(model):
+            return self._sealed_direct(model, messages, image_base64, cancel, None, system,
+                                       status, max_tokens)
         self._refuse_unsealed(model)
+        if self._provider(model).protocol == "anthropic":
+            # Streamed and gathered: one reading of Anthropic's replies, not two.
+            return self._gathered(model, messages, image_base64, cancel, system,
+                                  max_tokens, status)
         if self._provider(model).stops(model):
             # One that has to be watched as it writes, to be stopped at all: streamed,
             # though nothing is shown, and without the search a stream would run.
@@ -857,6 +898,95 @@ class LLMClient:
         except (KeyError, IndexError, TypeError, AttributeError):
             raise LLMError(f"Unexpected response shape: {json.dumps(body)[:300]}",
                            model=model)
+
+    def _lines_of(self, response, model):
+        """A plain streamed reply's lines, as an OpenAI stream's: Anthropic's events
+        read back as one (anthropic.openai_lines)."""
+        lines = read_lines(response.iter_content(chunk_size=512))
+        provider = self._provider(model)
+        if provider.protocol == "anthropic":
+            from . import anthropic
+            return anthropic.openai_lines(lines, "Chutes' proxy" if provider.service
+                                          == services.CHUTES else "Anthropic")
+        return lines
+
+    def _gathered(self, model, messages, image_base64, cancel, system, max_tokens,
+                  status):
+        """complete() for a provider whose replies are read as a stream: no web search
+        (complete() runs none), nothing shown as it comes."""
+        payload = self._payload(model, messages, image_base64, True, system=system,
+                                max_tokens=max_tokens, status=status)
+        response = self._post(payload, True, cancel)
+        if response is None:
+            return None
+        try:
+            result = self._consume(self._lines_of(response, model), cancel, None, [])
+        finally:
+            response.close()
+        if result is None:
+            return None
+        return self._ending(result["text"].strip(), result["finish_reason"], model,
+                            payload.get("max_tokens"), result["done"], result["error"])
+
+    def _sealed_service(self, model):
+        """Tinfoil's or Chutes' service when `model`, outside Privacy Mode, is one only
+        ever sent sealed by its own client - every model at Tinfoil's address, a -TEE
+        model at Chutes' - else None. Read from the provider's address, whatever it was
+        set up as (Provider.service)."""
+        provider = self._provider(model)
+        if provider.service in (services.TINFOIL, services.CHUTES) \
+                and provider.sealed_model(str(model)):
+            return provider.service
+        return None
+
+    def _direct_client(self, provider):
+        """The sealed client for `provider` (Tinfoil's or Chutes'), kept while its
+        address, key and the origin the key was saved for stay as they are: its
+        attestation and its cache secret last as long as it does."""
+        saved = ""
+        if provider.api_key and callable(getattr(self.config, "key_saved_for", None)):
+            saved = self.config.key_saved_for(provider.kind.key_key)
+        wanted = (provider.service, provider.chat_url, provider.api_key, saved)
+        client = self._direct.get(wanted)
+        if client is None:
+            if provider.service == services.TINFOIL:
+                from .tinfoil_direct import TinfoilDirectClient as factory
+            else:
+                from .chutes import ChutesClient as factory
+            client = factory(provider.chat_url, provider.api_key, key_saved_for=saved,
+                             request_timeout=self.config.request_timeout)
+            self._direct[wanted] = client
+        return client
+
+    def _sealed_direct(self, model, messages, image_base64, cancel, on_delta, system,
+                       status, max_tokens):
+        """One request to a model of Tinfoil's, or one of Chutes' -TEE models, outside
+        Privacy Mode: sealed on this machine to its attested enclave by its own client,
+        which attests before anything is sealed, and never sent in the clear. Never with
+        a web search: the query would go out in the clear. Returns the text, or None if
+        cancelled."""
+        say = status or (lambda _message: None)
+        provider = self._provider(model)
+        refused = provider.problem()
+        if refused:
+            raise LLMError(f"Nothing was sent. {refused}", model=model)
+        payload = self._payload(model, messages, image_base64, True, system=system,
+                                max_tokens=max_tokens, status=say)
+        payload.pop("promptCaching", None)
+        name = providers.KINDS[provider.service].name
+        try:
+            client = self._direct_client(provider)
+            say(f"Attesting {name}'s enclave, then sending sealed…")
+            with client.request(str(model), payload) as response:
+                say(f"Receiving the sealed reply from {name}…")
+                result = self._consume(client.lines(response), cancel, on_delta, [])
+            if result is None:
+                return None
+            client.finish(result["finish_reason"], result["done"])
+        except PrivacyError as e:
+            raise LLMError(f"{e}. {name}: nothing was sent in the clear", model=model)
+        return self._ending(result["text"].strip(), result["finish_reason"], model,
+                            payload.get("max_tokens"), result["done"], result["error"])
 
     @staticmethod
     def _consume(lines, cancel, on_delta, citations, halt=None):
@@ -985,6 +1115,9 @@ class LLMClient:
         if privacy is not None:
             return self._private_call(model, messages, image_base64, cancel, on_delta,
                                       system, privacy, status)
+        if self._sealed_service(model):
+            return self._sealed_direct(model, messages, image_base64, cancel, on_delta,
+                                       system, status, max_tokens)
         # The model's provider first: the search, and the query written for it, go out
         # before the model is asked, and should not for an answer that cannot be.
         self.refuse_unsendable(model)
@@ -1008,7 +1141,7 @@ class LLMClient:
         runaway = bool(payload.get("stop"))
         try:
             # Not requests' iter_lines: quadratic in a line's length, and without end.
-            result = self._consume(read_lines(response.iter_content(chunk_size=512)),
+            result = self._consume(self._lines_of(response, model),
                                    cancel, on_delta, citations,
                                    halt=runaway_start if runaway else None)
         finally:
@@ -1066,15 +1199,22 @@ class LLMClient:
         say(f"{attestation.headline} ✓ — sending to {model}…")
 
         # A private conversation's models are NanoGPT's, whatever the model settings
-        # name: plain ids, so that nothing they carry can send them anywhere else.
+        # name: plain ids, so that nothing they carry can send them anywhere else - but
+        # Tinfoil's and Chutes', named by reference ("Tinfoil::glm-5-3"), which are
+        # sealed by their own clients, to the address and key the conversation started
+        # with (PrivacySession.services).
         model = str(model)
-        payload = self._payload(model, messages, image_base64, True, system=system,
+        service, own = privacy_module.reference(model)
+        asked = providers.Model(own, service) if service else model
+        payload = self._payload(asked, messages, image_base64, True, system=system,
                                 max_tokens=max_tokens, status=say)
+        if service:
+            payload.pop("promptCaching", None)
         record = {}             # what a TEE reply's stream says of itself, for its check
         if kind == privacy_module.E2EE:
             try:
-                client = privacy.sealed_client()
-                with client.request(model, payload) as response:
+                client = privacy.sealed_client(model)
+                with client.request(own if service else model, payload) as response:
                     privacy.note_sent(model)
                     say("Receiving the sealed reply…")
                     result = self._consume(client.lines(response), cancel, on_delta, [])

@@ -140,11 +140,19 @@ class Assistant:
 
     def _catalogue_providers(self):
         """The providers whose model lists are worth fetching now. In Privacy Mode only
-        nano-gpt's, which lists the private models: every request goes there, and
-        asking the others for theirs - with their keys - would contact services the
-        mode promises to leave alone."""
+        those of its private models - nano-gpt's, which lists the private models,
+        Tinfoil's and Chutes' (whose lists are fetched without a key): every request
+        goes there, and asking the others for theirs - with their keys - would contact
+        services the mode promises to leave alone."""
         if self.config.privacy_mode:
-            return [providers.get(self.config, providers.NANOGPT)]
+            used = []
+            for key in ("private_text_model", "private_premium_model",
+                        "private_vision_model"):
+                service = privacy_module.service_of(getattr(self.config, key, "") or "")
+                kind = service if service in providers.KINDS else providers.NANOGPT
+                if kind not in used:
+                    used.append(kind)
+            return [providers.get(self.config, kind) for kind in used]
         return list(providers.in_use(self.config))
 
     def _check_tray(self):

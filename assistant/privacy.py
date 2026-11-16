@@ -73,7 +73,7 @@ from urllib.parse import quote, urljoin, urlparse
 
 import requests
 
-from . import dcap, netguard, nras, safejson
+from . import dcap, netguard, nras, safejson, services
 from .ethsig import keccak256, recover_personal
 
 NRAS_URL = "https://nras.attestation.nvidia.com/v3/attest/gpu"
@@ -262,19 +262,53 @@ def is_private_mode(model):
     return str(model or "").strip().lower().startswith("private/")
 
 
+# The services a private model may be on besides NanoGPT's, named in its reference as
+# "Tinfoil::glm-5-3" or "Chutes::Qwen/Qwen3.8-27B-TEE" (the Privacy page's models, and
+# a conversation's): every Tinfoil model, and Chutes' -TEE ones, sealed end to end by
+# their own clients (tinfoil_direct.py, chutes.py).
+REFERENCE_SERVICES = ("tinfoil", "chutes")
+
+
+def reference(model):
+    """(service, the model's own id) of a private model's reference: ("tinfoil",
+    "glm-5-3") for "Tinfoil::glm-5-3", in any case and with stray spaces; ("", the id)
+    for any other, NanoGPT's TEE/ and private/ models among them."""
+    text = str(model or "").strip()
+    if "::" in text:
+        name, bare = text.split("::", 1)
+        if name.strip().lower() in REFERENCE_SERVICES:
+            return name.strip().lower(), bare.strip()
+    return "", text
+
+
 def sealed_only(model):
     """Whether `model` may only ever be sent sealed, as the plain path asks it
-    (llm.LLMClient._post): is_private_mode."""
-    return is_private_mode(model)
+    (llm.LLMClient._post): a private/ model, or one of Tinfoil's or Chutes' -TEE ones
+    named by reference."""
+    return is_private_mode(model) or kind_of(model) == E2EE
 
 
 def kind_of(model):
-    """TEE, E2EE, or None for a model that runs nowhere in particular."""
+    """TEE, E2EE, or None for a model that runs nowhere in particular: a private/ model,
+    a Tinfoil one, or a Chutes -TEE one by reference, is E2EE; a TEE/ model TEE."""
+    service, bare = reference(model)
+    if service == "tinfoil":
+        return E2EE
+    if service == "chutes":
+        return E2EE if services.is_tee_id(bare) else None
     if is_private_mode(model):
         return E2EE
     if is_tee(model):
         return TEE
     return None
+
+
+def service_of(model):
+    """Who seals or attests a private model: "nanogpt" (TEE/ and private/), "tinfoil" or
+    "chutes", by its reference; None for one that is not private."""
+    if kind_of(model) is None:
+        return None
+    return reference(model)[0] or "nanogpt"
 
 
 def offers_private_mode(api_url):
@@ -286,13 +320,32 @@ def offers_private_mode(api_url):
 
 
 def describe(model):
-    """(short label, explanation) for a model's privacy, or ("", "")."""
+    """(short label, explanation) for a model's privacy, or ("", ""): its level's words
+    first (levels.py)."""
+    from . import levels
+    service = service_of(model)
+    if service == "tinfoil":
+        return "end-to-end encrypted (Tinfoil)", levels.TINFOIL_NOTE
+    if service == "chutes":
+        return "end-to-end encrypted (Chutes, partial)", levels.CHUTES_NOTE
     kind = kind_of(model)
     if kind == E2EE:
-        return "end-to-end encrypted", E2EE_NOTE
+        return "end-to-end encrypted", levels.E2EE_NOTE
     if kind == TEE:
-        return "TEE", TEE_NOTE
+        return "TEE (partial)", "Partial privacy. " + TEE_NOTE
     return "", ""
+
+
+def level_of(model):
+    """A private model's privacy (levels.Privacy) by its reference, as a conversation
+    keeps it; a model that is not private is levels.NONE."""
+    from . import levels
+    service = service_of(model)
+    if service == "tinfoil":
+        return levels.Privacy("sealed", levels.TINFOIL)
+    if service == "chutes":
+        return levels.Privacy("sealed", levels.CHUTES)
+    return levels.privacy_at(model)
 
 
 _cryptography = None    # cryptography_available()'s answer, once it has been worked out
@@ -333,6 +386,10 @@ def problems(config, wait=True):
             found.append(f"No private {what} model is set.")
         elif kind_of(model) is None:
             found.append(f"The private {what} model, {model}, is not a TEE model.")
+        elif service_of(model) in REFERENCE_SERVICES:
+            refused = _service_problem(config, service_of(model), model, wait)
+            if refused:
+                found.append(refused)
         elif is_private_mode(model) and not offers_private_mode(config.api_url):
             found.append(f"{model} is end-to-end encrypted through nano-gpt, and the API "
                          f"URL is not nano-gpt's.")
@@ -344,12 +401,51 @@ def problems(config, wait=True):
                              f"run tools/install-private-mode.sh, then restart the app.")
         elif model not in tee:
             tee.append(model)
+    found = list(dict.fromkeys(found))
     if tee and not cryptography_available():
         names = (", ".join(tee[:-1]) + " and " if len(tee) > 1 else "") + tee[-1]
         found.append(f"The cryptography package (python3-cryptography) is not installed, "
                      f"and without it {names} cannot be attested: what a TEE model "
                      f"proves is Intel's and NVIDIA's signatures.")
     return found
+
+
+def _service_problem(config, service, model, wait=True):
+    """Why `model`, a private model of Tinfoil's or Chutes', cannot be used with these
+    settings, or None: its provider's address and key (Settings > Providers), its key
+    held to its origin, and the client it needs."""
+    from . import providers
+    provider = providers.get(config, service)
+    refused = provider.problem()
+    if refused:
+        return f"{model} is {provider.name}'s: {refused}"
+    if provider.service != service:
+        return (f"{model} is {provider.name}'s, and its address in Settings > Providers "
+                f"is not {provider.name}'s.")
+    if service == "tinfoil":
+        from . import sealed
+        answer = sealed.available() if wait else sealed.known()
+        if answer is not None and not answer[0]:
+            return (f"{model} needs Tinfoil's client, which is not installed: run "
+                    f"tools/install-private-mode.sh, then restart the app.")
+    if service == "chutes":
+        from . import chutes_e2ee
+        refused = chutes_e2ee.mlkem_refusal()
+        if refused:
+            return refused
+    return None
+
+
+def service_settings(config, service):
+    """(address, key, the origin its key was saved for) of `service`'s provider in these
+    settings, as a private conversation fixes them when it starts; the key "" where it is
+    held back (Config.key_withheld)."""
+    from . import providers
+    provider = providers.get(config, service)
+    saved = getattr(config, "key_saved_for", None)
+    key_name = providers.KINDS[service].key_key
+    return (provider.chat_url, provider.api_key,
+            saved(key_name) if callable(saved) and provider.api_key else "")
 
 
 # ---- attestation ----------------------------------------------------------------------
@@ -2033,9 +2129,13 @@ class PrivacySession:
 
     def __init__(self, api_url, api_key, text_model, vision_model, request_timeout=180,
                  tee_factory=TeeClient, sealed_factory=None, uses=("text", "vision"),
-                 premium_model=None, clock=dcap.since_boot, strict=False):
+                 premium_model=None, clock=dcap.since_boot, strict=False,
+                 services=None):
         self.api_url = api_url
         self.api_key = api_key
+        # Tinfoil's and Chutes' addresses and keys, fixed for the conversation as
+        # NanoGPT's are: {"tinfoil": (address, key, the origin it was saved for)}.
+        self.services = dict(services or {})
         self.text_model = text_model
         self.vision_model = vision_model
         self.premium_model = premium_model or text_model
@@ -2046,6 +2146,7 @@ class PrivacySession:
         self._lock = threading.RLock()
         self._tee = {}
         self._sealed = None
+        self._sealed_by = {}            # service -> its end-to-end encrypted client
         self._attesting = {}            # model -> _Attesting, while it is attested
         self.attestations = {}          # model -> Attestation, newest check
         self._clock = clock
@@ -2078,13 +2179,17 @@ class PrivacySession:
         # (config.Config.key_withheld): every TEE check and the relay are there.
         withheld = getattr(config, "key_withheld", None)
         refused = withheld("api_key") if callable(withheld) else None
-        if refused:
+        if refused and any(service_of(getattr(config, key, "")) == "nanogpt"
+                           for key in ("private_text_model", "private_premium_model",
+                                       "private_vision_model")):
             raise PrivacyError(f"{refused} Nothing was sent.")
         return cls(config.api_url, config.api_key,
                    config.private_text_model.strip(), config.private_vision_model.strip(),
                    request_timeout=config.request_timeout, uses=uses,
                    premium_model=config.private_premium_model.strip(),
-                   strict=getattr(config, "privacy_strict", False))
+                   strict=getattr(config, "privacy_strict", False),
+                   services={service: service_settings(config, service)
+                             for service in REFERENCE_SERVICES})
 
     def matches(self, config):
         """Whether a conversation started now would get this session: the same
@@ -2097,7 +2202,10 @@ class PrivacySession:
                 and self.vision_model == config.private_vision_model.strip()
                 and self.premium_model == (config.private_premium_model.strip()
                                            or self.text_model)
-                and self.strict == bool(getattr(config, "privacy_strict", False)))
+                and self.strict == bool(getattr(config, "privacy_strict", False))
+                and all(self.services.get(service) == service_settings(config, service)
+                        for service in REFERENCE_SERVICES
+                        if any(service_of(m) == service for m in self.models())))
 
     # ---- models ---------------------------------------------------------------------
 
@@ -2116,17 +2224,35 @@ class PrivacySession:
                  if self.model_for(role) == model]
         return " and ".join(roles) or "chosen"
 
-    def enlist(self, model):
+    def enlist(self, model, moving_from=None):
         """Let the conversation send to `model` from now on. Raises PrivacyError for a
-        model that runs in no enclave, or one that could not be used privately here."""
+        model that runs in no enclave, or one that could not be used privately here.
+
+        `moving_from`: the model the conversation is answered by now, when `model` is to
+        answer instead (the chat window's model menu): it moves only to a model at the
+        same level of privacy or higher (levels.move_refusal), so a conversation with
+        the highest privacy - a private/ or Tinfoil model - never moves to a TEE/ or a
+        Chutes one, and says so."""
+        if moving_from is not None and moving_from != model:
+            from . import levels
+            refused = levels.move_refusal(moving_from, model, level_of)
+            if refused:
+                raise PrivacyError(refused)
         with self._lock:
             if model in self._models:
                 return
         kind = kind_of(model)
         if kind is None:
             raise PrivacyError(f"{model} is not a TEE model, and this conversation is "
-                               f"private; choose a TEE/ or private/ model")
-        if kind == E2EE:
+                               f"private; choose a TEE/ or private/ model, or one of "
+                               f"Tinfoil's, or a Chutes -TEE one")
+        service = service_of(model)
+        if service in REFERENCE_SERVICES:
+            address, key, _saved = self.services.get(service) or ("", "", "")
+            if not key:
+                raise PrivacyError(f"{model} is {service.title()}'s, and no key for it "
+                                   f"was set when this conversation started")
+        elif kind == E2EE:
             if not offers_private_mode(self.api_url):
                 raise PrivacyError(f"{model} is end-to-end encrypted through nano-gpt, "
                                    f"and the API URL is not nano-gpt's")
@@ -2143,7 +2269,7 @@ class PrivacySession:
 
     @property
     def all_sealed(self):
-        return all(is_private_mode(m) for m in self.models())
+        return all(kind_of(m) == E2EE for m in self.models())
 
     # ---- events ---------------------------------------------------------------------
 
@@ -2163,11 +2289,30 @@ class PrivacySession:
 
     # ---- attestation ----------------------------------------------------------------
 
-    def sealed_client(self):
-        """The end-to-end encrypted client every private/ model here is sent through.
-        One per conversation, so its private/ models share one attestation of the
-        enclave, renewed as sealed.py says, and its cache secret - ours, random, never
-        stored - lasts exactly as long as the conversation."""
+    def sealed_client(self, model=None):
+        """The end-to-end encrypted client `model` is sent through: nano-gpt's Private
+        Mode for a private/ one (the default), Tinfoil's own (tinfoil_direct.py) or
+        Chutes' (chutes.py) for theirs. One per service and conversation, so its models
+        share one attestation, renewed as each client says, and a cache secret - ours,
+        random, never stored - lasts exactly as long as the conversation."""
+        service = service_of(model) if model is not None else None
+        if service in REFERENCE_SERVICES:
+            with self._lock:
+                client = self._sealed_by.get(service)
+                if client is None:
+                    address, key, saved = self.services.get(service) or ("", "", "")
+                    if service == "tinfoil":
+                        from .tinfoil_direct import TinfoilDirectClient as factory
+                    else:
+                        from .chutes import ChutesClient as factory
+                    client = factory(address, key, key_saved_for=saved,
+                                     request_timeout=self.request_timeout)
+                    # The client names its models by their own ids; the session by
+                    # their references.
+                    client.reattested = lambda own, attestation, service=service: \
+                        self._reattested(self._reference_for(service, own), attestation)
+                    self._sealed_by[service] = client
+                return client
         with self._lock:
             if self._sealed is None:
                 factory = self._sealed_factory
@@ -2177,6 +2322,11 @@ class PrivacySession:
                 self._sealed = factory(self.api_url, self.api_key, self.request_timeout)
                 self._sealed.reattested = self._reattested
             return self._sealed
+
+    def _reference_for(self, service, own):
+        """This conversation's reference to `service`'s model `own` ("Tinfoil::x")."""
+        return next((m for m in self.models() if service_of(m) == service
+                     and reference(m)[1] == own), f"{service.title()}::{own}")
 
     def ensure(self, model):
         """Attest `model`'s enclave if it has not been, or not lately, and return what
@@ -2256,14 +2406,17 @@ class PrivacySession:
         started = self._clock()
         try:
             if kind == E2EE:
-                client = self.sealed_client()
+                client = self.sealed_client(model)
+                # Tinfoil's and Chutes' clients know their models by their own ids.
+                own = reference(model)[1] if service_of(model) in REFERENCE_SERVICES \
+                    else model
                 if model not in self._listed:
                     # The enclave is Tinfoil's router whatever the model, so a model
                     # nano-gpt has retired would attest: ask its list first, once - the
                     # preflight says so too if it goes later.
-                    client.check_offered(model)
+                    client.check_offered(own)
                     self._listed.add(model)
-                attestation = client.attest(model)
+                attestation = client.attest(own)
             else:
                 with self._lock:
                     client = self._tee.get(model)
@@ -2314,8 +2467,11 @@ class PrivacySession:
             self._doubted.discard(model)
             recovered = model in self._refused
             self._refused.discard(model)
-        if attestation.proof is not None:
-            self._sealed.accept(attestation)
+        if attestation.kind == E2EE:
+            client = self._sealed_by.get(service_of(model)) or self._sealed
+            if client is not None and (attestation.proof is not None
+                                       or service_of(model) == "chutes"):
+                client.accept(attestation)
         if changed or recovered:
             self._emit("attested", model, attestation)
 

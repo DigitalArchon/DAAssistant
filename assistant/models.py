@@ -8,8 +8,17 @@ Each provider (assistant/providers.py) lists its models its own way:
   OpenRouter   /api/v1/models says all of it unasked, with prices per token.
   Ollama       /v1/models is the plain list again, so its own /api/tags is read instead:
                that one says which models see images and which think.
+  Anthropic    its own /v1/models, every page (anthropic.list_models), the levels of
+               thinking each generation takes; no prices.
+  Chutes       Chutes' public list at llm.chutes.ai/v1/models, read without the key
+               (chutes.fetch_models), priced per million tokens.
+  Tinfoil      its own /v1/models, read without the key (tinfoil_direct.Listing): chat
+               models, prices per million tokens, the efforts each takes.
   Other        the detailed list if the endpoint has one, else the plain one - which
                says nothing about images, and the model browser allows for that.
+
+Which list an endpoint has is read from its address (providers.Provider.listing): Chutes'
+or Tinfoil's address set up as Other is listed as theirs.
 
 Results are cached on disk, a file per provider, because NanoGPT's detailed list is
 ~650 KB and rarely changes.
@@ -123,6 +132,74 @@ def normalise_openrouter(entry):
         "price_unit": "per_million_tokens",
     })
     return model
+
+
+def normalise_anthropic(entry):
+    """One of Anthropic's /v1/models entries (anthropic.listing_entry). A model that
+    thinks only when asked lists "none" among its levels, so that nothing switches its
+    thinking on unasked (effort_for); one whose thinking cannot be turned off (Claude 5,
+    Fable, Mythos) does not, and is asked for the least."""
+    from . import anthropic
+    model = normalise(entry)
+    if not anthropic.surface_of(model["id"])[3]:
+        model["efforts"] = ["none"] + [e for e in model["efforts"] if e != "none"]
+    model["vision"] = True
+    model["reasoning"] = True
+    return model
+
+
+def normalise_chutes(entry):
+    """One of Chutes' listed models (chutes_e2ee.listed_models). Its models run on vLLM,
+    whose chat template switches thinking on or off: one that reasons thinks unless told
+    not to, and the least effort tells it not to (llm.LLMClient._encode, chutes.py)."""
+    model = normalise(entry)
+    if model["reasoning"]:
+        model["efforts"] = ["none", "low", "medium", "high"]
+        model["thinks"] = True
+    return model
+
+
+class _Getter:
+    """What the listing clients are given to GET with: this module's _get (no redirect
+    followed, an answer read only so far), so that every list is fetched one way."""
+
+    @staticmethod
+    def get(url, **kwargs):
+        return _get(url, **kwargs)
+
+    def close(self):
+        pass
+
+
+def _fetch_listing(source, timeout):
+    """Anthropic's, Chutes' or Tinfoil's list, by the client that reads each."""
+    session = _Getter()
+    try:
+        if source.listing == "anthropic":
+            from . import anthropic
+            try:
+                listed = anthropic.list_models(session, source.chat_url, source.api_key)
+            except anthropic.AnthropicError as e:
+                raise ValueError(str(e))
+            normaliser = normalise_chutes if source.service == "chutes" \
+                else normalise_anthropic
+            return [normaliser(entry) for entry in listed.values()]
+        if source.listing == "chutes":
+            from . import chutes
+            try:
+                listed = chutes.fetch_models(session)
+            except privacy.PrivacyError as e:
+                raise ValueError(str(e))
+            return [normalise_chutes(entry) for entry in listed.values()]
+        from . import tinfoil_direct
+        try:
+            listed = tinfoil_direct.Listing(tinfoil_direct.base_of(source.chat_url),
+                                            session=session).fetch()
+        except privacy.PrivacyError as e:
+            raise ValueError(str(e))
+        return [normalise(entry) for entry in listed.values()]
+    finally:
+        session.close()
 
 
 def normalise_ollama(entry):
@@ -471,11 +548,16 @@ def fetch(config, force=False, timeout=60, provider=None):
     last_error = None
     # Detailed first, where a list has two variants - it is the only one carrying
     # pricing and capabilities.
-    attempts = [None] if source.listing in ("ollama", "openrouter") else [
+    attempts = [None] if source.listing in ("ollama", "openrouter", "anthropic",
+                                            "chutes", "tinfoil") else [
         {"detailed": "true"}, None]
     for params in attempts:
         try:
-            if source.listing == "ollama":
+            if source.listing in ("anthropic", "chutes", "tinfoil"):
+                models = _fetch_listing(source, timeout)
+                if not models:
+                    raise ValueError("provider returned an empty model list")
+            elif source.listing == "ollama":
                 models = _fetch_ollama(source, headers, timeout)
             else:
                 entries = _listed(_get_json(url, headers, params, timeout))

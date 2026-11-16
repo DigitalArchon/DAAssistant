@@ -2,7 +2,7 @@
 
 How DA Assistant handles your security and privacy: what leaves your computer, where it
 goes and when, what is kept on it, and what the app cannot protect you from. It describes
-the app as of 4.5.0. The [manual](../MANUAL.md) says how to use each part; this document
+the app as of 4.6.0. The [manual](../MANUAL.md) says how to use each part; this document
 explains what each part does with your data, and points to the manual for the details.
 
 ## In short
@@ -14,6 +14,9 @@ What leaves this computer:
   provider of the model that answers - and only when you send them. With
   [Privacy Mode](../MANUAL.md#privacy-mode) on, they go only to nano-gpt's attested
   models.
+- **To Tinfoil, and to Chutes for its `-TEE` models, only ciphertext**: sealed on this
+  computer to an attested enclave's key (see
+  [Three levels of privacy](#three-levels-of-privacy)).
 - **A search query, when a request searches the web.** It goes to NanoGPT, which runs
   the search with a search provider.
 - **The providers' model lists are fetched**, with the provider's key where it takes one.
@@ -49,6 +52,11 @@ plain http, and only on this machine, on your local network or as a Tor onion se
 | Service | When | What it is sent | What it is not sent |
 |---|---|---|---|
 | The provider of each model you choose: NanoGPT, OpenRouter, an Ollama server, or an OpenAI-compatible endpoint of your own | When you send, and for follow-ups | The conversation: your messages, the capture or attached pictures (or the vision model's reading of them, for a model that cannot see), the instructions for the task, the model's name, and that provider's key | Any other provider's key; anything you did not send |
+| Anthropic (`api.anthropic.com`) | When you send to one of its models, and for its model list | The conversation, the model's name, and Anthropic's key (its `x-api-key` header) | Any other key |
+| Chutes, ordinary models (`llm.chutes.ai`, or `claude.chutes.ai` speaking Anthropic's API) | When you send to one of its models that is not `-TEE` | The conversation, in the clear, and Chutes' key | Any other key |
+| Chutes' model list (`llm.chutes.ai/v1/models`) | As other model lists | Nothing: it is public, fetched with no key | Anything of yours |
+| Chutes' end-to-end encryption (`api.chutes.ai`) for its `-TEE` models (preliminary) | Before each message: its instances (`/e2e/instances`, with the key), their evidence for a random nonce of ours (`/chutes/…/evidence` without the key, or one instance's with it), its published measurements (no key); then the message (`/e2e/invoke`) | The message sealed to one attested instance's key; in the clear beside it, Chutes' key, the model's chute and instance, a single-use nonce. Chutes sees your account, the model, the timing, the sizes and the cost; the instance's operator, ciphertext | The text |
+| Tinfoil (`inference.tinfoil.sh`, `atc.tinfoil.sh`) (preliminary) | Before a message once the attestation is five minutes old (`atc.tinfoil.sh`, no key), the model list (no key), and each message | The message sealed end to end to the attested router, over a connection pinned to its attested TLS key, with Tinfoil's key. Tinfoil sees your account, the model, the timing, the sizes and the cost | The text: only the attested enclave can open it |
 | NanoGPT's web search (`/api/web`) | When a request has **Search the web** ticked | The search query, the search provider chosen, and NanoGPT's key. The query is written by your text model, which is sent the turn to write it from, or, with **Let the model write the search query** off, taken from your message | The rest of the conversation. NanoGPT passes the query to the search provider (Perplexity by default; Linkup, which keeps nothing, for an account that requires zero data retention) |
 | The providers' model lists | At start-up when a list is over six hours old, after Settings are saved, from **Browse…**, and before a request to a provider with no list yet | The provider's key where it takes one (NanoGPT, OpenRouter, your endpoint's) | Anything of yours. nano-gpt's list of end-to-end encrypted models is public, and fetched with no key |
 | nano-gpt's TEE checks (Privacy Mode, `TEE/` models) | Before the first message to a model, and before a message once its attestation is 15 minutes old; on **Check attestation**; after each reply | For an attestation, the model's name and a random nonce; for a reply's check, its id or receipt id, and the route its headers named. NanoGPT's key | Your messages: those go with the request itself |
@@ -132,6 +140,13 @@ plain http, and only on this machine, on your local network or as a Tor onion se
 - **Each key goes only to its own provider.** NanoGPT's goes to NanoGPT alone - for the
   chat, its model list, the web search, the TEE checks and Private Mode's relay - and
   never to Intel, NVIDIA, Tinfoil, Sigstore or RedPill. Ollama is sent no key.
+  Anthropic's goes to its address alone; Tinfoil's to `https://inference.tinfoil.sh`
+  alone (and never with an attestation fetch). **A Chutes key is the one stated
+  exception to a key going only to the address it was saved for**: saved for one of
+  Chutes' three addresses (`llm.chutes.ai`, `api.chutes.ai`, `claude.chutes.ai`), it goes
+  to the provider's own address for Chutes' ordinary models and to `api.chutes.ai` for
+  its `-TEE` ones, over https, and nowhere else; saved for any other address, it never
+  goes to Chutes' encryption.
 - **And only to the address it was saved for**: the scheme, host and port beside which it
   was saved, which `config.json` records (not the key). An address changed since - in
   Settings, or edited into `config.json` by hand - is not sent the key, nor anything that
@@ -159,6 +174,63 @@ and attached picture is rebuilt from its pixels alone, so no metadata goes with 
 [Attachments](../MANUAL.md#attachments)). A `private/` model is never sent this way: the
 plain path refuses one however it is written.
 
+### Three levels of privacy
+
+How private a model is, is read from the address it is asked at, not from the name its
+provider was set up under, and shown wherever a model is chosen:
+
+- **Highest privacy**: NanoGPT's `private/` models and every model on Tinfoil's own API,
+  end-to-end encrypted to an attested enclave whose software is measured.
+- **Partial privacy**: NanoGPT's `TEE/` models, attested, but your text passes NanoGPT's
+  gateway in the clear; and Chutes' `-TEE` models, encrypted all the way to an instance,
+  but to a key that rests on software Chutes signs (below).
+- **Not private**: every other model, Chutes' other models included. Its provider can
+  read your text.
+
+A private conversation moves only to a model at the same level or higher.
+
+### Tinfoil's own API (preliminary)
+
+Every model on it is sealed on this computer to Tinfoil's router enclave
+(`tinfoilsh/confidential-model-router`). Before anything is sent, the router is attested
+from Tinfoil's attestation service (`atc.tinfoil.sh`), with Tinfoil's own client as for
+`private/` models, never by its own router lookup: the hardware report against AMD's or
+Intel's roots, the release against Sigstore's record, and the enclave's certificate must
+be for `inference.tinfoil.sh`, the address the key is for, and name a TLS key. The whole
+attestation is given three minutes. Every request then goes over a connection whose TLS
+key must be that attested key, checked as the connection is made and before a byte of
+the request is written, through a proxy too; any other key sends nothing and attests
+again. Only a successful reply that came back sealed is opened. The model list is the
+one request sent unsealed, and it carries no key. The prompt cache's secret is the app's
+own, random and kept in memory only. What is not checked here: that the router passes a
+request only to attested model enclaves - that is its published code, whose build the
+attestation checks.
+
+### Chutes' `-TEE` models (preliminary, partial privacy)
+
+Every request to a model whose id ends `-TEE`, on any of Chutes' addresses, is sealed on
+this computer (ML-KEM-768 and ChaCha20-Poly1305, from the cryptography library the app
+already ships; where it has no ML-KEM, nothing is sent) to the key of one of the model's
+instances, and never sent in the clear. Before an instance's key is used, the instance is
+attested with a fresh nonce: its Intel TDX quote through Intel's checks (no debug TD),
+its certificate's key bound into the quote and signing our nonce and that quote,
+NVIDIA's verdict on its GPUs for the nonce the quote binds, the quote's report data
+binding the instance's encryption key to our nonce, and its measurements one of the sets
+Chutes publishes. An instance that fails, or whose GPUs NVIDIA did not vouch for, is left
+out and never sealed to. Each nonce Chutes issues is used once. The reply streams, each
+piece opened with a key made for this request and held to its number: a piece dropped,
+repeated or out of its place, or a stream cut short, is refused and nothing of it shown;
+a piece whose seal does not hold has every instance attested again.
+
+**Why it is only partial**: the program inside each instance that makes, holds and uses
+the key (Chutes' aegis library, `chutes-aegis.so`, a closed binary) is admitted to the
+machine by Chutes' signature, not measured, so that only the model can read your text
+rests on software Chutes signs; and the measured images are Chutes' own list, which can
+be rebuilt from its public source but was not rebuilt here. That each piece of a stream
+is numbered is what Chutes' closed library does, not a documented promise: should it
+change, every reply is refused, never read wrongly. Chutes' own Python client is not
+used: it checks nothing.
+
 ### Privacy Mode
 
 [Privacy Mode](../MANUAL.md#privacy-mode) sends every operation, and every follow-up, only
@@ -169,6 +241,9 @@ never searches the web, since a search query would carry your text to a search p
 in the clear. Switching Privacy Mode on makes the open conversations private from their
 next message; switching it off changes only conversations started afterwards. If the
 private models cannot be used, nothing is sent: it never falls back to the ordinary ones.
+Its models may be Tinfoil's or Chutes' `-TEE` ones as well as nano-gpt's, each sealed by
+its own client with the address and key Settings had when the conversation started; a
+conversation moves only to a model at the same level of privacy or higher.
 
 ### End-to-end encrypted models (`private/`)
 
@@ -385,7 +460,11 @@ as Markdown, and **Save** writes it where you choose, the badges' labels with it
 ## Limits
 
 - **Your provider sees what you send it**, except a `private/` model's provider, which
-  relays ciphertext. What it keeps is up to its own policy.
+  relays ciphertext, and Tinfoil and Chutes for their end-to-end encrypted models. What
+  it keeps is up to its own policy.
+- **Chutes' end-to-end encryption rests on software Chutes signs** (see
+  [Chutes' `-TEE` models](#chutes--tee-models-preliminary-partial-privacy)); Chutes and
+  Tinfoil support is preliminary.
 - **A `TEE/` model's text passes nano-gpt in the clear.** Attestation shows genuine,
   current hardware holding a key bound to this app's nonce. It does not show which
   software runs, and where RedPill's gateway answers, the machine that runs the model is

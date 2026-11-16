@@ -1,8 +1,8 @@
 # DA Assistant
 
 A system-tray assistant for Linux that translates and answers questions about whatever is
-on your screen or in your clipboard, using NanoGPT, OpenRouter, an Ollama server of your
-own, or any other OpenAI-compatible chat API.
+on your screen or in your clipboard, using NanoGPT, OpenRouter, Anthropic's own API,
+Chutes, Tinfoil, an Ollama server of your own, or any other OpenAI-compatible chat API.
 
 > [!NOTE]
 > Everything you capture, copy or attach is sent to the providers you choose: check what
@@ -122,9 +122,11 @@ needs Tinfoil's client: the AppImage carries it, and from source
 ## First run
 
 1. Open **Settings** from the tray icon.
-2. Under **Providers**, enter the API key of the provider you use: NanoGPT or
-   OpenRouter. For an Ollama server, or another OpenAI-compatible endpoint, enter its
-   address instead.
+2. Under **Providers**, enter the API key of the provider you use: NanoGPT, OpenRouter,
+   Anthropic, Chutes or Tinfoil (their addresses are filled in). For an Ollama server,
+   or another OpenAI-compatible endpoint, enter its address instead. Chutes' and
+   Tinfoil's end-to-end encrypted models are preliminary; how private each model is -
+   the highest, partial or not private - is shown wherever it is chosen.
 3. Under **General**, choose the three models, each with its provider beside it:
    **Browse…** lists everything that provider offers, with prices. They need not share
    one: the vision model can be on your own Ollama server and the text model elsewhere.

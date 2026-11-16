@@ -240,8 +240,11 @@ model.
 
 | Provider | Needs | Model list says | Also |
 |---|---|---|---|
-| NanoGPT | its API key | prices, context, which models see images, reasoning levels | the only one with `TEE/` and `private/` models, so [Privacy Mode](#privacy-mode) is its alone; runs the [web search](#web-search) |
+| NanoGPT | its API key | prices, context, which models see images, reasoning levels | its `TEE/` and `private/` models are [Privacy Mode](#privacy-mode)'s; runs the [web search](#web-search) |
 | OpenRouter | its API key | the same, from `openrouter.ai/api/v1/models` | |
+| Anthropic | its API key; the address, `https://api.anthropic.com`, is filled in | Anthropic's own list, every page: no prices | Anthropic's own Messages API, natively; not private |
+| Chutes | its API key; the address, `https://llm.chutes.ai/v1`, is filled in (`https://claude.chutes.ai` speaks Anthropic's API instead) | Chutes' public list, read without the key: prices per million tokens | its `-TEE` models are always sent end-to-end encrypted to an attested instance (partial privacy, preliminary); its others are not private. Its `-TEE` models can be Privacy Mode's |
+| Tinfoil | its API key; the address, `https://inference.tinfoil.sh/v1`, is filled in | Tinfoil's own list, read without the key: prices, reasoning levels | every model end-to-end encrypted to Tinfoil's attested router (the highest privacy, preliminary); can be Privacy Mode's |
 | Ollama | the server's address, `http://localhost:11434` unless you say otherwise; no key | which models see images and which think, from the server's `/api/tags` | everything is free, and stays on your network |
 | Other OpenAI-compatible endpoint | its address, and a key if it wants one | whatever its `/v1/models` says, which is often only the names | |
 
@@ -299,8 +302,48 @@ the model rebuilt with `<|user|>` named as its end-of-turn token
 (`gguf-new-metadata --special-token eot "<|user|>"`, then `ollama create`).
 
 A settings file from before providers had names, whose one API URL was not NanoGPT's, is moved over when
-the app starts: the three models are given the provider that URL was - Ollama for port
-11434, otherwise the other endpoint - with its address and key.
+the app starts: the three models are given the provider that URL was - Anthropic's,
+Chutes' or Tinfoil's for their addresses, Ollama for port 11434, otherwise the other
+endpoint - with its address and key.
+
+### Anthropic, Chutes and Tinfoil
+
+**What a provider is, is read from its address**, however the address got there: one of
+the three presets, typed by hand as the other endpoint, or a settings file of an older
+version. Tinfoil's address typed in as Other is Tinfoil's all the same - sealed, its key
+held to Tinfoil's API, its models marked the highest privacy - and Chutes' and
+Anthropic's are theirs. Any address under `tinfoil.sh` is taken as Tinfoil's, whatever
+else is said of it: nothing is ever sent there in the clear.
+
+- **Anthropic**: requests go to Anthropic's own Messages API (`/v1/messages`), the key
+  as its `x-api-key` header. Claude's thinking is asked for in the shape each
+  generation takes; a model whose thinking cannot be switched off (Claude 5 and later)
+  is asked for its least. **Prompt caching** (Settings > Advanced) marks the
+  conversation for Anthropic's cache.
+- **Chutes** (preliminary): its ordinary models go to `llm.chutes.ai` in the clear, as
+  any provider's do; at the lowest reasoning effort their thinking is switched off. A
+  model whose id ends in `-TEE` is only ever sent **end-to-end encrypted**: sealed on
+  this machine to the key of one of its instances, an Intel TDX machine a third-party
+  miner runs, after that instance is attested (Intel's and NVIDIA's checks, its quote
+  binding that key to our nonce, its VM image one Chutes publishes). Its reply streams,
+  each piece held to its number: a piece dropped, repeated or out of its place, or a
+  stream cut short, is refused in words. **Why only partial privacy**: the program that
+  holds the key inside the instance (Chutes' `chutes-aegis.so`, a closed binary) is
+  admitted by Chutes' signature, not measured, and the list of measured images is
+  Chutes' own. A Chutes key goes to Chutes' three addresses - `llm.chutes.ai`,
+  `api.chutes.ai` (where its encryption goes) and `claude.chutes.ai` - and nowhere else.
+- **Tinfoil** (preliminary): every model is **end-to-end encrypted** to Tinfoil's router
+  enclave, attested from Tinfoil's own attestation service (`atc.tinfoil.sh`) before
+  anything is sent, over a connection pinned to the enclave's attested TLS key, so not a
+  byte of the request goes to anything else. Tinfoil sees your account, the model, the
+  timing, the sizes and the cost, never the text. Its key goes to
+  `https://inference.tinfoil.sh` and nowhere else. It needs Tinfoil's client, as
+  `private/` models do: the AppImage carries it; from source,
+  `tools/install-private-mode.sh`.
+
+Outside Privacy Mode a Tinfoil model, or a Chutes `-TEE` one, is still sealed and
+attested before each request; the web search is never run for it, since the query would
+go out in the clear.
 
 ## Choosing models
 
@@ -322,6 +365,14 @@ web search included. Use it under **Settings > Privacy** instead. That holds how
 is written - `Private/…`, or with a space before it - wherever the app judges it:
 Settings and the model browser count it end-to-end encrypted, and a private conversation
 seals it. (Up to 4.2.0 only the refusal here read it so; Settings called it *not TEE*.)
+
+**How private each model is** is shown beside it on the General page, in the **Privacy**
+column of the model browser, and under the list when one is selected, read from where it
+would be asked: **Highest privacy** (NanoGPT's `private/` models and every Tinfoil
+model: end-to-end encrypted to an attested enclave whose software is measured),
+**Partial privacy** (NanoGPT's `TEE/` models, whose text passes NanoGPT's gateway in the
+clear, and Chutes' `-TEE` models, encrypted all the way to a key that rests on software
+Chutes signs) or **Not private** (every other model, whose provider can read your text).
 
 The vision model runs on every capture, so it is worth keeping cheap. Whether a question
 about an image is answered from the picture itself comes down to the answering model:
@@ -377,9 +428,19 @@ follow-up - goes only to the models set there, never to the ones above:
 | Private premium model | answering instead, when **Use premium text model** is ticked |
 | Private vision model | OCR's transcription, stage one of Translate image selection, and reading the image for a private model that cannot see |
 
+Besides NanoGPT's `TEE/` and `private/` models, these can be **Tinfoil's** (written
+`Tinfoil::glm-5-3`; the highest privacy) and **Chutes' `-TEE` models**
+(`Chutes::Qwen/Qwen3.8-27B-TEE`; partial privacy): **Browse…** lists NanoGPT's, Tinfoil's
+or Chutes' private models, and fills the name in. Each is sent with its provider's key
+from Settings > Providers, as it was when the conversation started, through its own
+end-to-end encrypted client. Both are preliminary.
+
 In a private conversation the model menu offers these three, and **Other TEE model…**
-lists only `TEE/` and `private/` models; whatever is chosen is attested before anything
-is sent to it. A conversation lists only the models it has used or is about to: its
+lists only private models; whatever is chosen is attested before anything is sent to
+it. **A conversation moves only to a model at the same level of privacy or higher**: one
+that started on a `private/` or Tinfoil model may move to another of those, never to a
+`TEE/` or Chutes one, and says so in words; one on a `TEE/` or Chutes model may move to
+any private model. A conversation lists only the models it has used or is about to: its
 first step's and its answering model's, then any chosen along the way.
 
 **Browse…** beside them lists only models that run in an enclave. There are two kinds:

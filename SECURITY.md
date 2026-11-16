@@ -10,7 +10,7 @@ but reports are taken seriously and credited in the fix unless you'd rather not 
 
 ## Supported versions
 
-Only the latest release, 4.5.x (or `main`), gets fixes.
+Only the latest release, 4.6.x (or `main`), gets fixes.
 
 ## What's in scope
 

@@ -187,7 +187,15 @@ provider was set up under, and shown wherever a model is chosen:
 - **Not private**: every other model, Chutes' other models included. Its provider can
   read your text.
 
-A private conversation moves only to a model at the same level or higher.
+A conversation moves only to a model at the same level or higher, and **every model
+given anything of it is held to that**, not only the one answering: the vision model
+reading a capture or a picture for it (OCR, translating a capture, a reading for a model
+that cannot see), and a follow-up answered by another role or a model chosen from the
+menu. A conversation is kept to the level of its most private model so far, so one on
+Tinfoil never gives anything of itself, in the clear, to an ordinary or Anthropic model
+in another role: that is refused in words naming the role and both levels, and nothing
+is sent. Outside Privacy Mode a `TEE/` model is not attested, and counts as not private
+there.
 
 ### Tinfoil's own API (preliminary)
 

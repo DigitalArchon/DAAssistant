@@ -440,7 +440,14 @@ lists only private models; whatever is chosen is attested before anything is sen
 it. **A conversation moves only to a model at the same level of privacy or higher**: one
 that started on a `private/` or Tinfoil model may move to another of those, never to a
 `TEE/` or Chutes one, and says so in words; one on a `TEE/` or Chutes model may move to
-any private model. A conversation lists only the models it has used or is about to: its
+any private model. **Every model given anything of a conversation is held to the same
+rule**, not only the answering one: a private vision model less private than the
+answering model is refused for an operation on a capture or a picture (Settings >
+Privacy says so beside the models), and so is a follow-up answered by a role, or a model
+chosen from the menu, less private than the conversation. Outside Privacy Mode the same
+holds for a conversation answered by a Tinfoil model or a Chutes `-TEE` one: its vision,
+premium or text role is not given anything of it, in the clear, unless it is at least as
+private. Each refusal names the role and both levels, and nothing is sent. A conversation lists only the models it has used or is about to: its
 first step's and its answering model's, then any chosen along the way.
 
 **Browse…** beside them lists only models that run in an enclave. There are two kinds:
